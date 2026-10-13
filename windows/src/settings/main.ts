@@ -18,6 +18,7 @@ import {
 import { h, clear } from "../views/dom";
 import { agentsSection } from "./agents";
 import { phoneSection } from "./phone";
+import { voiceSection } from "./voice";
 import { colorDot } from "./colors";
 import { renderDiff, statusDot } from "./parts";
 import {
@@ -1326,6 +1327,7 @@ async function render() {
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
   const shortcutReport = await Bridge.shortcutsStatus();
+  const voiceModel = await Bridge.voiceModelStatus();
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -1360,6 +1362,7 @@ async function render() {
   localRedraw = null;
   shortcutsListener = null;
   clear(root);
+  const voice = voiceSection(voiceModel);
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
@@ -1372,6 +1375,7 @@ async function render() {
     integrationsSection(present),
     phoneSection(settings.phoneLink ?? false, toggle, settings),
     generalSection(),
+    ...(voice ? [voice] : []),
     shortcutsSection(shortcutReport),
     h("div", {
       class: "hint",

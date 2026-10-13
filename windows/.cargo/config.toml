@@ -1,0 +1,14 @@
+# whisper.cpp (built by whisper-rs-sys for assistant/voice/whisper.rs) takes
+# GGML_* and CMAKE_* variables as CMake settings.
+[env]
+# The cmake crate leaves MSVC's Release flags without any optimisation, which
+# made a 5 s clip take 12 s. Optimise it like CMake's own Release would.
+CMAKE_C_FLAGS_RELEASE = "/O2 /Ob2 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELEASE = "/O2 /Ob2 /DNDEBUG"
+# Not tuned to the build machine: a binary built on a CPU with AVX-512 would
+# crash on one without. AVX2 + FMA + F16C is every x86-64 PC since about 2013.
+GGML_NATIVE = "OFF"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"

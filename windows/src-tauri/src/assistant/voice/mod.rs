@@ -13,12 +13,16 @@
 //
 // Everything that touches the OS sits behind `Microphone` and `Transcriber`,
 // so the state machine is tested here with simulated ones; the real microphone
-// is WASAPI on Windows (wasapi.rs). P0 transcribes with `simulated::Transcriber`
-// only: a real local engine comes in P1.
+// is WASAPI on Windows (wasapi.rs). Speech becomes text on this computer with
+// whisper.cpp (whisper.rs) once the user downloaded its model (model.rs);
+// until then the simulated transcriber stands in, labelled as such.
 
+pub mod model;
 pub mod simulated;
 #[cfg(windows)]
 pub mod wasapi;
+#[cfg(windows)]
+pub mod whisper;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,6 +45,36 @@ pub const PREVIEW_TTL: Duration = Duration::from_secs(120);
 pub const SILENCE_RMS: f32 = 0.004;
 /// How long the chat draft action stays valid once the user pressed Use.
 pub const DRAFT_TTL_MS: u64 = 30_000;
+
+/// The app's transcriber: whisper.cpp once its model is installed, the
+/// simulated one until then (and again if the model is deleted).
+pub struct Auto {
+    #[cfg(windows)]
+    local: whisper::Local,
+}
+
+impl Default for Auto {
+    fn default() -> Self {
+        Self {
+            #[cfg(windows)]
+            local: whisper::Local::new(model::path()),
+        }
+    }
+}
+
+impl Transcriber for Auto {
+    fn transcribe(&self, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
+        #[cfg(windows)]
+        {
+            if model::installed() {
+                return self.local.transcribe(samples, sample_rate);
+            }
+            // Deleted while loaded: let the memory go too.
+            self.local.unload();
+        }
+        simulated::Transcriber.transcribe(samples, sample_rate)
+    }
+}
 
 /// Where voice events go: the island in the app, a recorder in tests.
 pub trait Sink: Send + Sync + 'static {

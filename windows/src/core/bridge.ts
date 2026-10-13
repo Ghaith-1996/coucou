@@ -375,6 +375,12 @@ export const Bridge = {
   voiceUse: (captureId: string) => callOrThrow<{ actionId: string; text: string }>("assistant_voice_use", { captureId }),
   /** What came of an assistant action, for the log (never with its text). */
   actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
+  /** The speech model (Settings → Voice). Only the settings window may change it. */
+  voiceModelStatus: () => call<VoiceModelStatus>("voice_model_status"),
+  /** Downloads it, verified; progress comes as `voice-model` events. Throws with why not. */
+  voiceModelDownload: () => callOrThrow<VoiceModelStatus>("voice_model_download"),
+  voiceModelCancel: () => call<void>("voice_model_cancel"),
+  voiceModelDelete: () => callOrThrow<VoiceModelStatus>("voice_model_delete"),
 
   // ── Weekly recap ──────────────────────────────────────────────────────────
   /** Turns and decisions from `since` (Unix seconds) on, plus the recap prefs. */
@@ -421,6 +427,18 @@ export const Bridge = {
   /** Whether there is a Spotify to launch (Settings). */
   spotifyInstalled: () => call<boolean>("spotify_installed"),
 };
+
+/** The speech model, as assistant/voice/model.rs reports it. */
+export interface VoiceModelStatus {
+  /** Both microphone capture and local transcription exist in this build. */
+  supported: boolean;
+  installed: boolean;
+  downloading: boolean;
+  received: number;
+  size: number;
+  /** The address it is downloaded from. */
+  source: string;
+}
 
 export type SpotifyAction = "playPause" | "next" | "previous" | "seek" | "shuffle" | "repeat" | "volume";
 

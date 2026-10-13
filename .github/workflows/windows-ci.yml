@@ -63,5 +63,8 @@ jobs:
       - name: Build the relay
         run: cargo build --release -p coucou-hook
 
+      # Inside Visual Studio's developer environment: speech recognition
+      # (whisper-rs) builds whisper.cpp with CMake and generates its bindings
+      # with libclang, which needs the MSVC headers. See scripts/cargo-vs.cmd.
       - name: Rust tests
-        run: cargo test --workspace --locked
+        run: scripts\cargo-vs.cmd test --workspace --locked

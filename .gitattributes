@@ -4,3 +4,6 @@ design/** linguist-documentation
 android/gradlew text eol=lf
 android/**/*.sh text eol=lf
 android/**/*.mjs text eol=lf
+
+# cmd.exe misreads batch files with LF endings (labels, for /f): always CRLF.
+*.cmd text eol=crlf

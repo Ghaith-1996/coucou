@@ -3976,6 +3976,94 @@
    "pt-BR": "Falar com o Mochi (ligar ou parar o microfone)",
    "ru": "Поговорить с Mochi (включить или выключить микрофон)",
    "id": "Bicara dengan Mochi (mulai atau hentikan mikrofon)"
+  },
+  "Speech recognition runs on this computer with Whisper. Its model is downloaded once, from the address below. No audio or text leaves your computer.": {
+   "zh-Hans": "语音识别在这台电脑上通过 Whisper 运行。其模型只需从下方地址下载一次。音频和文字都不会离开你的电脑。",
+   "hi": "वाक् पहचान इसी कंप्यूटर पर Whisper से चलती है। इसका मॉडल नीचे दिए पते से एक बार डाउनलोड होता है। कोई ऑडियो या टेक्स्ट आपके कंप्यूटर से बाहर नहीं जाता।",
+   "es": "El reconocimiento de voz se ejecuta en este ordenador con Whisper. Su modelo se descarga una sola vez, desde la dirección de abajo. Ningún audio ni texto sale de tu ordenador.",
+   "ar": "يعمل التعرف على الكلام على هذا الكمبيوتر باستخدام Whisper. يُنزَّل نموذجه مرة واحدة من العنوان أدناه. لا يغادر أي صوت أو نص جهازك.",
+   "fr": "La reconnaissance vocale tourne sur cet ordinateur avec Whisper. Son modèle se télécharge une seule fois, depuis l'adresse ci-dessous. Aucun son ni texte ne quitte votre ordinateur.",
+   "bn": "কণ্ঠস্বর শনাক্তকরণ এই কম্পিউটারেই Whisper দিয়ে চলে। এর মডেল নিচের ঠিকানা থেকে একবার ডাউনলোড হয়। কোনো অডিও বা লেখা আপনার কম্পিউটার ছেড়ে যায় না।",
+   "pt-BR": "O reconhecimento de fala roda neste computador com o Whisper. O modelo é baixado uma única vez, do endereço abaixo. Nenhum áudio ou texto sai do seu computador.",
+   "ru": "Распознавание речи работает на этом компьютере с помощью Whisper. Его модель загружается один раз по адресу ниже. Ни звук, ни текст не покидают ваш компьютер.",
+   "id": "Pengenalan suara berjalan di komputer ini dengan Whisper. Modelnya diunduh sekali, dari alamat di bawah. Tidak ada audio atau teks yang keluar dari komputer Anda."
+  },
+  "Turn on “Talk to Mochi” in Shortcuts to use the microphone (Ctrl+Alt+V).": {
+   "zh-Hans": "在“快捷键”中打开“和 Mochi 说话”即可使用麦克风（Ctrl+Alt+V）。",
+   "hi": "माइक्रोफ़ोन इस्तेमाल करने के लिए शॉर्टकट में “Mochi से बात करें” चालू करें (Ctrl+Alt+V)।",
+   "es": "Activa «Hablar con Mochi» en Atajos para usar el micrófono (Ctrl+Alt+V).",
+   "ar": "فعّل «تحدّث إلى Mochi» في الاختصارات لاستخدام الميكروفون (Ctrl+Alt+V).",
+   "fr": "Activez « Parler à Mochi » dans Raccourcis pour utiliser le micro (Ctrl+Alt+V).",
+   "bn": "মাইক্রোফোন ব্যবহার করতে শর্টকাটে “Mochi-র সাথে কথা বলুন” চালু করুন (Ctrl+Alt+V)।",
+   "pt-BR": "Ative “Falar com o Mochi” em Atalhos para usar o microfone (Ctrl+Alt+V).",
+   "ru": "Включите «Поговорить с Mochi» в разделе «Сочетания клавиш», чтобы пользоваться микрофоном (Ctrl+Alt+V).",
+   "id": "Aktifkan “Bicara dengan Mochi” di Pintasan untuk memakai mikrofon (Ctrl+Alt+V)."
+  },
+  "Downloading… {percent}%": {
+   "zh-Hans": "正在下载… {percent}%",
+   "hi": "डाउनलोड हो रहा है… {percent}%",
+   "es": "Descargando… {percent} %",
+   "ar": "جارٍ التنزيل… {percent}%",
+   "fr": "Téléchargement… {percent} %",
+   "bn": "ডাউনলোড হচ্ছে… {percent}%",
+   "pt-BR": "Baixando… {percent}%",
+   "ru": "Загрузка… {percent}%",
+   "id": "Mengunduh… {percent}%"
+  },
+  "Model installed. Captures are transcribed on this computer.": {
+   "zh-Hans": "模型已安装。录音会在这台电脑上转写。",
+   "hi": "मॉडल इंस्टॉल हो गया। कैप्चर इसी कंप्यूटर पर ट्रांसक्राइब होते हैं।",
+   "es": "Modelo instalado. Las grabaciones se transcriben en este ordenador.",
+   "ar": "تم تثبيت النموذج. يُنسخ ما تسجّله على هذا الكمبيوتر.",
+   "fr": "Modèle installé. Les enregistrements sont transcrits sur cet ordinateur.",
+   "bn": "মডেল ইনস্টল হয়েছে। রেকর্ড করা কথা এই কম্পিউটারেই ট্রান্সক্রাইব হয়।",
+   "pt-BR": "Modelo instalado. As gravações são transcritas neste computador.",
+   "ru": "Модель установлена. Записи расшифровываются на этом компьютере.",
+   "id": "Model terpasang. Rekaman ditranskripsi di komputer ini."
+  },
+  "Delete the model": {
+   "zh-Hans": "删除模型",
+   "hi": "मॉडल हटाएँ",
+   "es": "Eliminar el modelo",
+   "ar": "حذف النموذج",
+   "fr": "Supprimer le modèle",
+   "bn": "মডেল মুছুন",
+   "pt-BR": "Excluir o modelo",
+   "ru": "Удалить модель",
+   "id": "Hapus model"
+  },
+  "Without the model, the voice card shows a simulated transcript.": {
+   "zh-Hans": "没有模型时，语音卡片会显示模拟转写。",
+   "hi": "मॉडल के बिना, वॉइस कार्ड सिम्युलेटेड ट्रांसक्रिप्ट दिखाता है।",
+   "es": "Sin el modelo, la tarjeta de voz muestra una transcripción simulada.",
+   "ar": "بدون النموذج، تعرض بطاقة الصوت نسخًا محاكى.",
+   "fr": "Sans le modèle, la carte vocale affiche une transcription simulée.",
+   "bn": "মডেল ছাড়া ভয়েস কার্ড একটি সিমুলেটেড ট্রান্সক্রিপ্ট দেখায়।",
+   "pt-BR": "Sem o modelo, o cartão de voz mostra uma transcrição simulada.",
+   "ru": "Без модели голосовая карточка показывает имитацию расшифровки.",
+   "id": "Tanpa model, kartu suara menampilkan transkrip simulasi."
+  },
+  "Download the model ({size})": {
+   "zh-Hans": "下载模型（{size}）",
+   "hi": "मॉडल डाउनलोड करें ({size})",
+   "es": "Descargar el modelo ({size})",
+   "ar": "تنزيل النموذج ({size})",
+   "fr": "Télécharger le modèle ({size})",
+   "bn": "মডেল ডাউনলোড করুন ({size})",
+   "pt-BR": "Baixar o modelo ({size})",
+   "ru": "Скачать модель ({size})",
+   "id": "Unduh model ({size})"
+  },
+  "Could not download: {error}": {
+   "zh-Hans": "无法下载：{error}",
+   "hi": "डाउनलोड नहीं हो सका: {error}",
+   "es": "No se pudo descargar: {error}",
+   "ar": "تعذّر التنزيل: {error}",
+   "fr": "Téléchargement impossible : {error}",
+   "bn": "ডাউনলোড করা যায়নি: {error}",
+   "pt-BR": "Não foi possível baixar: {error}",
+   "ru": "Не удалось скачать: {error}",
+   "id": "Tidak dapat mengunduh: {error}"
   }
  }
 }

@@ -7,12 +7,16 @@
 // and only moved into place once its size and SHA-256 match the values pinned
 // here. A file that doesn't match is deleted, never used.
 
+use std::future::Future;
 use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use ring::digest::{Context, SHA256};
 use serde::Serialize;
+use tokio::sync::watch;
 
 pub struct ModelInfo {
     pub file: &'static str,
@@ -44,9 +48,69 @@ pub fn installed() -> bool {
     std::fs::metadata(path()).map(|m| m.is_file() && m.len() == MODEL.size).unwrap_or(false)
 }
 
-static DOWNLOADING: AtomicBool = AtomicBool::new(false);
-static CANCEL: AtomicBool = AtomicBool::new(false);
+static DOWNLOAD: DownloadState = DownloadState::new();
 static RECEIVED: AtomicU64 = AtomicU64::new(0);
+
+/// Publish ownership and its cancellation signal together, so a cancellation
+/// cannot be lost between claiming the download and initializing its signal.
+struct DownloadState {
+    active: Mutex<Option<watch::Sender<bool>>>,
+}
+
+impl DownloadState {
+    const fn new() -> Self {
+        Self { active: Mutex::new(None) }
+    }
+
+    fn downloading(&self) -> bool {
+        self.active.lock().unwrap().is_some()
+    }
+
+    fn cancel(&self) {
+        if let Some(cancel) = self.active.lock().unwrap().as_ref() {
+            let _ = cancel.send(true);
+        }
+    }
+
+    fn start<'a>(&'a self, part: &'a Path) -> Result<(DownloadGuard<'a>, watch::Receiver<bool>), String> {
+        let mut active = self.active.lock().unwrap();
+        if active.is_some() {
+            return Err("already downloading".into());
+        }
+        let (cancel, receiver) = watch::channel(false);
+        *active = Some(cancel);
+        Ok((DownloadGuard { state: self, part }, receiver))
+    }
+}
+
+/// The fetch future (and its open file) drops before this guard. Cleanup also
+/// runs if the command future is dropped, and finishes before another download
+/// can acquire the same partial-file path. A successful rename leaves no part.
+struct DownloadGuard<'a> {
+    state: &'a DownloadState,
+    part: &'a Path,
+}
+
+impl Drop for DownloadGuard<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.part);
+        let _ = self.state.active.lock().unwrap().take();
+    }
+}
+
+/// Race every network wait, including response headers and a stalled body,
+/// against a wakeable signal. An already requested cancellation wins even
+/// when the network result is ready in the same poll.
+async fn cancellable<T>(cancel: &mut watch::Receiver<bool>, operation: impl Future<Output = T>) -> Result<T, String> {
+    if *cancel.borrow() {
+        return Err("cancelled".into());
+    }
+    tokio::select! {
+        biased;
+        _ = cancel.changed() => Err("cancelled".into()),
+        result = operation => Ok(result),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -65,7 +129,7 @@ pub fn status() -> Status {
     Status {
         supported: cfg!(windows),
         installed: cfg!(windows) && installed(),
-        downloading: DOWNLOADING.load(Ordering::SeqCst),
+        downloading: DOWNLOAD.downloading(),
         received: RECEIVED.load(Ordering::SeqCst),
         size: MODEL.size,
         source: MODEL.url,
@@ -83,12 +147,12 @@ pub fn require_supported() -> Result<(), String> {
 }
 
 pub fn cancel() {
-    CANCEL.store(true, Ordering::SeqCst);
+    DOWNLOAD.cancel();
 }
 
 pub fn delete() -> Result<(), String> {
     require_supported()?;
-    if DOWNLOADING.load(Ordering::SeqCst) {
+    if DOWNLOAD.downloading() {
         return Err("a download is running".into());
     }
     match std::fs::remove_file(path()) {
@@ -117,37 +181,30 @@ fn hex(bytes: &[u8]) -> String {
 /// Only one download at a time; `cancel` stops it and removes the partial file.
 pub async fn download(mut progress: impl FnMut(u64)) -> Result<(), String> {
     require_supported()?;
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("already downloading".into());
-    }
-    CANCEL.store(false, Ordering::SeqCst);
-    RECEIVED.store(0, Ordering::SeqCst);
     let part = dir().join(format!("{}.part", MODEL.file));
-    let result = fetch(&part, &mut progress).await;
-    if result.is_err() {
-        let _ = std::fs::remove_file(&part);
-    }
-    DOWNLOADING.store(false, Ordering::SeqCst);
-    result
+    let (_guard, mut cancel) = DOWNLOAD.start(&part)?;
+    RECEIVED.store(0, Ordering::SeqCst);
+    fetch(&part, &mut progress, &mut cancel).await
 }
 
-async fn fetch(part: &std::path::Path, progress: &mut impl FnMut(u64)) -> Result<(), String> {
+async fn fetch(part: &Path, progress: &mut impl FnMut(u64), cancel: &mut watch::Receiver<bool>) -> Result<(), String> {
     crate::platform::ensure_private_dir(&dir()).map_err(|e| e.to_string())?;
     let client = reqwest::Client::builder()
         .user_agent(concat!("Coucou/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(30))
+        // Reset on each successful read, rather than limiting a slow but
+        // progressing download of the whole model.
+        .read_timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut response = client.get(MODEL.url).send().await.map_err(|e| e.to_string())?;
+    let mut response = cancellable(cancel, client.get(MODEL.url).send()).await?.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!("the server answered {}", response.status()));
     }
     let mut file = std::fs::File::create(part).map_err(|e| e.to_string())?;
     let mut hash = Context::new(&SHA256);
     let mut len: u64 = 0;
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-        if CANCEL.load(Ordering::SeqCst) {
-            return Err("cancelled".into());
-        }
+    while let Some(chunk) = cancellable(cancel, response.chunk()).await?.map_err(|e| e.to_string())? {
         len += chunk.len() as u64;
         // Never more than the pinned size: a bigger answer is not our file.
         if len > MODEL.size {
@@ -161,6 +218,11 @@ async fn fetch(part: &std::path::Path, progress: &mut impl FnMut(u64)) -> Result
     file.sync_all().map_err(|e| e.to_string())?;
     drop(file);
     verify(len, &hex(hash.finish().as_ref()))?;
+    if *cancel.borrow() {
+        return Err("cancelled".into());
+    }
+    // std::fs::rename replaces an existing regular file on Windows too; do
+    // not delete the destination first and risk losing it if installation fails.
     std::fs::rename(part, path()).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -168,6 +230,118 @@ async fn fetch(part: &std::path::Path, progress: &mut impl FnMut(u64)) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "coucou-model-{}-{stamp}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The same ownership order as download → fetch, with a tiny local file
+    /// and a permanently pending future instead of any network/model access.
+    async fn stalled_download(
+        state: &DownloadState,
+        part: &Path,
+        started: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<(), String> {
+        let (_guard, mut cancel) = state.start(part)?;
+        let mut file = std::fs::File::create(part).unwrap();
+        file.write_all(b"partial").unwrap();
+        started.send(()).unwrap();
+        cancellable(&mut cancel, std::future::pending::<()>()).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_interrupts_a_stalled_download_and_releases_ownership() {
+        let dir = TestDir::new();
+        let part = dir.0.join("model.part");
+        let destination = dir.0.join("model.bin");
+        std::fs::write(&destination, b"previous file").unwrap();
+        let state = std::sync::Arc::new(DownloadState::new());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task_state = state.clone();
+        let task_part = part.clone();
+        let download = tokio::spawn(async move { stalled_download(&task_state, &task_part, started).await });
+        ready.await.unwrap();
+        assert!(state.downloading());
+        assert!(part.exists());
+        // A rejected second caller must neither remove the first caller's
+        // partial file nor release its ownership.
+        assert!(state.start(&part).is_err());
+        assert!(part.exists());
+        assert!(state.downloading());
+        state.cancel();
+        // Await only the task's JoinHandle: the cancellation signal must wake
+        // the suspended task, rather than a test manually polling it again.
+        let result = tokio::time::timeout(Duration::from_secs(1), download).await.unwrap().unwrap();
+        assert_eq!(result, Err("cancelled".into()));
+        assert!(!part.exists());
+        assert!(!state.downloading());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous file");
+
+        // Cancellation belongs to that attempt, never the next download.
+        let (_guard, mut cancel) = state.start(&part).unwrap();
+        assert_eq!(cancellable(&mut cancel, std::future::ready(7)).await, Ok(7));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_the_download_future_removes_its_partial_file() {
+        let dir = TestDir::new();
+        let part = dir.0.join("model.part");
+        let state = DownloadState::new();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let mut download = Box::pin(stalled_download(&state, &part, started));
+        tokio::select! {
+            _ = &mut download => panic!("the synthetic network wait must stall"),
+            result = ready => result.unwrap(),
+        }
+        assert!(part.exists());
+        drop(download);
+        assert!(!part.exists());
+        assert!(!state.downloading());
+        assert!(state.start(&part).is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_before_a_wait_wins_over_a_ready_result() {
+        let dir = TestDir::new();
+        let part = dir.0.join("model.part");
+        let state = DownloadState::new();
+        let (_guard, mut cancel) = state.start(&part).unwrap();
+        state.cancel();
+        assert_eq!(cancellable(&mut cancel, std::future::ready(7)).await, Err("cancelled".into()));
+    }
+
+    #[test]
+    fn installing_replaces_an_existing_wrong_size_file() {
+        let dir = TestDir::new();
+        let part = dir.0.join("model.part");
+        let destination = dir.0.join("model.bin");
+        let state = DownloadState::new();
+        let (guard, _cancel) = state.start(&part).unwrap();
+        std::fs::write(&destination, b"bad").unwrap();
+        std::fs::write(&part, b"verified replacement").unwrap();
+        // Exercise the same std operation as fetch on Windows and Unix.
+        std::fs::rename(&part, &destination).unwrap();
+        drop(guard);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"verified replacement");
+        assert!(!part.exists());
+        assert!(!state.downloading());
+    }
 
     #[test]
     fn local_model_support_matches_the_compiled_backend() {

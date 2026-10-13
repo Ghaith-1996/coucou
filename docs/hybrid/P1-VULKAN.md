@@ -5,10 +5,10 @@ default**:
 
 ```
 windows\scripts\dev.cmd gpu         # development (needs its console open)
-windows\scriptsuild-exe.cmd gpu   # a coucou.exe that runs on its own
+windows\scripts\build-exe.cmd gpu   # a coucou.exe that runs on its own
 ```
 
-Both work from any terminal or by double-click: `scriptss-env.cmd` sets up Visual
+Both work from any terminal or by double-click: `scripts\vs-env.cmd` sets up Visual
 Studio's environment, libclang, the Vulkan SDK and the short target folder
 (`<drive>\cv`). Without `gpu` they build the default (CPU) app. A development
 build's `coucou.exe` loads its pages from the Vite server that `dev.cmd` starts,

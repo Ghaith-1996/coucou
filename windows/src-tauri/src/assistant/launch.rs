@@ -2,19 +2,21 @@
 //
 // The app is opened the way Start opens it: ShellExecuteEx on
 // `shell:AppsFolder\<AppID>`, with no arguments and no error dialog. Success
-// needs evidence: a visible window of the started process, or another app's
-// window coming to the front (a Store app, or an app already running, opens
-// through another process). With neither within the wait, the outcome is
-// `unknown`, never retried: opening an app twice is not the same as once.
+// needs evidence: a visible window of the started process. A foreground change
+// alone cannot identify the requested app: the user may simply have Alt-Tabbed.
+// Store apps and already-running apps can open through another process; without
+// a window tied to the returned process, the outcome is `unknown`, never retried:
+// opening an app twice is not the same as once.
 
+use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::time::{Duration, Instant};
 
 use windows::core::{w, HSTRING, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::System::Threading::GetProcessId;
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindow, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER, SW_SHOWNORMAL,
+    EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER, SW_SHOWNORMAL,
 };
 use windows::core::BOOL;
 
@@ -26,7 +28,6 @@ pub const WAIT: Duration = Duration::from_secs(10);
 /// Opens the app with this AppsFolder AppID (apps.rs) and reports what came
 /// of it, for `action_id`.
 pub fn open(action_id: &str, app_id: &str) -> ActionReceipt {
-    let before = unsafe { GetForegroundWindow() };
     let file = HSTRING::from(format!(r"shell:AppsFolder\{app_id}"));
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -41,26 +42,17 @@ pub fn open(action_id: &str, app_id: &str) -> ActionReceipt {
     }
     // No process when the shell handed it to one already running.
     let process = info.hProcess;
+    // Keep the process object alive while observing windows so its PID cannot
+    // be recycled for an unrelated process. This closes the handle on any return.
+    // SAFETY: ShellExecuteExW returned this owned handle with NOCLOSEPROCESS.
+    let _process = (!process.is_invalid()).then(|| unsafe { OwnedHandle::from_raw_handle(process.0) });
     let pid = if process.is_invalid() { 0 } else { unsafe { GetProcessId(process) } };
-    if !process.is_invalid() {
-        let _ = unsafe { CloseHandle(process) };
-    }
 
-    let ours = std::process::id();
     let started = Instant::now();
     while started.elapsed() < WAIT {
         if pid != 0 && has_window(pid) {
             if let Some(done) = ActionReceipt::succeeded(action_id, &format!("window:pid:{pid}")) {
                 return done;
-            }
-        }
-        let front = unsafe { GetForegroundWindow() };
-        if !front.is_invalid() && front != before {
-            let owner = window_pid(front);
-            if owner != 0 && owner != ours {
-                if let Some(done) = ActionReceipt::succeeded(action_id, &format!("foreground:pid:{owner}")) {
-                    return done;
-                }
             }
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -74,6 +66,10 @@ fn window_pid(hwnd: HWND) -> u32 {
     pid
 }
 
+fn is_launch_window(launch_pid: u32, owner_pid: u32, visible: bool, top_level: bool) -> bool {
+    launch_pid != 0 && owner_pid == launch_pid && visible && top_level
+}
+
 /// A visible top-level window (not owned by another) of this process.
 fn has_window(pid: u32) -> bool {
     struct Search {
@@ -83,7 +79,7 @@ fn has_window(pid: u32) -> bool {
     unsafe extern "system" fn each(hwnd: HWND, data: LPARAM) -> BOOL {
         let search = unsafe { &mut *(data.0 as *mut Search) };
         let top = unsafe { GetWindow(hwnd, GW_OWNER) }.map_or(true, |o| o.is_invalid());
-        if top && unsafe { IsWindowVisible(hwnd) }.as_bool() && window_pid(hwnd) == search.pid {
+        if is_launch_window(search.pid, window_pid(hwnd), unsafe { IsWindowVisible(hwnd) }.as_bool(), top) {
             search.found = true;
             return BOOL(0);
         }
@@ -100,17 +96,40 @@ mod tests {
     use crate::assistant::apps;
     use crate::assistant::contracts::Outcome;
 
+    #[test]
+    fn a_visible_window_of_the_started_process_is_evidence() {
+        assert!(is_launch_window(42, 42, true, true));
+    }
+
+    #[test]
+    fn switching_to_an_unrelated_app_is_not_evidence() {
+        assert!(!is_launch_window(42, 99, true, true));
+    }
+
+    #[test]
+    fn a_store_or_reused_process_without_a_launch_pid_is_unverified() {
+        assert!(!is_launch_window(0, 99, true, true));
+        assert!(!is_launch_window(0, 0, true, true));
+    }
+
+    #[test]
+    fn hidden_or_owned_windows_are_not_evidence() {
+        assert!(!is_launch_window(42, 42, false, true));
+        assert!(!is_launch_window(42, 42, true, false));
+    }
+
     /// Opens the real Calculator from the real list, then the caller closes
-    /// it (opt-in: it shows a window on this computer).
+    /// it (opt-in: it shows a window on this computer). Store activation may
+    /// return no matching process window, so unknown is an honest outcome.
     #[test]
     #[ignore]
-    fn the_real_calculator_opens_with_evidence() {
+    fn the_real_calculator_opens_or_reports_unverified() {
         let list = apps::catalog();
         let app = apps::find(&list, "calculatrice").expect("Calculator in the Start list");
         let started = Instant::now();
         let receipt = open("act-0000000000000001", &app.target);
         println!("{} → {:?} in {} ms", app.label, receipt, started.elapsed().as_millis());
-        assert_eq!(receipt.outcome(), Outcome::Succeeded);
+        assert!(matches!(receipt.outcome(), Outcome::Succeeded | Outcome::Unknown));
     }
 
     #[test]

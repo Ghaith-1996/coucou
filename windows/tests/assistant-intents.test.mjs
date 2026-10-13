@@ -213,3 +213,32 @@ test("open an app: the Mac's VoiceQueryTests cases, then Whisper's", () => {
   assert.equal(appToOpen("please open the chat and show me the latest pull request"), null);
   assert.equal(appToOpen("Ajoute GitHub"), null);
 });
+
+test("a multi-add must fit every distinct new pill or reject the whole plan", () => {
+  const current = declared("integration_claude", "integration_vercel", "integration_notion", "integration_stripe");
+  const before = structuredClone(current);
+  assert.deepEqual(plan("Add GitHub and Resend.", current), {
+    ok: false, reason: "Already 4 pills: remove one first.",
+  });
+  assert.deepEqual(current, before);
+});
+
+test("multi-add capacity counts only distinct pills absent from main and secondary slots", () => {
+  const current = declared("integration_claude", "integration_vercel", "integration_notion", "integration_stripe");
+  const intents = [{ kind: "pillAddMultiple", ids: ["integration_claude", "integration_vercel", "integration_github", "integration_github"] }];
+  const before = structuredClone(intents);
+  assert.deepEqual(planPills(intents, current, "windows"), {
+    ok: true, label: "Add GitHub", next: declared("integration_claude", ...current.activeIntegrations, "integration_github"),
+  });
+  assert.deepEqual(intents, before);
+});
+
+test("a later oversized multi-add cannot leave an earlier partial plan", () => {
+  const current = declared("integration_claude", "integration_vercel", "integration_notion");
+  const before = structuredClone(current);
+  assert.deepEqual(planPills([
+    { kind: "pillAdd", id: "integration_stripe" },
+    { kind: "pillAddMultiple", ids: ["integration_github", "integration_resend"] },
+  ], current, "windows"), { ok: false, reason: "Already 4 pills: remove one first." });
+  assert.deepEqual(current, before);
+});

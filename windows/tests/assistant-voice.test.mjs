@@ -3,7 +3,7 @@
 // microphone only stays open while its card is on screen), stale events, and
 // the chat draft with its receipt. Rust is the mock in tests/tauri.mjs.
 
-import { beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 import { State } from "../src/core/state.ts";
@@ -56,6 +56,9 @@ const host = {
 };
 
 let registered = false;
+
+// Retire the final preview too, so its real two-minute timer cannot hold Node open.
+afterEach(resetVoiceForTests);
 
 beforeEach(() => {
   resetVoiceForTests();
@@ -411,6 +414,64 @@ for (const change of ["close", "hide", "navigate", "navigate-back"]) {
   });
 }
 
+
+test("a blocked preview becomes actionable when Settings frees a slot", async () => {
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion", "integration_resend", "integration_n8n"];
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  assert.equal(Voice.command.ok, false);
+  let rendered;
+  const unsubscribe = State.subscribe(() => { rendered = Voice.command; });
+  try {
+    State.settings.activeIntegrations.pop();
+    State.notify();
+    assert.equal(rendered.ok, true);
+    assert.equal(rendered.label, "Add GitHub");
+    assert.deepEqual(rendered.next.activeIntegrations, ["integration_vercel", "integration_notion", "integration_resend", "integration_github"]);
+    assert.deepEqual(sent("assistant_voice_act"), [], "refreshing a preview never executes it");
+    const next = rendered.next;
+    answers.set("assistant_voice_act", "act-77");
+    await voiceDo();
+    assert.deepEqual(host.pillsApplied, [next]);
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("a preview tracks valid, blocked and valid settings without extending its expiry", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  assert.equal(Voice.command.ok, true);
+  t.mock.timers.tick(60000);
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion", "integration_resend", "integration_n8n"];
+  State.notify();
+  assert.equal(Voice.command.ok, false);
+  State.settings.activeIntegrations = ["integration_github"];
+  State.notify();
+  assert.equal(Voice.command.ok, false);
+  assert.match(Voice.command.reason, /already/);
+  State.settings.activeIntegrations = [];
+  State.notify();
+  assert.equal(Voice.command.ok, true);
+  t.mock.timers.tick(60000);
+  assert.equal(Voice.event, null);
+  assert.equal(Voice.command, null);
+  assert.deepEqual(sent("assistant_voice_act"), []);
+});
+
+test("settings changes cannot turn a simulated or cancelled preview into a command", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub.", simulated: true }));
+  State.settings.activeIntegrations = [];
+  State.notify();
+  assert.equal(Voice.command, null);
+  voiceCancel();
+  State.settings.mainPill = "agent_cursor";
+  State.notify();
+  assert.equal(Voice.command, null);
+  assert.deepEqual(sent("assistant_voice_act"), []);
+});
 
 test("a pill command is replanned against settings changed since preview", async () => {
   await startListening();

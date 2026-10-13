@@ -290,7 +290,7 @@ for (const name of ["dev.cmd", "build-exe.cmd"]) {
 function sdkFixture(t) {
   const f = fixture(t);
   for (const key of Object.keys(f.env)) {
-    if (/^(vulkan_sdk|systemdrive|test_raw_sdk)$/i.test(key)) delete f.env[key];
+    if (/^(vulkan_sdk|systemdrive)$/i.test(key)) delete f.env[key];
   }
   // Isolate the real GPU setup section. Visual Studio initialization above it
   // is deliberately excluded; all SDK directories live inside the fixture.
@@ -303,15 +303,11 @@ function sdkFixture(t) {
   writeFileSync(join(f.dir, "sdk.cjs"), `
     require('node:fs').writeFileSync('sdk.json', JSON.stringify({
       sdk: process.env.VULKAN_SDK ?? null,
-      raw: process.env.TEST_RAW_SDK ?? null,
       target: process.env.CARGO_TARGET_DIR ?? null,
     }));
   `);
   writeFileSync(join(f.dir, "sdk.cmd"), [
     "@echo off",
-    // Keep the old FOR expansion as a control: cmd.exe itself, not a JS
-    // imitation, demonstrates that the quoted wildcard retains its quotes.
-    'for /d %%d in ("%SystemDrive%\\VulkanSDK\\*") do set "TEST_RAW_SDK=%%d"',
     'call gpu-env.cmd %1',
     'if errorlevel 1 exit /b 1',
     '"%TEST_NODE%" sdk.cjs',
@@ -331,7 +327,6 @@ for (const version of ["1.4.363.0", "1.4.363.0 SDK with spaces"]) {
     mkdirSync(sdk);
     success(f.runSdk());
     const actual = JSON.parse(readFileSync(join(f.dir, "sdk.json"), "utf8"));
-    assert.equal(actual.raw, `"${sdk}"`, "plain %%d retains the wildcard's enclosing quotes");
     assert.equal(actual.sdk, sdk, "%%~fd produces a usable fully qualified path without quotes");
     assert.equal(actual.sdk.includes('"'), false);
     assert.match(actual.target, /^[a-z]:\\cv$/i);

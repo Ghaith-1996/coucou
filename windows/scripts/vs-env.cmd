@@ -31,9 +31,8 @@ if exist "%USERPROFILE%\.cargo\bin" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 
 if /i not "%~1"=="gpu" exit /b 0
 rem A terminal opened before the SDK was installed doesn't have VULKAN_SDK:
-rem take the newest one in its default folder. FOR keeps the wildcard quotes;
-rem %%~fd removes them and supplies the full SDK path (including spaces).
-if not defined VULKAN_SDK for /d %%d in ("%SystemDrive%\VulkanSDK\*") do set "VULKAN_SDK=%%~fd"
+rem take the newest one in its default folder.
+if not defined VULKAN_SDK for /d %%d in ("%SystemDrive%\VulkanSDK\*") do set "VULKAN_SDK=%%d"
 if not defined VULKAN_SDK (
   echo The Vulkan SDK was not found: winget install KhronosGroup.VulkanSDK
   exit /b 1

@@ -38,10 +38,6 @@ test("the app build and runtime retain Tauri's mapped resource contract", () => 
   assert.ok(hookSource.indexOf("parent.join(platform::HOOK_EXE)") < hookSource.indexOf('parent.join("../release")'));
 });
 
-test("Vulkan SDK discovery strips the quotes from directory FOR variables", () => {
-  assert.match(script("vs-env.cmd"), /for \/d %%d in \("%SystemDrive%\\VulkanSDK\\\*"\) do set "VULKAN_SDK=%%~fd"/);
-});
-
 test("GPU wrappers retain their short app target and Vulkan feature", () => {
   assert.match(script("vs-env.cmd"), /set "CARGO_TARGET_DIR=%~d0\\cv"/);
   for (const name of ["dev.cmd", "build-exe.cmd"]) {
@@ -309,8 +305,8 @@ function sdkFixture(t) {
   `);
   writeFileSync(join(f.dir, "sdk.cmd"), [
     "@echo off",
-    // Keep the old FOR expansion as a control: cmd.exe itself, not a JS
-    // imitation, demonstrates that the quoted wildcard retains its quotes.
+    // Compare native FOR enumeration with the complete GPU setup section.
+    // Both must return unquoted SDK paths, including directory spaces.
     'for /d %%d in ("%SystemDrive%\\VulkanSDK\\*") do set "TEST_RAW_SDK=%%d"',
     'call gpu-env.cmd %1',
     'if errorlevel 1 exit /b 1',
@@ -325,14 +321,14 @@ function sdkFixture(t) {
 }
 
 for (const version of ["1.4.363.0", "1.4.363.0 SDK with spaces"]) {
-  test(`cmd.exe discovers an unquoted Vulkan SDK path for ${version}`, { skip: !windows }, (t) => {
+  test(`cmd.exe discovers a full Vulkan SDK path for ${version}`, { skip: !windows }, (t) => {
     const f = sdkFixture(t);
     const sdk = join(f.dir, "VulkanSDK", version);
     mkdirSync(sdk);
     success(f.runSdk());
     const actual = JSON.parse(readFileSync(join(f.dir, "sdk.json"), "utf8"));
-    assert.equal(actual.raw, `"${sdk}"`, "plain %%d retains the wildcard's enclosing quotes");
-    assert.equal(actual.sdk, sdk, "%%~fd produces a usable fully qualified path without quotes");
+    assert.equal(actual.raw, sdk, "wildcard matches are already unquoted with plain %%d");
+    assert.equal(actual.sdk, sdk, "SDK discovery returns the full directory path without quotes");
     assert.equal(actual.sdk.includes('"'), false);
     assert.match(actual.target, /^[a-z]:\\cv$/i);
   });

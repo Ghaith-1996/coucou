@@ -1,4 +1,4 @@
-// The desktop assistant's contracts, version 1: what an assistant action is,
+// The desktop assistant's contracts, version 2: what an assistant action is,
 // how it is decided, what comes back once it ran, and the voice states.
 //
 // These are deliberately a domain of their own. An agent's permission request
@@ -15,8 +15,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Bumped on any change to a shape below that is already available.
-pub const CONTRACT_VERSION: u32 = 1;
+/// Bumped when the closed action registry or an available shape changes.
+/// Version 2 adds the `pill-set` kind and its arguments to the frozen v1 registry.
+pub const CONTRACT_VERSION: u32 = 2;
 
 /// The event the island listens to for voice capture.
 pub const VOICE_EVENT: &str = "assistant-voice";

@@ -20,7 +20,7 @@ import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
 import { State } from "../core/state";
-import { VOICE_EVENT, parseVoiceEvent, type VoiceEvent } from "./contracts";
+import { VOICE_EVENT, parseVoiceEvent, succeededReceipt, type VoiceEvent } from "./contracts";
 import { parseTranscript } from "./intents";
 import { planPills, sameList, type Declared, type PillPlan } from "./pill-command";
 
@@ -161,7 +161,7 @@ export async function voiceUse() {
     const there = host.showChatDraft(draft.text);
     void Bridge.actionReceipt(
       there
-        ? { actionId: draft.actionId, outcome: "succeeded", evidenceRef: "chat-field:draft-set" }
+        ? succeededReceipt(draft.actionId, "chat-field:draft-set")
         : { actionId: draft.actionId, outcome: "failed", errorCode: "unverified" },
     );
   } catch {
@@ -206,7 +206,7 @@ export async function voiceDo() {
     Sound.play(shown ? "approve" : "error");
     void Bridge.actionReceipt(
       shown
-        ? { actionId, outcome: "succeeded", evidenceRef: "settings:pills-shown" }
+        ? succeededReceipt(actionId, "settings:pills-shown")
         : { actionId, outcome: "failed", errorCode: "unverified" },
     );
   } catch {

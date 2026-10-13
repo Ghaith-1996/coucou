@@ -27,9 +27,10 @@ pub fn allowed(url: &Url, dev_origin: Option<&Url>) -> bool {
     }
     let host = url.host_str().unwrap_or_default();
     match url.scheme() {
-        "tauri" => host == "localhost",
+        "tauri" => host == "localhost" && url.port().is_none(),
         "http" | "https" => {
-            host == "tauri.localhost"
+            matches!(url.origin().ascii_serialization().as_str(),
+                "http://tauri.localhost" | "https://tauri.localhost")
                 || dev_origin.is_some_and(|dev| dev.origin() == url.origin())
         }
         _ => false,
@@ -73,6 +74,8 @@ mod tests {
     fn the_bundled_pages_are_allowed() {
         for page in [
             "http://tauri.localhost/index.html",
+            "http://tauri.localhost:80/index.html",
+            "https://tauri.localhost:443/settings.html",
             "https://tauri.localhost/settings.html",
             "http://tauri.localhost/mochi.html#x",
             "tauri://localhost/index.html",
@@ -88,6 +91,11 @@ mod tests {
             "https://example.com/",
             "http://localhost:1420/",
             "http://tauri.localhost.evil.com/",
+            "http://tauri.localhost:1420/",
+            "https://tauri.localhost:8443/",
+            "http://tauri.localhost:443/",
+            "https://tauri.localhost:80/",
+            "tauri://localhost:1420/",
             "http://evil.com/?tauri.localhost",
             "https://user:pass@example.com/tauri.localhost",
             "file:///C:/Windows/System32/calc.exe",

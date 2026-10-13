@@ -18,11 +18,11 @@
 import { Bridge, onEvent } from "../core/bridge";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
-import { HOST_OS, availablePills } from "../core/pills";
+import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
 import { State } from "../core/state";
 import { VOICE_EVENT, parseVoiceEvent, type VoiceEvent } from "./contracts";
 import { parseTranscript } from "./intents";
-import { planPills, type Declared, type PillPlan } from "./pill-command";
+import { planPills, sameList, type Declared, type PillPlan } from "./pill-command";
 
 /** What voice needs from the island. */
 export interface VoiceHost {
@@ -39,14 +39,29 @@ export interface VoiceHost {
 
 /** How long an error stays on the card before it goes by itself. */
 const ERROR_SHOWN_MS = 4000;
+/** Matches Rust's PREVIEW_TTL: a transcript stops waiting after two minutes. */
+const PREVIEW_TTL_MS = 120_000;
 
 let host: VoiceHost | null = null;
 /** True once the card was seen on screen for the current capture. */
 let shown = false;
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
+let previewTimer: ReturnType<typeof setTimeout> | null = null;
+/** Survives Rust's normal idle-before-reply event, but not a new capture or Cancel. */
+let generation = 0;
 /** The card pinned the island; `userPinned` is what it was before. */
 let pinnedByVoice = false;
 let userPinned = false;
+/** Only events belonging to a capture this page started may change its card. */
+let captureId: string | null = null;
+/** Rust may emit before the command reply identifies the new capture. */
+let starting: {
+  events: Map<string, VoiceEvent>;
+  cancelled: boolean;
+  stop: boolean;
+  view: typeof State.view;
+  mode: typeof State.mode;
+} | null = null;
 
 export const Voice = {
   /** The latest event of the current capture; null when there is none. */
@@ -70,10 +85,15 @@ export async function voiceShortcut() {
   if (!host) return;
   const card = waitingCard();
   if (card) {
+    if (starting) starting.cancelled = true;
     // An agent is waiting on the user: that card, not the microphone.
     host.alert(card);
     host.emote("annoyed");
     Sound.play("error");
+    return;
+  }
+  if (starting) {
+    starting.stop = true;
     return;
   }
   const current = Voice.event;
@@ -82,10 +102,31 @@ export async function voiceShortcut() {
     return;
   }
   if (current?.state === "processing") return;
-  const id = await Bridge.voiceToggle();
+  generation++;
+  end(false);
+  const pending = {
+    events: new Map<string, VoiceEvent>(), cancelled: false, stop: false,
+    view: State.view, mode: State.mode,
+  };
+  starting = pending;
+  let id: string | null;
+  try {
+    id = await Bridge.voiceToggle();
+  } finally {
+    starting = null;
+  }
   if (!id) return;
-  // The card and its indicator are up before the first level arrives.
-  accept({ v: 1, captureId: id, state: "listening", level: 0, elapsedMs: 0 });
+  // A waiting agent or Cancel may have taken priority while Rust was opening
+  // the microphone. Retire this capture without ever showing its card.
+  if (pending.cancelled || waitingCard()) {
+    void Bridge.voiceCancel(id);
+    return;
+  }
+  captureId = id;
+  // Keep the newest real state, especially an immediate error or idle. Only
+  // synthesize listening when Rust has not sent an event for this capture.
+  accept(pending.events.get(id) ?? { v: 1, captureId: id, state: "listening", level: 0, elapsedMs: 0 });
+  if (pending.stop && Voice.event?.state === "listening") void Bridge.voiceStop(id);
 }
 
 export function voiceStop() {
@@ -93,6 +134,8 @@ export function voiceStop() {
 }
 
 export function voiceCancel() {
+  generation++;
+  if (starting) starting.cancelled = true;
   const current = Voice.event;
   if (!current) return;
   if (current.state === "error") {
@@ -100,14 +143,20 @@ export function voiceCancel() {
     return;
   }
   void Bridge.voiceCancel(current.captureId);
+  end(!waitingCard());
 }
 
 /** Use: Rust's policy turns the transcript into a chat draft; the chat opens with it. */
 export async function voiceUse() {
   const current = Voice.event;
   if (current?.state !== "preview" || !host) return;
+  const requestGeneration = generation;
   try {
     const draft = await Bridge.voiceUse(current.captureId);
+    if (requestGeneration !== generation) {
+      void Bridge.actionReceipt({ actionId: draft.actionId, outcome: "cancelled", errorCode: "cancelled" });
+      return;
+    }
     end(false);
     const there = host.showChatDraft(draft.text);
     void Bridge.actionReceipt(
@@ -116,6 +165,7 @@ export async function voiceUse() {
         : { actionId: draft.actionId, outcome: "failed", errorCode: "unverified" },
     );
   } catch {
+    if (requestGeneration !== generation) return;
     // Expired or refused: nothing was done.
     end();
     Sound.play("error");
@@ -125,10 +175,31 @@ export async function voiceUse() {
 /** Do it: the pill command on the card becomes a `pill-set` Rust decides. */
 export async function voiceDo() {
   const current = Voice.event;
-  const command = Voice.command;
-  if (current?.state !== "preview" || !command?.ok || !host) return;
+  if (current?.state !== "preview" || current.simulated || !host) return;
+  // The preview may have been open while Settings changed. Apply the spoken
+  // intent to today's declaration, never the whole set saved in the preview.
+  const before = sanitizeDeclared(State.settings, HOST_OS);
+  const command = planPills(parseTranscript(current.transcript ?? "", availablePills(HOST_OS)), before, HOST_OS);
+  Voice.command = command;
+  if (!command?.ok) {
+    State.notify();
+    return;
+  }
+  const requestGeneration = generation;
   try {
     const actionId = await Bridge.voiceAct(current.captureId, "pill-set", command.next);
+    if (generation !== requestGeneration) {
+      void Bridge.actionReceipt({ actionId, outcome: "cancelled", errorCode: "cancelled" });
+      return;
+    }
+    const now = sanitizeDeclared(State.settings, HOST_OS);
+    if (now.mainPill !== before.mainPill || !sameList(now.activeIntegrations, before.activeIntegrations)) {
+      // Rust approved these exact arguments. A newer declaration means they
+      // are stale again; leave that change intact and report no effect.
+      end(false);
+      void Bridge.actionReceipt({ actionId, outcome: "cancelled", errorCode: "cancelled" });
+      return;
+    }
     end(false);
     const shown = host.applyPills(command.next);
     host.alert("overview");
@@ -139,6 +210,7 @@ export async function voiceDo() {
         : { actionId, outcome: "failed", errorCode: "unverified" },
     );
   } catch {
+    if (generation !== requestGeneration) return;
     end();
     Sound.play("error");
   }
@@ -147,7 +219,10 @@ export async function voiceDo() {
 /** Forgets the capture; `close` folds the card away. */
 function end(close = true) {
   if (errorTimer) clearTimeout(errorTimer);
+  if (previewTimer) clearTimeout(previewTimer);
   errorTimer = null;
+  previewTimer = null;
+  captureId = null;
   Voice.event = null;
   Voice.command = null;
   shown = false;
@@ -164,10 +239,12 @@ function unpin() {
 }
 
 function accept(event: VoiceEvent) {
+  if (starting) {
+    starting.events.set(event.captureId, event);
+    return;
+  }
+  if (event.captureId !== captureId) return;
   const current = Voice.event;
-  // Another capture's late event: ignored. A new capture starts listening.
-  if (current && current.captureId !== event.captureId && event.state !== "listening") return;
-  if (!current && event.state !== "listening") return;
 
   if (event.state === "idle") {
     end();
@@ -186,12 +263,19 @@ function accept(event: VoiceEvent) {
     }
     host?.takeKeyboard();
   }
+  if (event.state !== "preview" && previewTimer) {
+    clearTimeout(previewTimer);
+    previewTimer = null;
+  }
   if (event.state === "preview" && current?.state !== "preview") {
     Sound.play("finish");
     // Only a real transcript can be a command: a simulated one is a placeholder.
     Voice.command = event.simulated
       ? null
       : planPills(parseTranscript(event.transcript ?? "", availablePills(HOST_OS)), State.settings, HOST_OS);
+    previewTimer = setTimeout(() => {
+      if (Voice.event?.captureId === event.captureId && Voice.event.state === "preview") voiceCancel();
+    }, PREVIEW_TTL_MS);
   }
   if (event.state === "error") {
     Sound.play("error");
@@ -207,6 +291,15 @@ function accept(event: VoiceEvent) {
 
 /** The two island rules, checked on every state change. */
 function guard() {
+  if (starting && (State.view !== starting.view || State.mode !== starting.mode)) {
+    starting.cancelled = true;
+  }
+  if (waitingCard()) {
+    generation++;
+    if (starting) starting.cancelled = true;
+    if (Voice.active) voiceCancel();
+    return;
+  }
   const current = Voice.event;
   if (!current || !Voice.active) return;
   const onScreen = State.view === "voice" && State.mode === "expanded";
@@ -215,9 +308,7 @@ function guard() {
     return;
   }
   // Until the card has been seen once, the island may still be opening.
-  if (shown || waitingCard()) {
-    void Bridge.voiceCancel(current.captureId);
-  }
+  if (shown) voiceCancel();
 }
 
 export function registerVoice(islandHost: VoiceHost) {
@@ -231,13 +322,18 @@ export function registerVoice(islandHost: VoiceHost) {
 
 /** Tests only: back to no capture and no island. */
 export function resetVoiceForTests() {
+  generation++;
   if (errorTimer) clearTimeout(errorTimer);
+  if (previewTimer) clearTimeout(previewTimer);
   errorTimer = null;
+  previewTimer = null;
+  captureId = null;
   Voice.event = null;
   Voice.command = null;
   shown = false;
   pinnedByVoice = false;
   userPinned = false;
+  starting = null;
   host = null;
 }
 

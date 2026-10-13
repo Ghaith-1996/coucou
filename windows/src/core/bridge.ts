@@ -435,6 +435,8 @@ export const Bridge = {
 
 /** The speech models, as assistant/voice/model.rs reports them. */
 export interface VoiceModelStatus {
+  /** Both microphone capture and local transcription exist in this build. */
+  supported: boolean;
   models: VoiceModel[];
   /** The picked one (used once it is installed). */
   selected: string;

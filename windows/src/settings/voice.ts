@@ -22,7 +22,8 @@ function size(bytes: number): string {
   return bytes >= 1_000_000_000 ? `${(bytes / 1_000_000_000).toFixed(2)} GB` : `${Math.round(bytes / 1_000_000)} MB`;
 }
 
-export function voiceSection(initial: VoiceModelStatus | null): HTMLElement {
+export function voiceSection(initial: VoiceModelStatus | null): HTMLElement | null {
+  if (!initial?.supported) return null;
   let status = initial;
   let error: string | null = null;
   const head = h("h2");

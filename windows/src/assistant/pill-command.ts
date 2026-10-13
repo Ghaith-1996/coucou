@@ -44,7 +44,11 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
     return true;
   };
 
-  for (const intent of intents) {
+  // Match the Mac's multi-action flow: free requested slots before checking
+  // additions against capacity, while preserving order within each group.
+  const removes = (intent: Intent) => intent.kind === "pillRemove" || intent.kind === "pillRemoveMultiple";
+  const ordered = [...intents.filter(removes), ...intents.filter((intent) => !removes(intent))];
+  for (const intent of ordered) {
     switch (intent.kind) {
       case "pillAdd": {
         if (intent.id === main || active.includes(intent.id)) return { ok: false, reason: t("{name} is already in the island.", { name: name(intent.id) }) };
@@ -82,16 +86,24 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
         break;
       }
       case "pillReplace": {
-        active = active.filter((x) => x !== intent.old);
-        if (intent.new !== main && !active.includes(intent.new)) {
-          if (active.length >= MAX_DECLARED) return { ok: false, reason: full() };
-          active.push(intent.new);
+        if (intent.old === main) {
+          if (!mains.has(intent.new)) return { ok: false, reason: t("{name} can't be the main pill.", { name: name(intent.new) }) };
+          main = intent.new;
+          active = active.filter((x) => x !== main);
+        } else {
+          active = active.filter((x) => x !== intent.old);
+          if (intent.new !== main && !active.includes(intent.new)) {
+            if (active.length >= MAX_DECLARED) return { ok: false, reason: full() };
+            active.push(intent.new);
+          }
         }
         labels.push(t("Replace {old} with {new}", { old: name(intent.old), new: name(intent.new) }));
         break;
       }
       case "pillOnly": {
-        active = intent.ids.filter((x) => x !== main).slice(0, MAX_DECLARED);
+        const kept = [...new Set(intent.ids.filter((x) => x !== main))];
+        if (kept.length > MAX_DECLARED) return { ok: false, reason: full() };
+        active = kept;
         labels.push(t("Keep only {names}", { names: names(active) }));
         break;
       }

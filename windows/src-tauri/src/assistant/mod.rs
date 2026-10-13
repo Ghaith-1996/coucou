@@ -60,12 +60,14 @@ mod tests {
     }
 
     #[test]
-    fn the_valid_voice_events_round_trip() {
+    fn voice_events_are_accepted_or_rejected_as_the_fixture_says() {
         for case in fixture()["voiceEvents"].as_array().unwrap() {
+            let parsed = serde_json::from_value::<VoiceEvent>(case["event"].clone());
             if case["valid"] != true {
+                assert!(parsed.is_err(), "{}", case["name"]);
                 continue;
             }
-            let event: VoiceEvent = serde_json::from_value(case["event"].clone()).unwrap();
+            let event = parsed.unwrap();
             assert_eq!(serde_json::to_value(&event).unwrap(), case["event"], "{}", case["name"]);
         }
     }
@@ -164,6 +166,30 @@ mod tests {
             serde_json::to_value(ActionReceipt::unknown("act-1")).unwrap(),
             json!({ "actionId": "act-1", "outcome": "unknown", "errorCode": "unverified" })
         );
+    }
+
+    #[test]
+    fn deserialized_success_needs_nonblank_evidence() {
+        for evidence in [None, Some(Value::Null), Some(json!("")), Some(json!("  \n  "))] {
+            let mut receipt = json!({ "actionId": "act-1", "outcome": "succeeded" });
+            if let Some(value) = evidence {
+                receipt["evidenceRef"] = value;
+            }
+            assert!(serde_json::from_value::<ActionReceipt>(receipt.clone()).is_err(), "{receipt}");
+        }
+    }
+
+    #[test]
+    fn valid_receipts_round_trip() {
+        for receipt in [
+            ActionReceipt::succeeded("act-1", "chat-field:draft-set").unwrap(),
+            ActionReceipt::failed("act-1", ErrorCode::Failed),
+            ActionReceipt::cancelled("act-1"),
+            ActionReceipt::unknown("act-1"),
+        ] {
+            let json = serde_json::to_value(&receipt).unwrap();
+            assert_eq!(serde_json::from_value::<ActionReceipt>(json).unwrap(), receipt);
+        }
     }
 
     #[test]

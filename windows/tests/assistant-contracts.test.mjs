@@ -6,13 +6,55 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import {
-  ACTION_KINDS, CONTRACT_VERSION, VOICE_ERRORS, VOICE_EVENT, VOICE_STATES, parseVoiceEvent,
+  ACTION_KINDS, CONTRACT_VERSION, VOICE_ERRORS, VOICE_EVENT, VOICE_STATES, parseVoiceEvent, succeededReceipt,
 } from "../src/assistant/contracts.ts";
 
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/assistant-contracts.json", import.meta.url), "utf8"),
 );
+
+test("successful receipts preserve the camelCase wire format and evidence", () => {
+  // U+FEFF is not Unicode White_Space: Rust accepts it, unlike JS trim().
+  for (const evidence of ["chat-field:draft-set", " settings:pills-shown \n", "\uFEFF"]) {
+    const receipt = succeededReceipt("act-1", evidence);
+    assert.deepEqual(JSON.parse(JSON.stringify(receipt)), {
+      actionId: "act-1", outcome: "succeeded", evidenceRef: evidence,
+    });
+  }
+});
+
+test("successful receipts reject missing, blank and non-string evidence at runtime", () => {
+  for (const evidence of [undefined, null, "", " \t\r\n", "\u0085\u2003", 0, {}, []]) {
+    assert.throws(
+      () => succeededReceipt("act-1", evidence),
+      { name: "TypeError", message: "a successful receipt requires nonblank evidenceRef" },
+    );
+  }
+  assert.throws(
+    () => succeededReceipt("act-1"),
+    { name: "TypeError", message: "a successful receipt requires nonblank evidenceRef" },
+  );
+});
+
+test("receipt types require validated evidence only for successful outcomes", () => {
+  const program = ts.createProgram(
+    [fileURLToPath(new URL("./assistant-contracts.types.ts", import.meta.url))],
+    {
+      strict: true, noEmit: true, skipLibCheck: true,
+      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+    },
+  );
+  const diagnostics = ts.getPreEmitDiagnostics(program);
+  assert.equal(diagnostics.length, 0, ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+    getCanonicalFileName: (path) => path,
+    getCurrentDirectory: () => process.cwd(),
+    getNewLine: () => "\n",
+  }));
+});
 
 test("the registry, states and version match the shared fixture", () => {
   assert.equal(CONTRACT_VERSION, fixture.version);

@@ -759,6 +759,7 @@ pub fn run() {
             assistant::app::assistant_voice_stop,
             assistant::app::assistant_voice_cancel,
             assistant::app::assistant_voice_use,
+            assistant::app::assistant_voice_act,
             assistant::app::assistant_action_receipt,
             assistant::app::voice_model_status,
             assistant::app::voice_model_download,

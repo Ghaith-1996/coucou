@@ -1,0 +1,1618 @@
+[
+ {
+  "label": "pause",
+  "text": "pause",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "stop",
+  "text": "stop",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "stoppe",
+  "text": "stoppe",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "mets en pause",
+  "text": "mets en pause",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "arrête la musique",
+  "text": "arrête la musique",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "PAUSE",
+  "text": "PAUSE",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "coupe la musique",
+  "text": "coupe la musique",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "arrête",
+  "text": "arrête",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "lance la musique",
+  "text": "lance la musique",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "reprends",
+  "text": "reprends",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "reprends la musique",
+  "text": "reprends la musique",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "play music",
+  "text": "play music",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "resume music",
+  "text": "resume music",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "play some music",
+  "text": "play some music",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "balance de la musique",
+  "text": "balance de la musique",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "mets de la musique",
+  "text": "mets de la musique",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "mets du son",
+  "text": "mets du son",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "lance Apple Music",
+  "text": "lance Apple Music",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": "appleMusic"
+  }
+ },
+ {
+  "label": "lance Spotify",
+  "text": "lance Spotify",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": "spotify"
+  }
+ },
+ {
+  "label": "mets de la musique sur Spotify",
+  "text": "mets de la musique sur Spotify",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": "spotify"
+  }
+ },
+ {
+  "label": "suivant",
+  "text": "suivant",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "morceau suivant",
+  "text": "morceau suivant",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "chanson suivante",
+  "text": "chanson suivante",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "next",
+  "text": "next",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "next track",
+  "text": "next track",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "skip",
+  "text": "skip",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "next song",
+  "text": "next song",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "chanson d'après",
+  "text": "chanson d'après",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "passe à la suivante",
+  "text": "passe à la suivante",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "précédent",
+  "text": "précédent",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPrevious"
+  }
+ },
+ {
+  "label": "morceau précédent",
+  "text": "morceau précédent",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPrevious"
+  }
+ },
+ {
+  "label": "previous",
+  "text": "previous",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPrevious"
+  }
+ },
+ {
+  "label": "previous track",
+  "text": "previous track",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPrevious"
+  }
+ },
+ {
+  "label": "back",
+  "text": "back",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPrevious"
+  }
+ },
+ {
+  "label": "remets la chanson d'avant",
+  "text": "remets la chanson d'avant",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPrevious"
+  }
+ },
+ {
+  "label": "reviens en arrière",
+  "text": "reviens en arrière",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPrevious"
+  }
+ },
+ {
+  "label": "monte le son",
+  "text": "monte le son",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeUp"
+  }
+ },
+ {
+  "label": "monte le volume",
+  "text": "monte le volume",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeUp"
+  }
+ },
+ {
+  "label": "plus fort",
+  "text": "plus fort",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeUp"
+  }
+ },
+ {
+  "label": "volume up",
+  "text": "volume up",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeUp"
+  }
+ },
+ {
+  "label": "louder",
+  "text": "louder",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeUp"
+  }
+ },
+ {
+  "label": "monte un peu le volume",
+  "text": "monte un peu le volume",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeUp"
+  }
+ },
+ {
+  "label": "baisse le son",
+  "text": "baisse le son",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeDown"
+  }
+ },
+ {
+  "label": "baisse le volume",
+  "text": "baisse le volume",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeDown"
+  }
+ },
+ {
+  "label": "moins fort",
+  "text": "moins fort",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeDown"
+  }
+ },
+ {
+  "label": "volume down",
+  "text": "volume down",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeDown"
+  }
+ },
+ {
+  "label": "quieter",
+  "text": "quieter",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeDown"
+  }
+ },
+ {
+  "label": "turn down",
+  "text": "turn down",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeDown"
+  }
+ },
+ {
+  "label": "baisse un peu le son",
+  "text": "baisse un peu le son",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeDown"
+  }
+ },
+ {
+  "label": "volume à 50",
+  "text": "volume à 50",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicSetVolume",
+   "percent": 50
+  }
+ },
+ {
+  "label": "set volume 75",
+  "text": "set volume 75",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicSetVolume",
+   "percent": 75
+  }
+ },
+ {
+  "label": "volume 0",
+  "text": "volume 0",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicSetVolume",
+   "percent": 0
+  }
+ },
+ {
+  "label": "volume 100",
+  "text": "volume 100",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicSetVolume",
+   "percent": 100
+  }
+ },
+ {
+  "label": "mets du Daft Punk",
+  "text": "mets du Daft Punk",
+  "pills": true,
+  "type": "search",
+  "want": "daft punk"
+ },
+ {
+  "label": "mets de la jazz",
+  "text": "mets de la jazz",
+  "pills": true,
+  "type": "search",
+  "want": "jazz"
+ },
+ {
+  "label": "joue du rock",
+  "text": "joue du rock",
+  "pills": true,
+  "type": "search",
+  "want": "rock"
+ },
+ {
+  "label": "joue Daft Punk",
+  "text": "joue Daft Punk",
+  "pills": true,
+  "type": "search",
+  "want": "daft punk"
+ },
+ {
+  "label": "play Radiohead",
+  "text": "play Radiohead",
+  "pills": true,
+  "type": "search",
+  "want": "radiohead"
+ },
+ {
+  "label": "lance du Bowie",
+  "text": "lance du Bowie",
+  "pills": true,
+  "type": "search",
+  "want": "bowie"
+ },
+ {
+  "label": "mets les Beatles",
+  "text": "mets les Beatles",
+  "pills": true,
+  "type": "search",
+  "want": "beatles"
+ },
+ {
+  "label": "joue de l'électro",
+  "text": "joue de l'électro",
+  "pills": true,
+  "type": "search",
+  "want": "electro"
+ },
+ {
+  "label": "joue Get Lucky",
+  "text": "joue Get Lucky",
+  "pills": true,
+  "type": "search",
+  "want": "get lucky"
+ },
+ {
+  "label": "mets la playlist Workout",
+  "text": "mets la playlist Workout",
+  "pills": true,
+  "type": "playlist",
+  "want": "workout"
+ },
+ {
+  "label": "joue la playlist Jazz",
+  "text": "joue la playlist Jazz",
+  "pills": true,
+  "type": "playlist",
+  "want": "jazz"
+ },
+ {
+  "label": "lance la playlist Summer",
+  "text": "lance la playlist Summer",
+  "pills": true,
+  "type": "playlist",
+  "want": "summer"
+ },
+ {
+  "label": "play playlist My Favs",
+  "text": "play playlist My Favs",
+  "pills": true,
+  "type": "playlist",
+  "want": "my favs"
+ },
+ {
+  "label": "start playlist Chill",
+  "text": "start playlist Chill",
+  "pills": true,
+  "type": "playlist",
+  "want": "chill"
+ },
+ {
+  "label": "mets la playlist Focus",
+  "text": "mets la playlist Focus",
+  "pills": true,
+  "type": "playlist",
+  "want": "focus"
+ },
+ {
+  "label": "mets ma playlist Focus",
+  "text": "mets ma playlist Focus",
+  "pills": true,
+  "type": "playlist",
+  "want": "focus"
+ },
+ {
+  "label": "lance ma playlist Focus",
+  "text": "lance ma playlist Focus",
+  "pills": true,
+  "type": "playlist",
+  "want": "focus"
+ },
+ {
+  "label": "ajoute GitHub",
+  "text": "ajoute GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "ajoute Vercel",
+  "text": "ajoute Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_vercel"
+  }
+ },
+ {
+  "label": "active Notion",
+  "text": "active Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "add GitHub",
+  "text": "add GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "enable Vercel",
+  "text": "enable Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_vercel"
+  }
+ },
+ {
+  "label": "show Resend",
+  "text": "show Resend",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_resend"
+  }
+ },
+ {
+  "label": "affiche Notion",
+  "text": "affiche Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "ajoute gemini",
+  "text": "ajoute gemini",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "agent_gemini"
+  }
+ },
+ {
+  "label": "ajoute claude",
+  "text": "ajoute claude",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_claude"
+  }
+ },
+ {
+  "label": "mets la pilule Gemini",
+  "text": "mets la pilule Gemini",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "agent_gemini"
+  }
+ },
+ {
+  "label": "mets la pilule Codex",
+  "text": "mets la pilule Codex",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "agent_codex"
+  }
+ },
+ {
+  "label": "ajoute Vercel et Stripe",
+  "text": "ajoute Vercel et Stripe",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAddMultiple",
+   "ids": [
+    "integration_vercel",
+    "integration_stripe"
+   ]
+  }
+ },
+ {
+  "label": "enlève GitHub",
+  "text": "enlève GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "enlève Vercel",
+  "text": "enlève Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_vercel"
+  }
+ },
+ {
+  "label": "désactive Notion",
+  "text": "désactive Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "cache Resend",
+  "text": "cache Resend",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_resend"
+  }
+ },
+ {
+  "label": "remove GitHub",
+  "text": "remove GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "disable Vercel",
+  "text": "disable Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_vercel"
+  }
+ },
+ {
+  "label": "hide Notion",
+  "text": "hide Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "enlève stripe",
+  "text": "enlève stripe",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_stripe"
+  }
+ },
+ {
+  "label": "enlève Stripe et Notion",
+  "text": "enlève Stripe et Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemoveMultiple",
+   "ids": [
+    "integration_stripe",
+    "integration_notion"
+   ]
+  }
+ },
+ {
+  "label": "passe sur Cursor",
+  "text": "passe sur Cursor",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "agent_cursor"
+  }
+ },
+ {
+  "label": "switch to Cursor",
+  "text": "switch to Cursor",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "agent_cursor"
+  }
+ },
+ {
+  "label": "utilise VS Code",
+  "text": "utilise VS Code",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "integration_claude"
+  }
+ },
+ {
+  "label": "passe la pilule principale sur cursor",
+  "text": "passe la pilule principale sur cursor",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "agent_cursor"
+  }
+ },
+ {
+  "label": "mets Cursor en principal",
+  "text": "mets Cursor en principal",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "agent_cursor"
+  }
+ },
+ {
+  "label": "change la pilule principale pour Codex",
+  "text": "change la pilule principale pour Codex",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "agent_codex"
+  }
+ },
+ {
+  "label": "la pilule principale c'est Cursor",
+  "text": "la pilule principale c'est Cursor",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "agent_cursor"
+  }
+ },
+ {
+  "label": "Cursor comme pilule principale",
+  "text": "Cursor comme pilule principale",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "agent_cursor"
+  }
+ },
+ {
+  "label": "remplace n8n par github",
+  "text": "remplace n8n par github",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillReplace",
+   "old": "integration_n8n",
+   "new": "integration_github"
+  }
+ },
+ {
+  "label": "garde seulement GitHub et Vercel",
+  "text": "garde seulement GitHub et Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillOnly",
+   "ids": [
+    "integration_github",
+    "integration_vercel"
+   ]
+  }
+ },
+ {
+  "label": "unknown command xyz",
+  "text": "unknown command xyz",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "unknown"
+  }
+ },
+ {
+  "label": "empty",
+  "text": "",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "unknown"
+  }
+ },
+ {
+  "label": "coucou seul",
+  "text": "coucou",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "unknown"
+  }
+ },
+ {
+  "label": "utilise ton cerveau",
+  "text": "utilise ton cerveau",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "unknown"
+  }
+ },
+ {
+  "label": "show me",
+  "text": "show me",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "unknown"
+  }
+ },
+ {
+  "label": "MONTE LE SON caps",
+  "text": "MONTE LE SON",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeUp"
+  }
+ },
+ {
+  "label": "mònte lê sôn diacritics",
+  "text": "mònte lê sôn",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeUp"
+  }
+ },
+ {
+  "label": "next trailing punct",
+  "text": "next!",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicNext"
+  }
+ },
+ {
+  "label": "tu peux mettre de la musique",
+  "text": "tu peux mettre de la musique",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "est-ce que tu peux enlever Vercel",
+  "text": "est-ce que tu peux enlever Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_vercel"
+  }
+ },
+ {
+  "label": "peux-tu ajouter GitHub",
+  "text": "peux-tu ajouter GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "could you play some music",
+  "text": "could you play some music",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "tu pourrais baisser le son",
+  "text": "tu pourrais baisser le son",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicVolumeDown"
+  }
+ },
+ {
+  "label": "mets le truc Gemini",
+  "text": "mets le truc Gemini",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "agent_gemini"
+  }
+ },
+ {
+  "label": "ajoute la chose GitHub",
+  "text": "ajoute la chose GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "enlève le machin Vercel",
+  "text": "enlève le machin Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_vercel"
+  }
+ },
+ {
+  "label": "mets le bidule Stripe",
+  "text": "mets le bidule Stripe",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_stripe"
+  }
+ },
+ {
+  "label": "ajoute la pile GitHub",
+  "text": "ajoute la pile GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "ajoute aussi Stripe",
+  "text": "ajoute aussi Stripe",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_stripe"
+  }
+ },
+ {
+  "label": "enlève la pile Vercel",
+  "text": "enlève la pile Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_vercel"
+  }
+ },
+ {
+  "label": "je veux GitHub",
+  "text": "je veux GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "il me faut Notion",
+  "text": "il me faut Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "vire GitHub",
+  "text": "vire GitHub",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_github"
+  }
+ },
+ {
+  "label": "dégage Vercel",
+  "text": "dégage Vercel",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_vercel"
+  }
+ },
+ {
+  "label": "enlève-moi Notion",
+  "text": "enlève-moi Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "plus besoin de Stripe",
+  "text": "plus besoin de Stripe",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_stripe"
+  }
+ },
+ {
+  "label": "mets le truc Gemini et enlève GitHub",
+  "text": "mets le truc Gemini et enlève GitHub",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillAdd",
+    "id": "agent_gemini"
+   },
+   {
+    "kind": "pillRemove",
+    "id": "integration_github"
+   }
+  ]
+ },
+ {
+  "label": "ajoute Stripe puis enlève Vercel",
+  "text": "ajoute Stripe puis enlève Vercel",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillAdd",
+    "id": "integration_stripe"
+   },
+   {
+    "kind": "pillRemove",
+    "id": "integration_vercel"
+   }
+  ]
+ },
+ {
+  "label": "add GitHub then remove Vercel",
+  "text": "add GitHub then remove Vercel",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillAdd",
+    "id": "integration_github"
+   },
+   {
+    "kind": "pillRemove",
+    "id": "integration_vercel"
+   }
+  ]
+ },
+ {
+  "label": "ajoute GitHub, enlève Vercel",
+  "text": "ajoute GitHub, enlève Vercel",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillAdd",
+    "id": "integration_github"
+   },
+   {
+    "kind": "pillRemove",
+    "id": "integration_vercel"
+   }
+  ]
+ },
+ {
+  "label": "ajoute Stripe enlève Vercel",
+  "text": "ajoute Stripe enlève Vercel",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillAdd",
+    "id": "integration_stripe"
+   },
+   {
+    "kind": "pillRemove",
+    "id": "integration_vercel"
+   }
+  ]
+ },
+ {
+  "label": "enlève GitHub mets Notion",
+  "text": "enlève GitHub mets Notion",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillRemove",
+    "id": "integration_github"
+   },
+   {
+    "kind": "pillAdd",
+    "id": "integration_notion"
+   }
+  ]
+ },
+ {
+  "label": "tu peux enlever GitHub et ajouter Notion",
+  "text": "tu peux enlever GitHub et ajouter Notion",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillRemove",
+    "id": "integration_github"
+   },
+   {
+    "kind": "pillAdd",
+    "id": "integration_notion"
+   }
+  ]
+ },
+ {
+  "label": "enlève Vercel ajoute Notion et Stripe",
+  "text": "enlève Vercel ajoute Notion et Stripe",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillRemove",
+    "id": "integration_vercel"
+   },
+   {
+    "kind": "pillAddMultiple",
+    "ids": [
+     "integration_notion",
+     "integration_stripe"
+    ]
+   }
+  ]
+ },
+ {
+  "label": "retire Vercel, ajoute Notion",
+  "text": "retire Vercel, ajoute Notion",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillRemove",
+    "id": "integration_vercel"
+   },
+   {
+    "kind": "pillAdd",
+    "id": "integration_notion"
+   }
+  ]
+ },
+ {
+  "label": "pause et ajoute Notion",
+  "text": "pause et ajoute Notion",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "musicPause"
+   },
+   {
+    "kind": "pillAdd",
+    "id": "integration_notion"
+   }
+  ]
+ },
+ {
+  "label": "lance la musique ajoute Notion",
+  "text": "lance la musique ajoute Notion",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "musicPlay",
+    "target": null
+   },
+   {
+    "kind": "pillAdd",
+    "id": "integration_notion"
+   }
+  ]
+ },
+ {
+  "label": "mets du Simon et Garfunkel",
+  "text": "mets du Simon et Garfunkel",
+  "pills": true,
+  "type": "multiNil"
+ },
+ {
+  "label": "ajoute Notion et Stripe",
+  "text": "ajoute Notion et Stripe",
+  "pills": true,
+  "type": "multiNil"
+ },
+ {
+  "label": "ajoute Notion dans les pilules",
+  "text": "ajoute Notion dans les pilules",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "mets Notion dans le notch",
+  "text": "mets Notion dans le notch",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "Merci tu peux mettre la pilule GitHub à la place de notion",
+  "text": "Merci tu peux mettre la pilule GitHub à la place de notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillReplace",
+   "old": "integration_notion",
+   "new": "integration_github"
+  }
+ },
+ {
+  "label": "mets GitHub à la place de Notion",
+  "text": "mets GitHub à la place de Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillReplace",
+   "old": "integration_notion",
+   "new": "integration_github"
+  }
+ },
+ {
+  "label": "GitHub au lieu de Notion",
+  "text": "GitHub au lieu de Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillReplace",
+   "old": "integration_notion",
+   "new": "integration_github"
+  }
+ },
+ {
+  "label": "put GitHub instead of Notion",
+  "text": "put GitHub instead of Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillReplace",
+   "old": "integration_notion",
+   "new": "integration_github"
+  }
+ },
+ {
+  "label": "Ouais tu peux me mettre la pilule Gemini",
+  "text": "Ouais tu peux me mettre la pilule Gemini",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "agent_gemini"
+  }
+ },
+ {
+  "label": "bon alors ajoute Notion",
+  "text": "bon alors ajoute Notion",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_notion"
+  }
+ },
+ {
+  "label": "On s'en fout c'est",
+  "text": "On s'en fout c'est",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "unknown"
+  }
+ },
+ {
+  "label": "Je veux que tu ajoutes la pilule Gemini",
+  "text": "Je veux que tu ajoutes la pilule Gemini",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "agent_gemini"
+  }
+ },
+ {
+  "label": "il faut que tu enlèves Stripe",
+  "text": "il faut que tu enlèves Stripe",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillRemove",
+   "id": "integration_stripe"
+  }
+ },
+ {
+  "label": "OK tu peux démarrer Apple Music j'ai envie d'écouter du Drake",
+  "text": "OK tu peux démarrer Apple Music j'ai envie d'écouter du Drake",
+  "pills": true,
+  "type": "search",
+  "want": "drake"
+ },
+ {
+  "label": "j'ai envie d'écouter de la musique",
+  "text": "j'ai envie d'écouter de la musique",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "make Cursor my main pill",
+  "text": "make Cursor my main pill",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillSetMain",
+   "id": "agent_cursor"
+  }
+ },
+ {
+  "label": "play my Focus playlist",
+  "text": "play my Focus playlist",
+  "pills": true,
+  "type": "playlist",
+  "want": "focus"
+ },
+ {
+  "label": "add Gemini (EN)",
+  "text": "add Gemini",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "agent_gemini"
+  }
+ },
+ {
+  "label": "tu peux lancer ma playlist",
+  "text": "tu peux lancer ma playlist",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "musicPlayPlaylist",
+   "name": ""
+  }
+ },
+ {
+  "label": "Enlève la pilule GT et mets Stripe à la place",
+  "text": "Enlève la pilule GT et mets Stripe à la place",
+  "pills": true,
+  "type": "multi",
+  "want": [
+   {
+    "kind": "pillRemove",
+    "id": "integration_github"
+   },
+   {
+    "kind": "pillAdd",
+    "id": "integration_stripe"
+   }
+  ]
+ },
+ {
+  "label": "mets Stripe à la place",
+  "text": "mets Stripe à la place",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_stripe"
+  }
+ },
+ {
+  "label": "add Stripe instead",
+  "text": "add Stripe instead",
+  "pills": true,
+  "type": "one",
+  "want": {
+   "kind": "pillAdd",
+   "id": "integration_stripe"
+  }
+ },
+ {
+  "label": "mets Gemini et Cursor",
+  "text": "mets Gemini et Cursor",
+  "pills": true,
+  "type": "multiNil"
+ },
+ {
+  "label": "mets Gemini et blahblah",
+  "text": "mets Gemini et blahblah",
+  "pills": true,
+  "type": "multiNil"
+ },
+ {
+  "label": "lecture",
+  "text": "lecture",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPlay",
+   "target": null
+  }
+ },
+ {
+  "label": "stop la musique",
+  "text": "stop la musique",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ },
+ {
+  "label": "stop la chanson",
+  "text": "stop la chanson",
+  "pills": false,
+  "type": "one",
+  "want": {
+   "kind": "musicPause"
+  }
+ }
+]

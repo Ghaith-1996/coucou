@@ -7,7 +7,7 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 import { State } from "../src/core/state.ts";
-import { Voice, registerVoice, resetVoiceForTests, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
+import { Voice, registerVoice, resetVoiceForTests, voiceDo, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
 
 // What the fake Rust answers, per command.
 const answers = new Map();
@@ -40,6 +40,13 @@ const host = {
     State.isPinned = on;
     State.notify();
   },
+  pillsApplied: [],
+  applyPills(next) {
+    this.pillsApplied.push(next);
+    State.settings.mainPill = next.mainPill;
+    State.settings.activeIntegrations = [...next.activeIntegrations];
+    return true;
+  },
   showChatDraft(text) {
     this.drafts.push(text);
     State.view = "prompt";
@@ -62,7 +69,10 @@ beforeEach(() => {
   answers.clear();
   host.alerts = [];
   host.drafts = [];
+  host.pillsApplied = [];
   host.draftLands = true;
+  State.settings.mainPill = "integration_claude";
+  State.settings.activeIntegrations = ["integration_vercel"];
   State.pendingApproval = null;
   State.isPinned = false;
   State.view = "overview";
@@ -211,4 +221,40 @@ test("an error shows, then goes by itself", async (t) => {
   assert.equal(Voice.event.error, "no-microphone");
   t.mock.timers.tick(4000);
   assert.equal(Voice.event, null);
+});
+
+test("a spoken pill command is offered, proposed as a pill-set, then applied", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Ajoute GitHub." }));
+  assert.equal(Voice.command.ok, true);
+  assert.equal(Voice.command.label, "Add GitHub");
+  answers.set("assistant_voice_act", "act-77");
+  await voiceDo();
+  assert.deepEqual(sent("assistant_voice_act"), [{
+    captureId: "cap-1",
+    kind: "pill-set",
+    args: { mainPill: "integration_claude", activeIntegrations: ["integration_vercel", "integration_github"] },
+  }]);
+  assert.deepEqual(host.pillsApplied, [{ mainPill: "integration_claude", activeIntegrations: ["integration_vercel", "integration_github"] }]);
+  assert.deepEqual(sent("assistant_action_receipt"), [
+    { receipt: { actionId: "act-77", outcome: "succeeded", evidenceRef: "settings:pills-shown" } },
+  ]);
+  assert.equal(calls.filter(([cmd]) => cmd.startsWith("approval_")).length, 0);
+});
+
+test("a simulated transcript is never taken for a command", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Ajoute GitHub.", simulated: true }));
+  assert.equal(Voice.command, null);
+  await voiceDo();
+  assert.equal(sent("assistant_voice_act").length, 0);
+});
+
+test("a refused pill-set changes nothing", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Ajoute GitHub." }));
+  answers.set("assistant_voice_act", new Error("invalid-args"));
+  await voiceDo();
+  assert.deepEqual(host.pillsApplied, []);
+  assert.equal(sent("assistant_action_receipt").length, 0);
 });

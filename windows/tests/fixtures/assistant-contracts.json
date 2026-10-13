@@ -4,6 +4,7 @@
   "voiceEvent": "assistant-voice",
   "actionKinds": [
     { "kind": "chat-draft", "available": true, "idempotent": true },
+    { "kind": "pill-set", "available": true, "idempotent": true },
     { "kind": "insert-text", "available": false, "idempotent": false },
     { "kind": "launch-app", "available": false, "idempotent": false },
     { "kind": "ask-region", "available": false, "idempotent": false }
@@ -51,6 +52,26 @@
       "name": "a reserved kind is refused in this version",
       "action": { "v": 1, "domain": "desktop-assistant", "id": "act-8", "kind": "launch-app", "args": { "appId": "notepad" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "unavailable"
+    },
+    {
+      "name": "a pill set is allowed: Coucou's own pills, as Settings would",
+      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-10", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["integration_github", "agent_claude-desktop"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "allow"
+    },
+    {
+      "name": "a fifth pill is refused",
+      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-11", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["a", "b", "c", "d", "e"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
+    },
+    {
+      "name": "the main pill twice, or a pill twice, is refused",
+      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-12", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["integration_claude"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
+    },
+    {
+      "name": "a pill id that is not an id is refused",
+      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-13", "kind": "pill-set", "args": { "mainPill": "../../settings", "activeIntegrations": [] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "args of the wrong type are refused",

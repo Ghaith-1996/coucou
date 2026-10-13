@@ -12,11 +12,12 @@ export const CONTRACT_VERSION = 1;
 /** The event the island listens to for voice capture. */
 export const VOICE_EVENT = "assistant-voice";
 
-export type ActionKind = "chat-draft" | "insert-text" | "launch-app" | "ask-region";
+export type ActionKind = "chat-draft" | "pill-set" | "insert-text" | "launch-app" | "ask-region";
 
 /** The closed registry. `available`: implemented in this version. */
 export const ACTION_KINDS: readonly { kind: ActionKind; available: boolean; idempotent: boolean }[] = [
   { kind: "chat-draft", available: true, idempotent: true },
+  { kind: "pill-set", available: true, idempotent: true },
   { kind: "insert-text", available: false, idempotent: false },
   { kind: "launch-app", available: false, idempotent: false },
   { kind: "ask-region", available: false, idempotent: false },

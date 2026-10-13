@@ -213,6 +213,40 @@ fn a_press_on_a_preview_starts_a_fresh_capture() {
     assert_eq!(h.mic_open(), 0);
 }
 
+fn preview(h: &Harness) -> String {
+    let id = h.voice.toggle().unwrap();
+    h.wait(VoiceState::Listening);
+    std::thread::sleep(Duration::from_millis(300));
+    h.voice.stop(&id);
+    h.wait(VoiceState::Preview);
+    id
+}
+
+#[test]
+fn a_pill_command_is_an_allowed_pill_set_once() {
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    let args = serde_json::json!({ "mainPill": "integration_claude", "activeIntegrations": ["integration_github"] });
+    let action = h.voice.act(&id, ActionKind::PillSet, args.clone()).unwrap();
+    assert!(action.starts_with("act-"));
+    h.wait(VoiceState::Idle);
+    assert_eq!(h.voice.act(&id, ActionKind::PillSet, args), Err(ErrorCode::Expired), "only once");
+}
+
+#[test]
+fn the_island_cannot_propose_any_other_kind_or_bad_args() {
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    // A chat draft is built from Rust's own copy of the transcript, never from the page.
+    let draft = serde_json::json!({ "text": "something else entirely" });
+    assert_eq!(h.voice.act(&id, ActionKind::ChatDraft, draft), Err(ErrorCode::Unavailable));
+    assert_eq!(h.voice.act(&id, ActionKind::LaunchApp, serde_json::json!({ "appId": "x" })), Err(ErrorCode::Unavailable));
+    // Still waiting: a refused kind doesn't use the transcript up.
+    let five = serde_json::json!({ "mainPill": "integration_claude", "activeIntegrations": ["a", "b", "c", "d", "e"] });
+    assert_eq!(h.voice.act(&id, ActionKind::PillSet, five), Err(ErrorCode::InvalidArgs));
+    h.wait(VoiceState::Idle);
+}
+
 #[test]
 fn a_receipt_for_an_id_that_is_not_ours_is_not_logged() {
     let h = harness(speaking(10));

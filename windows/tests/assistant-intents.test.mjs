@@ -1,0 +1,129 @@
+// The intent parser (src/assistant/intents.ts) against the Mac's own table,
+// tests/IntentParserTests.swift, converted case for case into
+// fixtures/mac-intent-cases.json. Like the Mac's PillFixture, the pills are
+// the whole catalog.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { normalise, parseIntent, parseMultiAction, parseTranscript, resolvePill } from "../src/assistant/intents.ts";
+import { PILL_CATALOG, availablePills } from "../src/core/pills.ts";
+
+const cases = JSON.parse(readFileSync(new URL("./fixtures/mac-intent-cases.json", import.meta.url), "utf8"));
+
+test("the Mac's table was converted whole", () => {
+  assert.equal(cases.length, 165);
+});
+
+for (const c of cases) {
+  test(`Mac: ${c.label}`, () => {
+    const pills = c.pills ? PILL_CATALOG : [];
+    switch (c.type) {
+      case "one":
+        assert.deepEqual(parseIntent(c.text, pills), c.want);
+        break;
+      case "search": {
+        const got = parseIntent(c.text, pills);
+        assert.equal(got.kind, "musicPlaySearch");
+        assert.equal(normalise(got.name), c.want);
+        break;
+      }
+      case "playlist": {
+        const got = parseIntent(c.text, pills);
+        assert.equal(got.kind, "musicPlayPlaylist");
+        assert.equal(normalise(got.name), c.want);
+        break;
+      }
+      case "multi":
+        assert.deepEqual(parseMultiAction(c.text, PILL_CATALOG), c.want);
+        break;
+      case "multiNil":
+        assert.equal(parseMultiAction(c.text, PILL_CATALOG), null);
+        break;
+    }
+  });
+}
+
+// ── Windows ───────────────────────────────────────────────────────────────────
+
+test("Whisper's punctuation doesn't get in the way", () => {
+  assert.deepEqual(parseTranscript("Ajoute GitHub.", PILL_CATALOG), [{ kind: "pillAdd", id: "integration_github" }]);
+  assert.deepEqual(parseTranscript("Ajoute GitHub, s'il te plaît.", PILL_CATALOG), [{ kind: "pillAdd", id: "integration_github" }]);
+  assert.deepEqual(parseTranscript("Est-ce que tu peux enlever Vercel ?", PILL_CATALOG), [{ kind: "pillRemove", id: "integration_vercel" }]);
+  assert.deepEqual(parseTranscript("Add GitHub, then remove Vercel.", PILL_CATALOG), [
+    { kind: "pillAdd", id: "integration_github" },
+    { kind: "pillRemove", id: "integration_vercel" },
+  ]);
+});
+
+test("ordinary dictation is not a command", () => {
+  for (const text of [
+    "Hello Mochi, please open the chat and show me the latest pull request.",
+    "Remind me to review the voice capture branch tomorrow morning.",
+    "Write a short summary of the failing tests for the team.",
+    "",
+  ]) {
+    assert.deepEqual(parseTranscript(text, PILL_CATALOG), [], text);
+  }
+});
+
+test("only the pills this build offers resolve", () => {
+  const windows = availablePills("windows");
+  const spotify = PILL_CATALOG.find((p) => p.id === "integration_spotify");
+  assert.ok(spotify, "the catalog has Spotify");
+  // Spotify is a Linux pill: on Windows "ajoute Spotify" names nothing.
+  assert.equal(resolvePill("Spotify", windows), windows.some((p) => p.id === "integration_spotify") ? "integration_spotify" : null);
+  assert.equal(resolvePill("GitHub", windows), "integration_github");
+});
+
+test("fuzzy matching, and refusing to guess between two", () => {
+  assert.equal(resolvePill("vercell", PILL_CATALOG), "integration_vercel");
+  assert.equal(resolvePill("guitar hub", PILL_CATALOG), "integration_github");
+  assert.equal(resolvePill("zzzzzz", PILL_CATALOG), null);
+});
+
+// ── From intents to a pill plan (pill-command.ts) ─────────────────────────────
+
+import { planPills } from "../src/assistant/pill-command.ts";
+
+const declared = (main, ...active) => ({ mainPill: main, activeIntegrations: active });
+const plan = (text, current) => planPills(parseTranscript(text, availablePills("windows")), current, "windows");
+
+test("a pill command becomes the whole result, labelled", () => {
+  const got = plan("Ajoute GitHub.", declared("integration_claude", "integration_vercel"));
+  assert.equal(got.ok, true);
+  assert.equal(got.label, "Add GitHub");
+  assert.deepEqual(got.next, declared("integration_claude", "integration_vercel", "integration_github"));
+});
+
+test("several commands in one sentence make one plan", () => {
+  const got = plan("Add GitHub, then remove Vercel.", declared("integration_claude", "integration_vercel"));
+  assert.equal(got.ok, true);
+  assert.equal(got.label, "Add GitHub · Remove Vercel");
+  assert.deepEqual(got.next, declared("integration_claude", "integration_github"));
+});
+
+test("what can't be done says why, and changes nothing", () => {
+  const full = declared("integration_claude", "integration_vercel", "integration_stripe", "integration_notion", "integration_resend");
+  assert.deepEqual(plan("ajoute GitHub", full), { ok: false, reason: "Already 4 pills: remove one first." });
+  assert.deepEqual(plan("enlève GitHub", declared("integration_claude")), { ok: false, reason: "GitHub isn't in the island." });
+  assert.deepEqual(plan("ajoute GitHub", declared("integration_claude", "integration_github")), {
+    ok: false, reason: "GitHub is already in the island.",
+  });
+});
+
+test("the main pill, replacing and keeping only", () => {
+  const main = plan("passe sur Cursor", declared("integration_claude", "agent_cursor", "integration_github"));
+  assert.equal(main.ok, true);
+  assert.deepEqual(main.next, declared("agent_cursor", "integration_github"));
+  const replace = plan("remplace Vercel par GitHub", declared("integration_claude", "integration_vercel"));
+  assert.deepEqual(replace.next, declared("integration_claude", "integration_github"));
+  const only = plan("garde seulement GitHub", declared("integration_claude", "integration_vercel", "integration_github"));
+  assert.deepEqual(only.next, declared("integration_claude", "integration_github"));
+});
+
+test("anything that isn't only pill commands offers nothing but the chat", () => {
+  assert.equal(plan("Hello Mochi, open the chat.", declared("integration_claude")), null);
+  assert.equal(plan("pause et ajoute Notion", declared("integration_claude")), null);
+  assert.equal(plan("mets du Daft Punk", declared("integration_claude")), null);
+});

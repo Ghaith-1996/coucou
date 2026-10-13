@@ -36,6 +36,9 @@ pub enum Domain {
 pub enum ActionKind {
     /// Put text into Coucou's own chat field, unsent. P0.
     ChatDraft,
+    /// Set which pills the island shows: the main one and up to four more,
+    /// as a spoken pill command asked (P1, the Mac's pill intents).
+    PillSet,
     /// Type text into another app's focused field. Reserved for P2.
     InsertText,
     /// Start an app from a list the user controls. Reserved for P2.
@@ -44,20 +47,25 @@ pub enum ActionKind {
     AskRegion,
 }
 
-pub const ACTION_KINDS: [ActionKind; 4] =
-    [ActionKind::ChatDraft, ActionKind::InsertText, ActionKind::LaunchApp, ActionKind::AskRegion];
+pub const ACTION_KINDS: [ActionKind; 5] = [
+    ActionKind::ChatDraft,
+    ActionKind::PillSet,
+    ActionKind::InsertText,
+    ActionKind::LaunchApp,
+    ActionKind::AskRegion,
+];
 
 impl ActionKind {
     /// Implemented in this version. A reserved kind is always refused, and its
     /// arguments may still change before it becomes available.
     pub fn available(self) -> bool {
-        matches!(self, ActionKind::ChatDraft)
+        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet)
     }
 
     /// Running it twice leaves the same result as running it once. Only
     /// these may be retried after an `unknown` outcome.
     pub fn idempotent(self) -> bool {
-        matches!(self, ActionKind::ChatDraft)
+        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet)
     }
 }
 
@@ -83,6 +91,14 @@ pub struct AssistantAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChatDraftArgs {
     pub text: String,
+}
+
+/// The whole result, not a change: applying it twice is applying it once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PillSetArgs {
+    pub main_pill: String,
+    pub active_integrations: Vec<String>,
 }
 
 /// Reserved (P2). The target is fixed when the action is proposed and checked
@@ -119,6 +135,7 @@ pub struct AskRegionArgs {
 #[serde(tag = "kind", content = "args", rename_all = "kebab-case")]
 pub enum ValidArgs {
     ChatDraft(ChatDraftArgs),
+    PillSet(PillSetArgs),
     InsertText(InsertTextArgs),
     LaunchApp(LaunchAppArgs),
     AskRegion(AskRegionArgs),

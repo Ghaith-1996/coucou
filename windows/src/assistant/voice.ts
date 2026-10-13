@@ -10,12 +10,19 @@
 //     card, closing the island or hiding it cancels the capture. The card
 //     keeps the island pinned meanwhile, so the auto-close never cuts a
 //     capture short (the island's 15 s default is under the 30 s limit).
+//
+// A transcript that is a pill command (intents.ts, the Mac's parser) is shown
+// as that change on the card, next to "Use in chat"; doing it is a `pill-set`
+// action Rust's policy decides, applied the way Settings applies it.
 
 import { Bridge, onEvent } from "../core/bridge";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
+import { HOST_OS, availablePills } from "../core/pills";
 import { State } from "../core/state";
 import { VOICE_EVENT, parseVoiceEvent, type VoiceEvent } from "./contracts";
+import { parseTranscript } from "./intents";
+import { planPills, type Declared, type PillPlan } from "./pill-command";
 
 /** What voice needs from the island. */
 export interface VoiceHost {
@@ -26,6 +33,8 @@ export interface VoiceHost {
   setPinned(on: boolean): void;
   /** Opens the chat with `text` in its field, unsent. True when it is there. */
   showChatDraft(text: string): boolean;
+  /** Shows these pills and saves them, as Settings does. True when they are what it shows. */
+  applyPills(next: Declared): boolean;
 }
 
 /** How long an error stays on the card before it goes by itself. */
@@ -42,6 +51,8 @@ let userPinned = false;
 export const Voice = {
   /** The latest event of the current capture; null when there is none. */
   event: null as VoiceEvent | null,
+  /** What the transcript asks of the pills, when it is a pill command. */
+  command: null as PillPlan | null,
 
   get active(): boolean {
     const s = this.event?.state;
@@ -111,11 +122,34 @@ export async function voiceUse() {
   }
 }
 
+/** Do it: the pill command on the card becomes a `pill-set` Rust decides. */
+export async function voiceDo() {
+  const current = Voice.event;
+  const command = Voice.command;
+  if (current?.state !== "preview" || !command?.ok || !host) return;
+  try {
+    const actionId = await Bridge.voiceAct(current.captureId, "pill-set", command.next);
+    end(false);
+    const shown = host.applyPills(command.next);
+    host.alert("overview");
+    Sound.play(shown ? "approve" : "error");
+    void Bridge.actionReceipt(
+      shown
+        ? { actionId, outcome: "succeeded", evidenceRef: "settings:pills-shown" }
+        : { actionId, outcome: "failed", errorCode: "unverified" },
+    );
+  } catch {
+    end();
+    Sound.play("error");
+  }
+}
+
 /** Forgets the capture; `close` folds the card away. */
 function end(close = true) {
   if (errorTimer) clearTimeout(errorTimer);
   errorTimer = null;
   Voice.event = null;
+  Voice.command = null;
   shown = false;
   unpin();
   if (close && State.view === "voice" && host) host.collapse();
@@ -152,7 +186,13 @@ function accept(event: VoiceEvent) {
     }
     host?.takeKeyboard();
   }
-  if (event.state === "preview" && current?.state !== "preview") Sound.play("finish");
+  if (event.state === "preview" && current?.state !== "preview") {
+    Sound.play("finish");
+    // Only a real transcript can be a command: a simulated one is a placeholder.
+    Voice.command = event.simulated
+      ? null
+      : planPills(parseTranscript(event.transcript ?? "", availablePills(HOST_OS)), State.settings, HOST_OS);
+  }
   if (event.state === "error") {
     Sound.play("error");
     host?.emote("annoyed");
@@ -194,6 +234,7 @@ export function resetVoiceForTests() {
   if (errorTimer) clearTimeout(errorTimer);
   errorTimer = null;
   Voice.event = null;
+  Voice.command = null;
   shown = false;
   pinnedByVoice = false;
   userPinned = false;

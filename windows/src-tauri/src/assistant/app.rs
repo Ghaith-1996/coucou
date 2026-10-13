@@ -4,7 +4,7 @@
 
 use tauri::{AppHandle, Emitter, State, Webview};
 
-use super::contracts::{ActionReceipt, ErrorCode, VoiceEvent, VOICE_EVENT};
+use super::contracts::{ActionKind, ActionReceipt, ErrorCode, VoiceEvent, VOICE_EVENT};
 use super::voice::{self, model, ChatDraft, Voice};
 use crate::island::WINDOW_LABEL;
 
@@ -62,6 +62,18 @@ pub fn assistant_voice_cancel(voice: State<Voice>, capture_id: String) {
 #[tauri::command]
 pub fn assistant_voice_use(voice: State<Voice>, capture_id: String) -> Result<ChatDraft, ErrorCode> {
     voice.use_transcript(&capture_id)
+}
+
+/// A command the transcript asked for (a `pill-set` today), proposed by the
+/// island for the policy to decide. The action id when it is allowed.
+#[tauri::command]
+pub fn assistant_voice_act(
+    voice: State<Voice>,
+    capture_id: String,
+    kind: ActionKind,
+    args: serde_json::Value,
+) -> Result<String, ErrorCode> {
+    voice.act(&capture_id, kind, args)
 }
 
 #[tauri::command]

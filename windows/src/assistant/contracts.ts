@@ -41,11 +41,25 @@ export type ErrorCode =
   | "version" | "invalid-args" | "unavailable" | "expired"
   | "grant-mismatch" | "cancelled" | "unverified" | "failed";
 
-export interface ActionReceipt {
+declare const nonBlankEvidence: unique symbol;
+type NonBlankEvidence = string & { readonly [nonBlankEvidence]: true };
+
+/** Success evidence must pass succeededReceipt's runtime validation. */
+export type ActionReceipt = {
   actionId: string;
-  outcome: "succeeded" | "failed" | "cancelled" | "unknown";
-  evidenceRef?: string;
   errorCode?: ErrorCode;
+} & (
+  | { readonly outcome: "succeeded"; readonly evidenceRef: NonBlankEvidence }
+  | { readonly outcome: "failed" | "cancelled" | "unknown"; readonly evidenceRef?: string }
+);
+
+/** Build a success only after observing an effect; keep the wire shape unchanged. */
+export function succeededReceipt(actionId: string, evidenceRef: string): Extract<ActionReceipt, { outcome: "succeeded" }> {
+  // Unicode White_Space matches Rust's str::trim, including U+0085.
+  if (typeof evidenceRef !== "string" || /^\p{White_Space}*$/u.test(evidenceRef)) {
+    throw new TypeError("a successful receipt requires nonblank evidenceRef");
+  }
+  return { actionId, outcome: "succeeded", evidenceRef: evidenceRef as NonBlankEvidence };
 }
 
 export type VoiceState = "idle" | "listening" | "processing" | "preview" | "speaking" | "error";

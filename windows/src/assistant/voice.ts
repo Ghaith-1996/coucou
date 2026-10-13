@@ -15,7 +15,7 @@ import { Bridge, onEvent } from "../core/bridge";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import { VOICE_EVENT, parseVoiceEvent, type VoiceEvent } from "./contracts";
+import { VOICE_EVENT, parseVoiceEvent, succeededReceipt, type VoiceEvent } from "./contracts";
 
 /** What voice needs from the island. */
 export interface VoiceHost {
@@ -150,7 +150,7 @@ export async function voiceUse() {
     const there = host.showChatDraft(draft.text);
     void Bridge.actionReceipt(
       there
-        ? { actionId: draft.actionId, outcome: "succeeded", evidenceRef: "chat-field:draft-set" }
+        ? succeededReceipt(draft.actionId, "chat-field:draft-set")
         : { actionId: draft.actionId, outcome: "failed", errorCode: "unverified" },
     );
   } catch {

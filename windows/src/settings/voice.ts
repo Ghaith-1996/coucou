@@ -79,7 +79,7 @@ export function voiceSection(initial: VoiceModelStatus | null): HTMLElement | nu
       }),
       h("div", {
         class: "hint",
-        text: t("Turn on “Talk to Mochi” in Shortcuts to use the microphone (Ctrl+Alt+V)."),
+        text: t("Use the microphone button in chat, or turn on “Talk to Mochi” in Shortcuts (Ctrl+Alt+V)."),
       }),
     );
     if (!status) return;

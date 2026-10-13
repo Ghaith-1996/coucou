@@ -3988,17 +3988,6 @@
    "ru": "Распознавание речи работает на этом компьютере с помощью Whisper. Его модель загружается один раз по адресу ниже. Ни звук, ни текст не покидают ваш компьютер.",
    "id": "Pengenalan suara berjalan di komputer ini dengan Whisper. Modelnya diunduh sekali, dari alamat di bawah. Tidak ada audio atau teks yang keluar dari komputer Anda."
   },
-  "Turn on “Talk to Mochi” in Shortcuts to use the microphone (Ctrl+Alt+V).": {
-   "zh-Hans": "在“快捷键”中打开“和 Mochi 说话”即可使用麦克风（Ctrl+Alt+V）。",
-   "hi": "माइक्रोफ़ोन इस्तेमाल करने के लिए शॉर्टकट में “Mochi से बात करें” चालू करें (Ctrl+Alt+V)।",
-   "es": "Activa «Hablar con Mochi» en Atajos para usar el micrófono (Ctrl+Alt+V).",
-   "ar": "فعّل «تحدّث إلى Mochi» في الاختصارات لاستخدام الميكروفون (Ctrl+Alt+V).",
-   "fr": "Activez « Parler à Mochi » dans Raccourcis pour utiliser le micro (Ctrl+Alt+V).",
-   "bn": "মাইক্রোফোন ব্যবহার করতে শর্টকাটে “Mochi-র সাথে কথা বলুন” চালু করুন (Ctrl+Alt+V)।",
-   "pt-BR": "Ative “Falar com o Mochi” em Atalhos para usar o microfone (Ctrl+Alt+V).",
-   "ru": "Включите «Поговорить с Mochi» в разделе «Сочетания клавиш», чтобы пользоваться микрофоном (Ctrl+Alt+V).",
-   "id": "Aktifkan “Bicara dengan Mochi” di Pintasan untuk memakai mikrofon (Ctrl+Alt+V)."
-  },
   "Downloading… {percent}%": {
    "zh-Hans": "正在下载… {percent}%",
    "hi": "डाउनलोड हो रहा है… {percent}%",
@@ -4218,6 +4207,28 @@
    "pt-BR": "Procurando {name}…",
    "ru": "Ищу {name}…",
    "id": "Mencari {name}…"
+  },
+  "Start voice capture": {
+   "zh-Hans": "开始语音录制",
+   "hi": "आवाज़ रिकॉर्ड करना शुरू करें",
+   "es": "Iniciar captura de voz",
+   "ar": "بدء التسجيل الصوتي",
+   "fr": "Démarrer la capture vocale",
+   "bn": "ভয়েস রেকর্ডিং শুরু করুন",
+   "pt-BR": "Iniciar captura de voz",
+   "ru": "Начать запись голоса",
+   "id": "Mulai merekam suara"
+  },
+  "Use the microphone button in chat, or turn on “Talk to Mochi” in Shortcuts (Ctrl+Alt+V).": {
+   "zh-Hans": "使用聊天中的麦克风按钮，或在快捷键中启用“与 Mochi 交谈”（Ctrl+Alt+V）。",
+   "hi": "चैट में माइक्रोफ़ोन बटन इस्तेमाल करें, या शॉर्टकट में “Mochi से बात करें” चालू करें (Ctrl+Alt+V)।",
+   "es": "Usa el botón del micrófono en el chat, o activa «Hablar con Mochi» en Atajos (Ctrl+Alt+V).",
+   "ar": "استخدم زر الميكروفون في الدردشة، أو فعّل «التحدث إلى Mochi» في الاختصارات (Ctrl+Alt+V).",
+   "fr": "Utilisez le bouton du micro dans le chat, ou activez « Parler à Mochi » dans Raccourcis (Ctrl+Alt+V).",
+   "bn": "চ্যাটে মাইক্রোফোন বোতাম ব্যবহার করুন, বা শর্টকাটে “Mochi-এর সাথে কথা বলুন” চালু করুন (Ctrl+Alt+V)।",
+   "pt-BR": "Use o botão do microfone no chat, ou ative “Falar com o Mochi” em Atalhos (Ctrl+Alt+V).",
+   "ru": "Используйте кнопку микрофона в чате или включите «Поговорить с Mochi» в разделе «Сочетания клавиш» (Ctrl+Alt+V).",
+   "id": "Gunakan tombol mikrofon di chat, atau aktifkan “Bicara dengan Mochi” di Pintasan (Ctrl+Alt+V)."
   },
   "No app called “{name}” in the Start menu.": {
    "zh-Hans": "开始菜单中没有名为“{name}”的应用。",

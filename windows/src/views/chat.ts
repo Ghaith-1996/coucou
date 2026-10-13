@@ -15,6 +15,8 @@ import {
 } from "../core/providers";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
+import { HOST_OS } from "../core/pills";
+import { voiceShortcut } from "../assistant/voice";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -22,6 +24,7 @@ const STRINGS = {
   placeholderFirst: N_("Ask me anything…"),
   placeholderNext: N_("Continue…"),
   send: N_("Send"),
+  voice: N_("Start voice capture"),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
@@ -231,7 +234,13 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   }) as HTMLInputElement;
   chatInput = input;
   const send = h("button", { class: "send-btn", title: tl(STRINGS.send) }, svg(ICONS.arrowUp, 11));
-  const bar = h("div", { class: "chat-bar" }, input, send);
+  const voice = HOST_OS === "windows" ? h("button", {
+    type: "button",
+    class: "voice-btn",
+    title: tl(STRINGS.voice),
+    "aria-label": tl(STRINGS.voice),
+  }, svg(ICONS.mic, 15, { stroke: 1.8 })) : null;
+  const bar = h("div", { class: "chat-bar" }, input, voice, send);
 
   const modelDot = h("i", { class: "model-dot" });
   const modelName = h("span", { class: "model-name" });
@@ -265,6 +274,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     modelName.textContent = activeModel(State.settings) || t(STRINGS.noModel);
     modelBtn.classList.toggle("open", picker.isOpen);
     modelBtn.disabled = sending;
+    if (voice) voice.disabled = sending;
   }
 
   modelBtn.addEventListener("click", () => {
@@ -324,6 +334,11 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   }
 
   send.addEventListener("click", () => void submit());
+  voice?.addEventListener("click", () => {
+    if (sending) return;
+    if (picker.isOpen) picker.close();
+    void voiceShortcut();
+  });
   input.addEventListener("keydown", (e) => {
     const key = (e as KeyboardEvent).key;
     if (key === "Enter") {

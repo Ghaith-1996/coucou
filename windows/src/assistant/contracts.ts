@@ -1,4 +1,4 @@
-// The desktop assistant's contracts, version 1 — the TypeScript side of
+// The desktop assistant's contracts, version 2 — the TypeScript side of
 // src-tauri/src/assistant/contracts.rs. tests/fixtures/assistant-contracts.json
 // keeps the two in step.
 //
@@ -7,7 +7,8 @@
 // approval_* commands, from a click on the agent's own card, and the
 // assistant's code never calls them (tests/assistant-contracts.test.mjs).
 
-export const CONTRACT_VERSION = 1;
+/** Version 2 adds `pill-set` to the frozen v1 action registry. */
+export const CONTRACT_VERSION = 2;
 
 /** The event the island listens to for voice capture. */
 export const VOICE_EVENT = "assistant-voice";

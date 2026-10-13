@@ -1,6 +1,6 @@
 {
   "_comment": "Read by src-tauri/src/assistant/mod.rs tests and tests/assistant-contracts.test.mjs: both sides of the assistant contracts must agree with it.",
-  "version": 1,
+  "version": 2,
   "voiceEvent": "assistant-voice",
   "actionKinds": [
     { "kind": "chat-draft", "available": true, "idempotent": true },
@@ -15,114 +15,125 @@
   "actions": [
     {
       "name": "a chat draft is allowed: it stays in Coucou and is never sent",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-1", "kind": "chat-draft", "args": { "text": "hello Mochi" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-1", "kind": "chat-draft", "args": { "text": "hello Mochi" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "allow"
     },
     {
       "name": "an expired action is refused, never run late",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-2", "kind": "chat-draft", "args": { "text": "late" }, "intentId": "cap-1", "expiresAtMs": 1000000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-2", "kind": "chat-draft", "args": { "text": "late" }, "intentId": "cap-1", "expiresAtMs": 1000000 },
       "decision": "deny", "error": "expired"
     },
     {
       "name": "an action that expires too far ahead is refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-3", "kind": "chat-draft", "args": { "text": "later" }, "intentId": "cap-1", "expiresAtMs": 99000000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-3", "kind": "chat-draft", "args": { "text": "later" }, "intentId": "cap-1", "expiresAtMs": 99000000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
-      "name": "another contract version is refused",
-      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-4", "kind": "chat-draft", "args": { "text": "hi" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "name": "a future contract version is refused",
+      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-4", "kind": "chat-draft", "args": { "text": "hi" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "version"
+    },
+    {
+      "name": "a v1 action is refused before expiry or arguments are checked",
+      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-v1", "kind": "chat-draft", "args": { "text": 42 }, "intentId": "cap-1", "expiresAtMs": 0 },
+      "decision": "deny", "error": "version"
+    },
+    {
+      "name": "pill-set requires v2 rather than extending the frozen v1 registry",
+      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-pill-v1", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": [] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "version"
     },
     {
       "name": "an extra argument is refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-5", "kind": "chat-draft", "args": { "text": "hi", "send": true }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-5", "kind": "chat-draft", "args": { "text": "hi", "send": true }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "an empty draft is refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-6", "kind": "chat-draft", "args": { "text": "  \n " }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-6", "kind": "chat-draft", "args": { "text": "  \n " }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "control characters other than line breaks are refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-7", "kind": "chat-draft", "args": { "text": "hi\u001b[2J" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-7", "kind": "chat-draft", "args": { "text": "hi\u001b[2J" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "a reserved kind is refused in this version",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-8", "kind": "insert-text", "args": { "text": "hi", "targetWindow": 1, "targetPid": 2 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-8", "kind": "insert-text", "args": { "text": "hi", "targetWindow": 1, "targetPid": 2 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "unavailable"
     },
     {
       "name": "opening an app reaches outside Coucou: the user confirms it",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-14", "kind": "launch-app", "args": { "appId": "figma-0a1b2c3d" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-14", "kind": "launch-app", "args": { "appId": "figma-0a1b2c3d" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "ask"
     },
     {
       "name": "an app id that is a path or a command is refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-15", "kind": "launch-app", "args": { "appId": "C:\\Windows\\System32\\cmd.exe /c del" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-15", "kind": "launch-app", "args": { "appId": "C:\\Windows\\System32\\cmd.exe /c del" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "an app launch with anything besides its id is refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-16", "kind": "launch-app", "args": { "appId": "figma-0a1b2c3d", "arguments": "--evil" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-16", "kind": "launch-app", "args": { "appId": "figma-0a1b2c3d", "arguments": "--evil" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "a pill set is allowed: Coucou's own pills, as Settings would",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-10", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["integration_github", "agent_claude-desktop"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-10", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["integration_github", "agent_claude-desktop"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "allow"
     },
     {
       "name": "a fifth pill is refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-11", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["a", "b", "c", "d", "e"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-11", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["a", "b", "c", "d", "e"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "the main pill twice, or a pill twice, is refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-12", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["integration_claude"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-12", "kind": "pill-set", "args": { "mainPill": "integration_claude", "activeIntegrations": ["integration_claude"] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "a pill id that is not an id is refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-13", "kind": "pill-set", "args": { "mainPill": "../../settings", "activeIntegrations": [] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-13", "kind": "pill-set", "args": { "mainPill": "../../settings", "activeIntegrations": [] }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "args of the wrong type are refused",
-      "action": { "v": 1, "domain": "desktop-assistant", "id": "act-9", "kind": "chat-draft", "args": { "text": 42 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-9", "kind": "chat-draft", "args": { "text": 42 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     }
   ],
   "unparseable": [
-    { "name": "an agent permission is not an assistant action", "action": { "v": 1, "domain": "agent-permission", "id": "x", "kind": "chat-draft", "args": { "text": "allow" }, "intentId": "i", "expiresAtMs": 1060000 } },
-    { "name": "no domain", "action": { "v": 1, "id": "x", "kind": "chat-draft", "args": { "text": "hi" }, "intentId": "i", "expiresAtMs": 1060000 } },
-    { "name": "an unknown kind", "action": { "v": 1, "domain": "desktop-assistant", "id": "x", "kind": "run-command", "args": { "cmd": "calc" }, "intentId": "i", "expiresAtMs": 1060000 } },
-    { "name": "an approval smuggled in as a kind", "action": { "v": 1, "domain": "desktop-assistant", "id": "x", "kind": "approval-decision", "args": { "requestId": "1", "decision": "allow" }, "intentId": "i", "expiresAtMs": 1060000 } },
-    { "name": "an extra top-level field", "action": { "v": 1, "domain": "desktop-assistant", "id": "x", "kind": "chat-draft", "args": { "text": "hi" }, "intentId": "i", "expiresAtMs": 1060000, "requestId": "1" } }
+    { "name": "an agent permission is not an assistant action", "action": { "v": 2, "domain": "agent-permission", "id": "x", "kind": "chat-draft", "args": { "text": "allow" }, "intentId": "i", "expiresAtMs": 1060000 } },
+    { "name": "no domain", "action": { "v": 2, "id": "x", "kind": "chat-draft", "args": { "text": "hi" }, "intentId": "i", "expiresAtMs": 1060000 } },
+    { "name": "an unknown kind", "action": { "v": 2, "domain": "desktop-assistant", "id": "x", "kind": "run-command", "args": { "cmd": "calc" }, "intentId": "i", "expiresAtMs": 1060000 } },
+    { "name": "an approval smuggled in as a kind", "action": { "v": 2, "domain": "desktop-assistant", "id": "x", "kind": "approval-decision", "args": { "requestId": "1", "decision": "allow" }, "intentId": "i", "expiresAtMs": 1060000 } },
+    { "name": "an extra top-level field", "action": { "v": 2, "domain": "desktop-assistant", "id": "x", "kind": "chat-draft", "args": { "text": "hi" }, "intentId": "i", "expiresAtMs": 1060000, "requestId": "1" } }
   ],
   "voiceEvents": [
-    {"name": "a positional event", "valid": false, "event": [1, "cap-1", "idle"]},
-    {"name": "an object state", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": {"idle": null}}},
-    {"name": "an object error", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "error", "error": {"silence": null}}},
-    { "name": "listening with a level", "valid": true, "event": { "v": 1, "captureId": "cap-1", "state": "listening", "level": 0.4, "elapsedMs": 1200 } },
-    { "name": "a simulated preview", "valid": true, "event": { "v": 1, "captureId": "cap-1", "state": "preview", "elapsedMs": 3000, "transcript": "hello", "simulated": true } },
-    { "name": "an error", "valid": true, "event": { "v": 1, "captureId": "cap-1", "state": "error", "error": "no-microphone" } },
-    { "name": "idle", "valid": true, "event": { "v": 1, "captureId": "cap-1", "state": "idle" } },
-    {"name": "empty capture id", "valid": false, "event": {"v": 1, "captureId": "", "state": "listening"}},
-    {"name": "negative level", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "level": -0.1}},
-    {"name": "null level", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "level": null}},
-    {"name": "negative elapsed time", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "elapsedMs": -1}},
-    {"name": "fractional elapsed time", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "elapsedMs": 0.5}},
-    {"name": "unsafe elapsed time", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "elapsedMs": 9007199254740992}},
-    {"name": "null elapsed time", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "elapsedMs": null}},
-    {"name": "null transcript", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "transcript": null}},
-    {"name": "null simulated", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "simulated": null}},
-    {"name": "null error", "valid": false, "event": {"v": 1, "captureId": "cap-1", "state": "listening", "error": null}},
-    { "name": "an unknown state", "valid": false, "event": { "v": 1, "captureId": "cap-1", "state": "approving" } },
-    { "name": "another version", "valid": false, "event": { "v": 2, "captureId": "cap-1", "state": "idle" } },
-    { "name": "a level out of range", "valid": false, "event": { "v": 1, "captureId": "cap-1", "state": "listening", "level": 7 } },
-    { "name": "no capture id", "valid": false, "event": { "v": 1, "state": "idle" } },
-    { "name": "an unknown error", "valid": false, "event": { "v": 1, "captureId": "cap-1", "state": "error", "error": "boom" } }
+    {"name": "a positional event", "valid": false, "event": [2, "cap-1", "idle"]},
+    {"name": "an object state", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": {"idle": null}}},
+    {"name": "an object error", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "error", "error": {"silence": null}}},
+    { "name": "listening with a level", "valid": true, "event": { "v": 2, "captureId": "cap-1", "state": "listening", "level": 0.4, "elapsedMs": 1200 } },
+    { "name": "a simulated preview", "valid": true, "event": { "v": 2, "captureId": "cap-1", "state": "preview", "elapsedMs": 3000, "transcript": "hello", "simulated": true } },
+    { "name": "an error", "valid": true, "event": { "v": 2, "captureId": "cap-1", "state": "error", "error": "no-microphone" } },
+    { "name": "idle", "valid": true, "event": { "v": 2, "captureId": "cap-1", "state": "idle" } },
+    {"name": "empty capture id", "valid": false, "event": {"v": 2, "captureId": "", "state": "listening"}},
+    {"name": "negative level", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "level": -0.1}},
+    {"name": "null level", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "level": null}},
+    {"name": "negative elapsed time", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "elapsedMs": -1}},
+    {"name": "fractional elapsed time", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "elapsedMs": 0.5}},
+    {"name": "unsafe elapsed time", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "elapsedMs": 9007199254740992}},
+    {"name": "null elapsed time", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "elapsedMs": null}},
+    {"name": "null transcript", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "transcript": null}},
+    {"name": "null simulated", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "simulated": null}},
+    {"name": "null error", "valid": false, "event": {"v": 2, "captureId": "cap-1", "state": "listening", "error": null}},
+    { "name": "an unknown state", "valid": false, "event": { "v": 2, "captureId": "cap-1", "state": "approving" } },
+    { "name": "a v1 event", "valid": false, "event": { "v": 1, "captureId": "cap-1", "state": "idle" } },
+    { "name": "a future version", "valid": false, "event": { "v": 3, "captureId": "cap-1", "state": "idle" } },
+    { "name": "a level out of range", "valid": false, "event": { "v": 2, "captureId": "cap-1", "state": "listening", "level": 7 } },
+    { "name": "no capture id", "valid": false, "event": { "v": 2, "state": "idle" } },
+    { "name": "an unknown error", "valid": false, "event": { "v": 2, "captureId": "cap-1", "state": "error", "error": "boom" } }
   ]
 }

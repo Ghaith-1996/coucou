@@ -77,8 +77,8 @@ test("anything that isn't an object is not a voice event", () => {
 });
 
 test("unknown fields are not carried into the island", () => {
-  const parsed = parseVoiceEvent({ v: 1, captureId: "c", state: "idle", requestId: "1", decision: "allow" });
-  assert.deepEqual(parsed, { v: 1, captureId: "c", state: "idle" });
+  const parsed = parseVoiceEvent({ v: CONTRACT_VERSION, captureId: "c", state: "idle", requestId: "1", decision: "allow" });
+  assert.deepEqual(parsed, { v: CONTRACT_VERSION, captureId: "c", state: "idle" });
 });
 
 function sources(dir) {

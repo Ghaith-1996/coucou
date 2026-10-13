@@ -359,3 +359,95 @@ pub fn answer_question(app: &AppHandle, request_id: &str, answers: &HashMap<Stri
     let line = json!({ "answers": answers }).to_string();
     send(app, request_id, Reply::Decision(line), false);
 }
+
+#[cfg(test)]
+mod tests {
+    // The guarantees in the header, held as tests: whatever goes wrong, the
+    // relay is told nothing and Claude Code asks in the terminal. Only a human
+    // click ever produces a decision. The clock is paused, so the 108 s wait
+    // costs nothing.
+    use super::*;
+
+    fn channel() -> (mpsc::Sender<Reply>, mpsc::Receiver<Reply>) {
+        mpsc::channel::<Reply>(4)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_island_that_never_acknowledges_lets_the_terminal_take_over() {
+        let (_tx, mut rx) = channel();
+        assert_eq!(wait_for_decision("t", &mut rx).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_acknowledged_card_nobody_answers_times_out_to_the_terminal() {
+        let (tx, mut rx) = channel();
+        tx.send(Reply::Ack).await.unwrap();
+        let started = tokio::time::Instant::now();
+        assert_eq!(wait_for_decision("t", &mut rx).await, None);
+        assert!(started.elapsed() >= DECISION_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_decline_is_never_an_approval() {
+        let (tx, mut rx) = channel();
+        tx.send(Reply::Decline).await.unwrap();
+        assert_eq!(wait_for_decision("t", &mut rx).await, None);
+
+        let (tx, mut rx) = channel();
+        tx.send(Reply::Ack).await.unwrap();
+        tx.send(Reply::Decline).await.unwrap();
+        assert_eq!(wait_for_decision("t", &mut rx).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_island_is_never_an_approval() {
+        let (tx, mut rx) = channel();
+        drop(tx);
+        assert_eq!(wait_for_decision("t", &mut rx).await, None);
+
+        let (tx, mut rx) = channel();
+        tx.send(Reply::Ack).await.unwrap();
+        drop(tx);
+        assert_eq!(wait_for_decision("t", &mut rx).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_a_click_decides() {
+        let (tx, mut rx) = channel();
+        tx.send(Reply::Ack).await.unwrap();
+        tx.send(Reply::Decision("deny".into())).await.unwrap();
+        assert_eq!(wait_for_decision("t", &mut rx).await.as_deref(), Some("deny"));
+
+        // A click that beats the ack is still a click.
+        let (tx, mut rx) = channel();
+        tx.send(Reply::Decision("allow".into())).await.unwrap();
+        assert_eq!(wait_for_decision("t", &mut rx).await.as_deref(), Some("allow"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_late_click_after_the_timeout_is_ignored() {
+        let (tx, mut rx) = channel();
+        tx.send(Reply::Ack).await.unwrap();
+        let late = tokio::spawn(async move {
+            tokio::time::sleep(DECISION_TIMEOUT + Duration::from_secs(1)).await;
+            let _ = tx.send(Reply::Decision("allow".into())).await;
+        });
+        assert_eq!(wait_for_decision("t", &mut rx).await, None);
+        late.await.unwrap();
+    }
+
+    #[test]
+    fn we_always_answer_before_the_relay_gives_up() {
+        // coucou-hook waits 110 s (hook/src/main.rs); answering after it left
+        // would be an answer nobody reads.
+        assert!(DECISION_TIMEOUT < Duration::from_secs(110));
+        assert!(ACK_TIMEOUT < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn the_log_never_holds_what_was_answered() {
+        assert_eq!(loggable("allow"), "allow");
+        assert_eq!(loggable("deny"), "deny");
+        assert_eq!(loggable(r#"{"answers":{"Pick":"secret"}}"#), "a question");
+    }
+}

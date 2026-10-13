@@ -233,7 +233,7 @@ impl Voice {
         if !ours {
             return;
         }
-        let outcome = serde_json::to_value(receipt.outcome).ok();
+        let outcome = serde_json::to_value(receipt.outcome()).ok();
         let outcome = outcome.as_ref().and_then(|v| v.as_str()).unwrap_or("?");
         (self.0.log)(format!("assistant action {} {outcome}", receipt.action_id));
     }

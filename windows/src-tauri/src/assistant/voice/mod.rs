@@ -168,7 +168,9 @@ impl Voice {
         let mut phase = self.0.phase.lock().unwrap();
         match &*phase {
             Phase::Listening { id, signal } => {
-                signal.store(STOP, Ordering::SeqCst);
+                // A pending cancellation is terminal, even before the capture
+                // thread has closed the microphone and left Listening.
+                let _ = signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst);
                 Some(id.clone())
             }
             // Busy turning the last one into text: a press waits for it.
@@ -199,7 +201,7 @@ impl Voice {
     pub fn stop(&self, capture_id: &str) {
         if let Phase::Listening { id, signal } = &*self.0.phase.lock().unwrap() {
             if id == capture_id {
-                signal.store(STOP, Ordering::SeqCst);
+                let _ = signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst);
             }
         }
     }

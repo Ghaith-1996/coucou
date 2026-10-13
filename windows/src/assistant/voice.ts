@@ -30,11 +30,16 @@ export interface VoiceHost {
 
 /** How long an error stays on the card before it goes by itself. */
 const ERROR_SHOWN_MS = 4000;
+/** Matches Rust's PREVIEW_TTL: a transcript stops waiting after two minutes. */
+const PREVIEW_TTL_MS = 120_000;
 
 let host: VoiceHost | null = null;
 /** True once the card was seen on screen for the current capture. */
 let shown = false;
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
+let previewTimer: ReturnType<typeof setTimeout> | null = null;
+/** Survives Rust's normal idle-before-reply event, but not a new capture or Cancel. */
+let generation = 0;
 /** The card pinned the island; `userPinned` is what it was before. */
 let pinnedByVoice = false;
 let userPinned = false;
@@ -86,6 +91,7 @@ export async function voiceShortcut() {
     return;
   }
   if (current?.state === "processing") return;
+  generation++;
   end(false);
   const pending = {
     events: new Map<string, VoiceEvent>(), cancelled: false, stop: false,
@@ -117,6 +123,7 @@ export function voiceStop() {
 }
 
 export function voiceCancel() {
+  generation++;
   if (starting) starting.cancelled = true;
   const current = Voice.event;
   if (!current) return;
@@ -132,8 +139,13 @@ export function voiceCancel() {
 export async function voiceUse() {
   const current = Voice.event;
   if (current?.state !== "preview" || !host) return;
+  const requestGeneration = generation;
   try {
     const draft = await Bridge.voiceUse(current.captureId);
+    if (requestGeneration !== generation) {
+      void Bridge.actionReceipt({ actionId: draft.actionId, outcome: "cancelled", errorCode: "cancelled" });
+      return;
+    }
     end(false);
     const there = host.showChatDraft(draft.text);
     void Bridge.actionReceipt(
@@ -142,6 +154,7 @@ export async function voiceUse() {
         : { actionId: draft.actionId, outcome: "failed", errorCode: "unverified" },
     );
   } catch {
+    if (requestGeneration !== generation) return;
     // Expired or refused: nothing was done.
     end();
     Sound.play("error");
@@ -151,7 +164,9 @@ export async function voiceUse() {
 /** Forgets the capture; `close` folds the card away. */
 function end(close = true) {
   if (errorTimer) clearTimeout(errorTimer);
+  if (previewTimer) clearTimeout(previewTimer);
   errorTimer = null;
+  previewTimer = null;
   captureId = null;
   Voice.event = null;
   shown = false;
@@ -192,7 +207,16 @@ function accept(event: VoiceEvent) {
     }
     host?.takeKeyboard();
   }
-  if (event.state === "preview" && current?.state !== "preview") Sound.play("finish");
+  if (event.state !== "preview" && previewTimer) {
+    clearTimeout(previewTimer);
+    previewTimer = null;
+  }
+  if (event.state === "preview" && current?.state !== "preview") {
+    Sound.play("finish");
+    previewTimer = setTimeout(() => {
+      if (Voice.event?.captureId === event.captureId && Voice.event.state === "preview") voiceCancel();
+    }, PREVIEW_TTL_MS);
+  }
   if (event.state === "error") {
     Sound.play("error");
     host?.emote("annoyed");
@@ -211,6 +235,7 @@ function guard() {
     starting.cancelled = true;
   }
   if (waitingCard()) {
+    generation++;
     if (starting) starting.cancelled = true;
     if (Voice.active) voiceCancel();
     return;
@@ -237,8 +262,11 @@ export function registerVoice(islandHost: VoiceHost) {
 
 /** Tests only: back to no capture and no island. */
 export function resetVoiceForTests() {
+  generation++;
   if (errorTimer) clearTimeout(errorTimer);
+  if (previewTimer) clearTimeout(previewTimer);
   errorTimer = null;
+  previewTimer = null;
   captureId = null;
   Voice.event = null;
   shown = false;

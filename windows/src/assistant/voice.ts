@@ -71,8 +71,18 @@ let starting: {
 export const Voice = {
   /** The latest event of the current capture; null when there is none. */
   event: null as VoiceEvent | null,
-  /** What the transcript asks of the pills, when it is a pill command. */
-  command: null as PillPlan | null,
+  /** Derive the preview from current settings, including initially blocked plans.
+   * Render/keyboard listeners see the same up-to-date plan regardless of their
+   * subscription order; reading it never executes an action or renews the TTL.
+   */
+  get command(): PillPlan | null {
+    const event = this.event;
+    if (event?.state !== "preview" || event.simulated) return null;
+    return planPills(
+      parseTranscript(event.transcript ?? "", availablePills(HOST_OS)),
+      sanitizeDeclared(State.settings, HOST_OS), HOST_OS,
+    );
+  },
   /** "Open <app>": the name said, then the app Rust found and its grant. */
   app: null as AppOffer | null,
 
@@ -191,7 +201,6 @@ export async function voiceDo() {
   // intent to today's declaration, never the whole set saved in the preview.
   const before = sanitizeDeclared(State.settings, HOST_OS);
   const command = planPills(parseTranscript(current.transcript ?? "", availablePills(HOST_OS)), before, HOST_OS);
-  Voice.command = command;
   if (!command?.ok) {
     State.notify();
     return;
@@ -272,7 +281,6 @@ function end(close = true) {
   previewTimer = null;
   captureId = null;
   Voice.event = null;
-  Voice.command = null;
   Voice.app = null;
   shown = false;
   unpin();
@@ -289,7 +297,11 @@ function unpin() {
 
 function accept(event: VoiceEvent) {
   if (starting) {
-    starting.events.set(event.captureId, event);
+    // Idle retires this capture. An interruption can emit it before a
+    // previously queued processing/listening event reaches the page.
+    if (starting.events.get(event.captureId)?.state !== "idle") {
+      starting.events.set(event.captureId, event);
+    }
     return;
   }
   if (event.captureId !== captureId) return;
@@ -321,7 +333,6 @@ function accept(event: VoiceEvent) {
     // Only a real transcript can be a command: a simulated one is a placeholder.
     const intents = event.simulated ? [] : parseTranscript(event.transcript ?? "", availablePills(HOST_OS));
     const open = intents.length === 1 && intents[0].kind === "openApp" ? intents[0].name : null;
-    Voice.command = event.simulated || open ? null : planPills(intents, State.settings, HOST_OS);
     Voice.app = open ? { name: open, status: "finding" } : null;
     if (open) void findApp(event.captureId, open);
     previewTimer = setTimeout(() => {
@@ -380,7 +391,6 @@ export function resetVoiceForTests() {
   previewTimer = null;
   captureId = null;
   Voice.event = null;
-  Voice.command = null;
   Voice.app = null;
   shown = false;
   pinnedByVoice = false;

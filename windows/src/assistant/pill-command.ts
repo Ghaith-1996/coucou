@@ -57,10 +57,13 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
         break;
       }
       case "pillAddMultiple": {
-        const added = intent.ids.filter((x) => add(x));
+        const added = [...new Set(intent.ids)].filter((id) => id !== main && !active.includes(id));
+        // One spoken request is atomic: never confirm only the subset that fits.
+        if (active.length + added.length > MAX_DECLARED) return { ok: false, reason: full() };
         if (added.length === 0) {
           return { ok: false, reason: active.length >= MAX_DECLARED ? full() : t("{name} is already in the island.", { name: names(intent.ids) }) };
         }
+        active.push(...added);
         labels.push(t("Add {names}", { names: names(added) }));
         break;
       }
@@ -91,6 +94,7 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
           main = intent.new;
           active = active.filter((x) => x !== main);
         } else {
+          if (!active.includes(intent.old)) return { ok: false, reason: t("{name} isn't in the island.", { name: name(intent.old) }) };
           active = active.filter((x) => x !== intent.old);
           if (intent.new !== main && !active.includes(intent.new)) {
             if (active.length >= MAX_DECLARED) return { ok: false, reason: full() };

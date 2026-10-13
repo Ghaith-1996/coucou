@@ -39,10 +39,13 @@ from a controlled list and only after the user confirms.
 5. **Open** (`assistant/launch.rs`): the app is found again by its id in a
    fresh list, then opened as Start opens it: `ShellExecuteEx` on
    `shell:AppsFolder\<AppID>`, with no arguments and no error dialog.
-6. **Receipt**: `succeeded` needs evidence. Either a visible top-level window
-   of the started process, or another app's window coming to the front (Store
-   apps and apps already running open through another process). With neither
-   within 10 s the outcome is `unknown`, never retried automatically. An app
+6. **Receipt**: `succeeded` needs a visible, unowned top-level window belonging
+   to the process returned by `ShellExecuteEx`. Its handle stays open during
+   the wait so its PID cannot be reused. A foreground change alone is not
+   evidence: the user may have switched to an unrelated app. Store apps and
+   apps already running can open through another process; without a window
+   correlated to the returned process within 10 s, the outcome is `unknown`,
+   never retried automatically. An app
    that disappeared from the list in the meantime gives `failed`
    (`unavailable`). The log has the action id and outcome, never the app's
    name.
@@ -50,7 +53,10 @@ from a controlled list and only after the user confirms.
 Nothing opens without the click. A simulated transcript never looks for an
 app. "Use in chat" stays available next to "Open <app>".
 
-## Verification
+## Initial implementation verification
+
+These are the original checks. The stricter evidence check below replaces the
+foreground-only success rule used by the original Calculator smoke test.
 
 | Check | Result |
 |---|---|
@@ -58,6 +64,17 @@ app. "Use in chat" stays available next to "Open <app>".
 | Rust unit tests | matching (exact before longer, words, Whisper spellings, short names), French names (an app really called that wins), ids (policy-safe, distinct per entry, case-insensitive), filtering (uninstallers, links, documents, quotes/control characters), proposal → confirm once, forged digest / later expiry / other action → mismatch and the proposal is gone, cancel drops it, only `{appId}` and only for a waiting transcript |
 | JS tests | the Mac's 4 VoiceQueryTests cases + Whisper's punctuation, politeness, articles, dictation not taken for a name; the card finds then offers the app, opens nothing before the click, sends back exactly Rust's grant, a missing app says so and keeps "Use in chat", a late answer for an older capture changes nothing, a simulated transcript never looks |
 | Real list (opt-in) | 238 apps; Calculator, Notepad, Spotify (Store), VS Code, Paint, Discord found; "calculatrice" → Calculator |
-| Real launch (opt-in) | Calculator opened in 0.3 s, receipt `succeeded` with `foreground:pid:…`; closed after. An AppID not in the list → `failed`, no dialog |
+| Real launch (opt-in) | Calculator opened in 0.3 s and was closed afterwards, but the original foreground-only receipt did not prove correlation. Not rerun with the stricter evidence rule; Store/reused-process activation may now report `unknown`. An AppID not in the list → `failed`, no dialog |
 | Totals | `scripts\cargo-vs.cmd test --workspace --locked` 484 + 30 pass (7 opt-in ignored); `npm test` 644 pass |
 | **Not verified** | The whole path spoken through the live microphone in the running app (each step is covered separately) |
+
+### Evidence-correlation regression checks
+
+`tests/assistant-launch-evidence.test.mjs` guards the native source against
+foreground-only success, requires the shell PID evidence path, and checks that
+the process handle remains owned through polling. These three source-contract
+checks failed before the fix and pass after it. `assistant/launch.rs` also has
+unit cases for a matching visible window, an unrelated PID, missing launch PID
+(Store/reused-process activation), and hidden/owned windows. The Rust cases and
+opt-in real-app smoke tests require Windows and were not run in the Linux review
+environment, which has no Rust toolchain; no application was launched.

@@ -47,9 +47,11 @@ impl Local {
 impl Local {
     /// Transcribes with the model in `model`, loading it first when another
     /// one (or none) is loaded.
-    /// Gives up at whisper.cpp's next check once `abort` is true: after the
-    /// encoder pass under way, or the next decoder step. (Its scheduler does
-    /// not pass the callback into a pass, so a pass is never cut short.)
+    /// Skips preparation and model loading when already cancelled. During
+    /// inference, gives up at whisper.cpp's next check once `abort` is true:
+    /// after the encoder pass under way, or the next decoder step. (Its
+    /// scheduler does not pass the callback into a pass, so a pass is never
+    /// cut short.)
     pub fn transcribe_with(
         &self,
         model: &Path,
@@ -57,14 +59,44 @@ impl Local {
         sample_rate: u32,
         abort: &AtomicBool,
     ) -> Result<Transcript, VoiceError> {
-        let audio = resample(samples, sample_rate, WHISPER_RATE);
+        self.transcribe_using(
+            model,
+            abort,
+            || resample(samples, sample_rate, WHISPER_RATE),
+            || {
+                // The graphics card when this build has the Vulkan backend.
+                let params = WhisperContextParameters { use_gpu: cfg!(feature = "gpu-vulkan"), ..Default::default() };
+                WhisperContext::new_with_params(model, params).map_err(|_| VoiceError::Provider)
+            },
+        )
+    }
+
+    fn transcribe_using(
+        &self,
+        model: &Path,
+        abort: &AtomicBool,
+        prepare_audio: impl FnOnce() -> Vec<f32>,
+        load_model: impl FnOnce() -> Result<WhisperContext, VoiceError>,
+    ) -> Result<Transcript, VoiceError> {
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
+        }
+        let audio = prepare_audio();
         let mut guard = self.ctx.lock().unwrap();
+        // Cancellation may happen while resampling or waiting for the last
+        // capture. Do not evict its model or start another expensive load.
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
+        }
         if guard.as_ref().is_none_or(|(loaded, _)| loaded != model) {
             *guard = None;
-            // The graphics card when this build has the Vulkan backend.
-            let params = WhisperContextParameters { use_gpu: cfg!(feature = "gpu-vulkan"), ..Default::default() };
-            let ctx = WhisperContext::new_with_params(model, params).map_err(|_| VoiceError::Provider)?;
+            let ctx = load_model()?;
             *guard = Some((model.to_path_buf(), ctx));
+        }
+        // A load already under way cannot be interrupted; skip the state
+        // allocation and inference if cancellation arrived during it.
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
         }
         let (_, ctx) = guard.as_ref().ok_or(VoiceError::Provider)?;
         let mut state = ctx.create_state().map_err(|_| VoiceError::Provider)?;
@@ -152,6 +184,77 @@ pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_transcription_skips_preprocessing_and_model_loading() {
+        let local = Local { ctx: Mutex::new(None) };
+        // Even an unusable cache must be untouched by an already-cancelled call.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = local.ctx.lock().unwrap();
+            panic!("poison the model cache");
+        }));
+        assert!(local.ctx.is_poisoned());
+        let result = local.transcribe_using(
+            Path::new("unused-model.bin"),
+            &AtomicBool::new(true),
+            || panic!("cancelled audio must not be resampled"),
+            || panic!("cancelled capture must not load a model"),
+        );
+        assert_eq!(result, Err(VoiceError::Provider));
+    }
+
+    #[test]
+    fn cancellation_while_waiting_for_the_model_skips_loading() {
+        use std::sync::mpsc;
+
+        let local = Local { ctx: Mutex::new(None) };
+        let abort = AtomicBool::new(false);
+        let guard = local.ctx.lock().unwrap();
+        let (prepared, ready) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let local = &local;
+            let abort = &abort;
+            let worker = scope.spawn(move || {
+                local.transcribe_using(
+                    Path::new("unused-model.bin"),
+                    abort,
+                    || {
+                        prepared.send(()).unwrap();
+                        Vec::new()
+                    },
+                    || panic!("cancelled capture must not load a model"),
+                )
+            });
+            // The entry check has passed, but the context lock is still held.
+            // Cancel before releasing it, without depending on thread timing.
+            ready.recv().unwrap();
+            abort.store(true, Ordering::SeqCst);
+            drop(guard);
+            assert_eq!(worker.join().unwrap(), Err(VoiceError::Provider));
+        });
+    }
+
+    #[test]
+    fn active_transcription_reaches_preprocessing_and_model_loading() {
+        let local = Local { ctx: Mutex::new(None) };
+        let prepared = AtomicBool::new(false);
+        let loaded = AtomicBool::new(false);
+        let result = local.transcribe_using(
+            Path::new("unused-model.bin"),
+            &AtomicBool::new(false),
+            || {
+                prepared.store(true, Ordering::SeqCst);
+                Vec::new()
+            },
+            || {
+                assert!(prepared.load(Ordering::SeqCst));
+                loaded.store(true, Ordering::SeqCst);
+                Err(VoiceError::Provider)
+            },
+        );
+        assert_eq!(result, Err(VoiceError::Provider));
+        assert!(loaded.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn resampling_keeps_the_duration() {

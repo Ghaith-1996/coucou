@@ -7,7 +7,7 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 import { State } from "../src/core/state.ts";
-import { Voice, registerVoice, resetVoiceForTests, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
+import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
 
 // What the fake Rust answers, per command.
 const answers = new Map();
@@ -212,3 +212,156 @@ test("an error shows, then goes by itself", async (t) => {
   t.mock.timers.tick(4000);
   assert.equal(Voice.event, null);
 });
+
+
+function pendingStart() {
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_toggle", deferred.promise);
+  return { ...deferred, finished: voiceShortcut() };
+}
+
+for (const error of ["no-microphone", "microphone-denied"]) {
+  test(`${error} before the toggle reply stays an error, then releases the island`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const start = pendingStart();
+    emit("assistant-voice", ev("cap-1", "error", { error }));
+    start.resolve("cap-1");
+    await start.finished;
+    assert.equal(Voice.event.state, "error");
+    assert.equal(Voice.event.error, error);
+    t.mock.timers.tick(4000);
+    assert.equal(Voice.event, null);
+    assert.equal(State.isPinned, false);
+    assert.equal(State.mode, "compact");
+  });
+}
+
+for (const state of ["processing", "preview", "idle"]) {
+  test(`${state} before the toggle reply is not overwritten by listening`, async () => {
+    const start = pendingStart();
+    emit("assistant-voice", ev("cap-1", "listening"));
+    emit("assistant-voice", ev("cap-1", state));
+    start.resolve("cap-1");
+    await start.finished;
+    assert.equal(Voice.event?.state ?? null, state === "idle" ? null : state);
+    if (state === "idle") {
+      assert.deepEqual(host.alerts, []);
+      assert.equal(State.isPinned, false);
+    }
+  });
+}
+
+for (const view of ["approval", "question"]) {
+  test(`${view} arriving during startup keeps the island and cancels the returned capture`, async () => {
+    const start = pendingStart();
+    State.pendingApproval = { requestId: "r1", ...(view === "question" && { questions: [] }) };
+    State.isPinned = true;
+    host.alert(view);
+    emit("assistant-voice", ev("cap-1", "listening"));
+    start.resolve("cap-1");
+    await start.finished;
+    assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+    assert.deepEqual(host.alerts, [view]);
+    assert.equal(State.view, view);
+    assert.equal(State.isPinned, true);
+    assert.equal(Voice.event, null);
+    emit("assistant-voice", ev("cap-1", "listening"));
+    assert.equal(Voice.event, null);
+  });
+}
+
+test("an approval seen during startup still cancels if it was withdrawn before the reply", async () => {
+  const start = pendingStart();
+  State.pendingApproval = { requestId: "r1" };
+  State.notify();
+  State.pendingApproval = null;
+  State.notify();
+  start.resolve("cap-1");
+  await start.finished;
+  assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+  assert.deepEqual(host.alerts, []);
+});
+
+test("cancel during startup retires the capture before any late event", async () => {
+  const start = pendingStart();
+  voiceCancel();
+  start.resolve("cap-1");
+  await start.finished;
+  for (const state of ["listening", "preview", "idle"]) emit("assistant-voice", ev("cap-1", state));
+  assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+  assert.equal(Voice.event, null);
+  assert.deepEqual(host.alerts, []);
+});
+
+test("stale listening cannot replace an active capture or revive an ended capture", async () => {
+  await startListening("cap-2");
+  emit("assistant-voice", ev("cap-1", "listening"));
+  assert.equal(Voice.event.captureId, "cap-2");
+  emit("assistant-voice", ev("cap-2", "idle"));
+  emit("assistant-voice", ev("cap-2", "listening"));
+  assert.equal(Voice.event, null);
+  assert.deepEqual(host.alerts, ["voice"]);
+});
+
+test("startup only keeps events for the returned capture id", async () => {
+  const start = pendingStart();
+  emit("assistant-voice", ev("old", "error", { error: "no-microphone" }));
+  start.resolve("cap-1");
+  await start.finished;
+  assert.equal(Voice.event.captureId, "cap-1");
+  assert.equal(Voice.event.state, "listening");
+});
+
+test("a second shortcut during startup queues stop instead of starting a second capture", async () => {
+  const start = pendingStart();
+  const second = voiceShortcut();
+  start.resolve("cap-1");
+  await Promise.all([start.finished, second]);
+  assert.equal(sent("assistant_voice_toggle").length, 1);
+  assert.deepEqual(sent("assistant_voice_stop"), [{ captureId: "cap-1" }]);
+});
+
+test("a null toggle response allows a later start", async () => {
+  const start = pendingStart();
+  start.resolve(null);
+  await start.finished;
+  await startListening("cap-2");
+  assert.equal(Voice.event.captureId, "cap-2");
+});
+
+test("approval cancels before the view has changed away from the expanded voice card", async () => {
+  await startListening();
+  State.pendingApproval = { requestId: "r1" };
+  State.notify();
+  assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+  assert.equal(State.isPinned, true);
+});
+
+for (const change of ["close", "hide", "navigate", "navigate-back"]) {
+  test(`${change} while startup is pending cancels without reopening voice`, async () => {
+    State.mode = "expanded";
+    const start = pendingStart();
+    emit("assistant-voice", ev("cap-1", "listening"));
+    if (change === "close") host.collapse();
+    else if (change === "hide") {
+      State.mode = "hidden";
+      State.notify();
+    } else {
+      State.view = "prompt";
+      State.notify();
+      if (change === "navigate-back") {
+        State.view = "overview";
+        State.notify();
+      }
+    }
+    const mode = State.mode;
+    const view = State.view;
+    start.resolve("cap-1");
+    await start.finished;
+    assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+    assert.equal(Voice.event, null);
+    assert.deepEqual(host.alerts, []);
+    assert.equal(State.mode, mode);
+    assert.equal(State.view, view);
+  });
+}

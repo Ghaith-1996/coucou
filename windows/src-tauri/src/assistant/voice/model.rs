@@ -51,6 +51,8 @@ static RECEIVED: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    /// This build has both the microphone adapter and local transcriber.
+    pub supported: bool,
     pub installed: bool,
     pub downloading: bool,
     pub received: u64,
@@ -61,11 +63,22 @@ pub struct Status {
 
 pub fn status() -> Status {
     Status {
-        installed: installed(),
+        supported: cfg!(windows),
+        installed: cfg!(windows) && installed(),
         downloading: DOWNLOADING.load(Ordering::SeqCst),
         received: RECEIVED.load(Ordering::SeqCst),
         size: MODEL.size,
         source: MODEL.url,
+    }
+}
+
+/// UI visibility is not an authority boundary: model commands also refuse
+/// unsupported builds before they can touch files or start a download.
+pub fn require_supported() -> Result<(), String> {
+    if cfg!(windows) {
+        Ok(())
+    } else {
+        Err("local speech recognition is only supported on Windows".into())
     }
 }
 
@@ -74,6 +87,7 @@ pub fn cancel() {
 }
 
 pub fn delete() -> Result<(), String> {
+    require_supported()?;
     if DOWNLOADING.load(Ordering::SeqCst) {
         return Err("a download is running".into());
     }
@@ -102,6 +116,7 @@ fn hex(bytes: &[u8]) -> String {
 /// Downloads the model. `progress` is called with the bytes received so far.
 /// Only one download at a time; `cancel` stops it and removes the partial file.
 pub async fn download(mut progress: impl FnMut(u64)) -> Result<(), String> {
+    require_supported()?;
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("already downloading".into());
     }
@@ -153,6 +168,14 @@ async fn fetch(part: &std::path::Path, progress: &mut impl FnMut(u64)) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_model_support_matches_the_compiled_backend() {
+        assert_eq!(status().supported, cfg!(windows));
+        assert_eq!(require_supported().is_ok(), cfg!(windows));
+        #[cfg(not(windows))]
+        assert!(!status().installed);
+    }
 
     #[test]
     fn only_the_pinned_file_passes() {

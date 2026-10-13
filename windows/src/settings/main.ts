@@ -1362,6 +1362,7 @@ async function render() {
   localRedraw = null;
   shortcutsListener = null;
   clear(root);
+  const voice = voiceSection(voiceModel);
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
@@ -1374,7 +1375,7 @@ async function render() {
     integrationsSection(present),
     phoneSection(settings.phoneLink ?? false, toggle, settings),
     generalSection(),
-    voiceSection(voiceModel),
+    ...(voice ? [voice] : []),
     shortcutsSection(shortcutReport),
     h("div", {
       class: "hint",

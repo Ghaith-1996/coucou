@@ -181,7 +181,9 @@ impl Voice {
         let mut phase = self.0.phase.lock().unwrap();
         match &*phase {
             Phase::Listening { id, signal } => {
-                signal.store(STOP, Ordering::SeqCst);
+                // A pending cancellation is terminal, even before the capture
+                // thread has closed the microphone and left Listening.
+                let _ = signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst);
                 Some(id.clone())
             }
             // Busy turning the last one into text: a press waits for it.
@@ -213,7 +215,7 @@ impl Voice {
     pub fn stop(&self, capture_id: &str) {
         if let Phase::Listening { id, signal } = &*self.0.phase.lock().unwrap() {
             if id == capture_id {
-                signal.store(STOP, Ordering::SeqCst);
+                let _ = signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst);
             }
         }
     }
@@ -272,7 +274,8 @@ impl Voice {
         if kind != ActionKind::LaunchApp {
             return Err(ErrorCode::Unavailable);
         }
-        match &*self.0.phase.lock().unwrap() {
+        let phase = self.0.phase.lock().unwrap();
+        match &*phase {
             Phase::Preview { id, since, .. } if id == capture_id && since.elapsed() <= PREVIEW_TTL => {}
             _ => return Err(ErrorCode::Expired),
         }
@@ -288,21 +291,34 @@ impl Voice {
         };
         let Some(grant) = policy::grant_for(&action, now) else {
             let code = policy::decide(&action, now).error.unwrap_or(ErrorCode::InvalidArgs);
+            drop(phase);
             (self.0.log)(format!("voice: launch app refused ({})", code_name(code)));
             return Err(code);
         };
-        (self.0.log)(format!("voice: launch app {} proposed", action.id));
+        // Publish before releasing capture ownership, so a newer capture
+        // cannot be replaced by this request after its preview check.
         *self.0.proposal.lock().unwrap() = Some(Proposal { capture: capture_id.to_string(), action });
+        drop(phase);
+        (self.0.log)(format!("voice: launch app {} proposed", grant.action_id));
         Ok(grant)
     }
 
     /// The user's click on a proposal: its grant must be the one Rust gave
     /// for the action it kept, for this capture, still in time. Everything
-    /// is decided again (policy::check_grant). The proposal and the
-    /// transcript are used once, whatever the answer. Returns the action id
-    /// and its checked arguments, for the caller to run.
+    /// is decided again (policy::check_grant). This capture's proposal and
+    /// transcript are used once, whatever the answer; a stale capture cannot
+    /// consume a newer proposal. Returns the action id and its checked
+    /// arguments, for the caller to run.
     pub fn confirm(&self, capture_id: &str, grant: &policy::Grant) -> Result<(String, ValidArgs), ErrorCode> {
-        let proposal = self.0.proposal.lock().unwrap().take();
+        let proposal = {
+            let mut proposal = self.0.proposal.lock().unwrap();
+            // A delayed click from a replaced card must leave the current
+            // card's proposal intact. Check and take under the same lock.
+            if proposal.as_ref().is_some_and(|p| p.capture != capture_id) {
+                return Err(ErrorCode::GrantMismatch);
+            }
+            proposal.take()
+        };
         let result = match proposal {
             Some(p) if p.capture == capture_id && p.action.id == grant.action_id => {
                 policy::check_grant(grant, &p.action, policy::now_ms()).map(|args| (p.action.id, args))
@@ -326,16 +342,20 @@ impl Voice {
     /// The transcript waiting on the island for this capture, taken off it:
     /// the card goes back to idle whatever comes next.
     fn take_preview(&self, capture_id: &str) -> Result<Transcript, ErrorCode> {
-        // Whatever the transcript was offering goes with it.
-        if self.0.proposal.lock().unwrap().as_ref().is_some_and(|p| p.capture == capture_id) {
-            *self.0.proposal.lock().unwrap() = None;
-        }
         let mut phase = self.0.phase.lock().unwrap();
         let Phase::Preview { id, transcript, since } = &*phase else {
             return Err(ErrorCode::Expired);
         };
         if id != capture_id {
             return Err(ErrorCode::Expired);
+        }
+        // Whatever this transcript was offering goes with it. Keep capture
+        // ownership until both are consumed, in phase → proposal lock order.
+        {
+            let mut proposal = self.0.proposal.lock().unwrap();
+            if proposal.as_ref().is_some_and(|p| p.capture == capture_id) {
+                *proposal = None;
+            }
         }
         let stale = since.elapsed() > PREVIEW_TTL;
         let transcript = transcript.clone();

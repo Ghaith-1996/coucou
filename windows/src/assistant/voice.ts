@@ -248,7 +248,11 @@ function unpin() {
 
 function accept(event: VoiceEvent) {
   if (starting) {
-    starting.events.set(event.captureId, event);
+    // Idle retires this capture. An interruption can emit it before a
+    // previously queued processing/listening event reaches the page.
+    if (starting.events.get(event.captureId)?.state !== "idle") {
+      starting.events.set(event.captureId, event);
+    }
     return;
   }
   if (event.captureId !== captureId) return;

@@ -94,6 +94,7 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
           main = intent.new;
           active = active.filter((x) => x !== main);
         } else {
+          if (!active.includes(intent.old)) return { ok: false, reason: t("{name} isn't in the island.", { name: name(intent.old) }) };
           active = active.filter((x) => x !== intent.old);
           if (intent.new !== main && !active.includes(intent.new)) {
             if (active.length >= MAX_DECLARED) return { ok: false, reason: full() };

@@ -225,3 +225,28 @@ test("a later oversized multi-add cannot leave an earlier partial plan", () => {
   ], current, "windows"), { ok: false, reason: "Already 4 pills: remove one first." });
   assert.deepEqual(current, before);
 });
+
+test("replacement rejects an absent source instead of adding its target", () => {
+  const current = declared("integration_claude", "integration_notion");
+  const before = structuredClone(current);
+  assert.deepEqual(plan("Replace Vercel with GitHub.", current), {
+    ok: false, reason: "Vercel isn't in the island.",
+  });
+  assert.deepEqual(current, before);
+});
+
+test("an absent replacement source is rejected even when its target is already active", () => {
+  const current = declared("integration_claude", "integration_github");
+  assert.deepEqual(plan("Replace Vercel with GitHub.", current), {
+    ok: false, reason: "Vercel isn't in the island.",
+  });
+});
+
+test("an absent replacement source rejects the whole multi-action plan", () => {
+  const current = declared("integration_claude", "integration_notion");
+  assert.deepEqual(planPills([
+    { kind: "pillAdd", id: "integration_stripe" },
+    { kind: "pillReplace", old: "integration_vercel", new: "integration_github" },
+  ], current, "windows"), { ok: false, reason: "Vercel isn't in the island." });
+  assert.deepEqual(current, declared("integration_claude", "integration_notion"));
+});

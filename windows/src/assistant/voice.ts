@@ -20,7 +20,7 @@ import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
 import { State } from "../core/state";
-import { VOICE_EVENT, parseVoiceEvent, succeededReceipt, type VoiceEvent } from "./contracts";
+import { CONTRACT_VERSION, VOICE_EVENT, parseVoiceEvent, succeededReceipt, type VoiceEvent } from "./contracts";
 import { parseTranscript } from "./intents";
 import { planPills, sameList, type Declared, type PillPlan } from "./pill-command";
 
@@ -135,7 +135,7 @@ export async function voiceShortcut() {
   captureId = id;
   // Keep the newest real state, especially an immediate error or idle. Only
   // synthesize listening when Rust has not sent an event for this capture.
-  accept(pending.events.get(id) ?? { v: 1, captureId: id, state: "listening", level: 0, elapsedMs: 0 });
+  accept(pending.events.get(id) ?? { v: CONTRACT_VERSION, captureId: id, state: "listening", level: 0, elapsedMs: 0 });
   if (pending.stop && Voice.event?.state === "listening") void Bridge.voiceStop(id);
 }
 

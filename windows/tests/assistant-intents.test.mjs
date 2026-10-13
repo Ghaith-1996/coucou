@@ -122,6 +122,53 @@ test("the main pill, replacing and keeping only", () => {
   assert.deepEqual(only.next, declared("integration_claude", "integration_github"));
 });
 
+test("replacing the main pill changes the main and preserves secondary pills", () => {
+  const current = declared("integration_claude", "integration_github", "integration_vercel");
+  const before = structuredClone(current);
+  const got = plan("Replace VS Code with Cursor.", current);
+  assert.equal(got.ok, true);
+  assert.equal(got.label, "Replace VS Code with Cursor");
+  assert.deepEqual(got.next, declared("agent_cursor", "integration_github", "integration_vercel"));
+  assert.deepEqual(current, before);
+});
+
+test("replacing the main pill works with a full island and removes the new main from secondary pills", () => {
+  for (const active of [
+    ["integration_github", "integration_vercel", "integration_notion", "integration_stripe"],
+    ["integration_github", "agent_cursor", "integration_notion", "integration_stripe"],
+  ]) {
+    const got = plan("Replace VS Code with Cursor.", declared("integration_claude", ...active));
+    assert.equal(got.ok, true);
+    assert.deepEqual(got.next, declared("agent_cursor", ...active.filter((id) => id !== "agent_cursor")));
+  }
+});
+
+test("replacing the main pill with an ineligible main is rejected", () => {
+  const current = declared("integration_claude", "integration_vercel");
+  assert.deepEqual(plan("Replace VS Code with GitHub.", current), {
+    ok: false, reason: "GitHub can't be the main pill.",
+  });
+  assert.deepEqual(current, declared("integration_claude", "integration_vercel"));
+});
+
+test("keeping only too many distinct secondary pills is rejected without changing the current list", () => {
+  const current = declared("integration_claude", "integration_n8n");
+  const ids = ["integration_github", "integration_vercel", "integration_notion", "integration_stripe", "integration_resend"];
+  const got = planPills([{ kind: "pillOnly", ids }], current, "windows");
+  assert.deepEqual(got, { ok: false, reason: "Already 4 pills: remove one first." });
+  assert.deepEqual(current, declared("integration_claude", "integration_n8n"));
+});
+
+test("keeping only deduplicates secondary pills before checking capacity", () => {
+  const ids = ["integration_claude", "integration_github", "integration_github", "integration_vercel", "integration_notion", "integration_stripe"];
+  const before = [...ids];
+  const got = planPills([{ kind: "pillOnly", ids }], declared("integration_claude", "integration_n8n"), "windows");
+  assert.equal(got.ok, true);
+  assert.equal(got.label, "Keep only GitHub, Vercel, Notion, Stripe");
+  assert.deepEqual(got.next, declared("integration_claude", "integration_github", "integration_vercel", "integration_notion", "integration_stripe"));
+  assert.deepEqual(ids, before);
+});
+
 test("anything that isn't only pill commands offers nothing but the chat", () => {
   assert.equal(plan("Hello Mochi, open the chat.", declared("integration_claude")), null);
   assert.equal(plan("pause et ajoute Notion", declared("integration_claude")), null);

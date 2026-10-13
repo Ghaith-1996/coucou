@@ -105,6 +105,20 @@ pub fn select(id: &str) -> Result<&'static ModelInfo, String> {
     Ok(model)
 }
 
+/// After deleting the selected model, prefer the first remaining installed
+/// model in catalog order. Deleting any other model must keep the user's choice.
+/// The predicate keeps this decision testable without model files or downloads.
+pub fn replacement_after_delete(
+    deleted: &str,
+    selected: &str,
+    is_installed: impl Fn(&ModelInfo) -> bool,
+) -> Option<&'static ModelInfo> {
+    if deleted != selected {
+        return None;
+    }
+    MODELS.iter().find(|model| model.id != deleted && is_installed(model))
+}
+
 // ── Status for Settings ──────────────────────────────────────────────────────
 
 static DOWNLOADING: Mutex<Option<&'static str>> = Mutex::new(None);
@@ -273,6 +287,25 @@ mod tests {
         init("no-such-model");
         assert_eq!(selected().id, DEFAULT_MODEL);
         assert!(select("no-such-model").is_err());
+    }
+
+    #[test]
+    fn deleting_the_selected_model_uses_the_first_installed_replacement() {
+        for (deleted, installed, expected) in [
+            ("large-v3-turbo-q5_0", vec!["base", "large-v3-q5_0"], "base"),
+            ("base", vec!["large-v3-turbo-q5_0", "large-v3-q5_0"], "large-v3-turbo-q5_0"),
+            ("large-v3-turbo-q5_0", vec!["large-v3-q5_0"], "large-v3-q5_0"),
+        ] {
+            let next = replacement_after_delete(deleted, deleted, |model| installed.contains(&model.id));
+            assert_eq!(next.map(|model| model.id), Some(expected));
+        }
+    }
+
+    #[test]
+    fn deletion_does_not_replace_another_choice_or_choose_a_missing_model() {
+        assert!(replacement_after_delete("base", "large-v3-turbo-q5_0", |_| true).is_none());
+        assert!(replacement_after_delete("base", "base", |_| false).is_none());
+        assert!(replacement_after_delete("base", "base", |model| model.id == "base").is_none());
     }
 
     #[test]

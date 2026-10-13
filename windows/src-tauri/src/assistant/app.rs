@@ -4,7 +4,10 @@
 
 use tauri::{AppHandle, Emitter, State, Webview};
 
-use super::contracts::{ActionKind, ActionReceipt, ErrorCode, VoiceEvent, VOICE_EVENT};
+use serde::Serialize;
+
+use super::contracts::{ActionKind, ActionReceipt, ErrorCode, ValidArgs, VoiceEvent, VOICE_EVENT};
+use super::policy::Grant;
 use super::voice::{self, model, ChatDraft, Voice};
 use crate::island::WINDOW_LABEL;
 use crate::Shared;
@@ -75,6 +78,62 @@ pub fn assistant_voice_act(
     args: serde_json::Value,
 ) -> Result<String, ErrorCode> {
     voice.act(&capture_id, kind, args)
+}
+
+/// "Open <name>": the app the Start menu has under that name, offered on the
+/// card for the user to confirm. None when there is no such app.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppProposal {
+    /// The app as Start names it: what the card shows and the user confirms.
+    pub label: String,
+    pub grant: Grant,
+}
+
+#[tauri::command]
+pub fn assistant_app_propose(voice: State<Voice>, capture_id: String, name: String) -> Result<Option<AppProposal>, ErrorCode> {
+    #[cfg(windows)]
+    {
+        let catalog = super::apps::catalog();
+        let Some(app) = super::apps::find(&catalog, &name) else {
+            log("voice: no app by that name".into());
+            return Ok(None);
+        };
+        let grant = voice.propose(&capture_id, ActionKind::LaunchApp, serde_json::json!({ "appId": app.id }))?;
+        Ok(Some(AppProposal { label: app.label.clone(), grant }))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (voice, capture_id, name);
+        Err(ErrorCode::Unavailable)
+    }
+}
+
+/// The user confirmed the app on the card: Rust checks the grant against the
+/// action it kept, finds the app again by its id and opens it, then reports
+/// what came of it (and logs it, without the app's name).
+#[tauri::command]
+pub async fn assistant_app_launch(voice: State<'_, Voice>, capture_id: String, grant: Grant) -> Result<ActionReceipt, ErrorCode> {
+    let (action_id, args) = voice.confirm(&capture_id, &grant)?;
+    let ValidArgs::LaunchApp(args) = args else { return Err(ErrorCode::InvalidArgs) };
+    #[cfg(windows)]
+    let receipt = {
+        let found = super::apps::catalog().into_iter().find(|e| e.id == args.app_id);
+        match found {
+            // Gone since it was offered (uninstalled, renamed).
+            None => ActionReceipt::failed(&action_id, ErrorCode::Unavailable),
+            Some(app) => tauri::async_runtime::spawn_blocking(move || super::launch::open(&action_id, &app.target))
+                .await
+                .map_err(|_| ErrorCode::Failed)?,
+        }
+    };
+    #[cfg(not(windows))]
+    let receipt = {
+        let _ = args;
+        ActionReceipt::failed(&action_id, ErrorCode::Unavailable)
+    };
+    voice.receipt(&receipt);
+    Ok(receipt)
 }
 
 #[tauri::command]

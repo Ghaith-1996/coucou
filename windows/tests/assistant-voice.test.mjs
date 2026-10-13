@@ -7,7 +7,7 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 import { State } from "../src/core/state.ts";
-import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceDo, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
+import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceDo, voiceOpen, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
 
 // What the fake Rust answers, per command.
 const answers = new Map();
@@ -563,4 +563,64 @@ test("Do it still completes after its ordinary Rust idle event", async () => {
   deferred.resolve("act-1");
   await done;
   assert.equal(host.pillsApplied.length, 1);
+});
+
+// ── "Open <app>" (launch-app) ────────────────────────────────────────────────
+
+const GRANT = { actionId: "act-90", digest: "ab".repeat(32), expiresAtMs: 9e12 };
+
+test("\"open <app>\" offers the app Rust found, and opens it only on the click", async () => {
+  await startListening();
+  answers.set("assistant_app_propose", { label: "Visual Studio Code", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Ouvre Visual Studio." }));
+  assert.deepEqual(Voice.app, { name: "Visual Studio", status: "finding" });
+  assert.equal(Voice.command, null, "not a pill command");
+  await flush();
+  assert.deepEqual(sent("assistant_app_propose"), [{ captureId: "cap-1", name: "Visual Studio" }]);
+  assert.equal(Voice.app.status, "ready");
+  assert.equal(Voice.app.label, "Visual Studio Code");
+  assert.equal(sent("assistant_app_launch").length, 0, "nothing opens before the click");
+
+  answers.set("assistant_app_launch", { actionId: "act-90", outcome: "succeeded", evidenceRef: "window:pid:42" });
+  await voiceOpen();
+  assert.deepEqual(sent("assistant_app_launch"), [{ captureId: "cap-1", grant: GRANT }]);
+  assert.equal(Voice.event, null, "the card is done");
+  assert.equal(calls.filter(([cmd]) => cmd.startsWith("approval_")).length, 0, "never the agents' permissions");
+});
+
+test("an app the Start menu doesn't have is said so, and the chat stays the choice", async () => {
+  await startListening();
+  answers.set("assistant_app_propose", null);
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Open Photoshop" }));
+  await flush();
+  assert.deepEqual(Voice.app, { name: "Photoshop", status: "missing" });
+  await voiceOpen();
+  assert.equal(sent("assistant_app_launch").length, 0);
+  answers.set("assistant_voice_use", { actionId: "act-91", text: "Open Photoshop" });
+  await voiceUse();
+  assert.deepEqual(host.drafts, ["Open Photoshop"]);
+});
+
+test("a late answer about another capture's app changes nothing", async () => {
+  await startListening();
+  let release;
+  answers.set("assistant_app_propose", new Promise((r) => { release = r; }));
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "ouvre Figma" }));
+  voiceCancel();
+  await startListening("cap-2");
+  emit("assistant-voice", ev("cap-2", "preview", { transcript: "Ajoute GitHub." }));
+  release({ label: "Figma", grant: GRANT });
+  await flush();
+  assert.equal(Voice.app, null);
+  assert.equal(Voice.command.ok, true);
+  await voiceOpen();
+  assert.equal(sent("assistant_app_launch").length, 0);
+});
+
+test("a simulated transcript never looks for an app", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "ouvre Figma", simulated: true }));
+  await flush();
+  assert.equal(Voice.app, null);
+  assert.equal(sent("assistant_app_propose").length, 0);
 });

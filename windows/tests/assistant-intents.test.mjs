@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { normalise, parseIntent, parseMultiAction, parseTranscript, resolvePill } from "../src/assistant/intents.ts";
+import { appToOpen, normalise, parseIntent, parseMultiAction, parseTranscript, resolvePill } from "../src/assistant/intents.ts";
 import { PILL_CATALOG, availablePills } from "../src/core/pills.ts";
 
 const cases = JSON.parse(readFileSync(new URL("./fixtures/mac-intent-cases.json", import.meta.url), "utf8"));
@@ -195,4 +195,21 @@ test("multiple removals run first without mutating the input intent order", () =
   assert.equal(got.ok, true);
   assert.deepEqual(got.next, declared("integration_claude", "integration_stripe", "integration_n8n", "integration_github", "integration_resend"));
   assert.deepEqual(intents, before);
+});
+
+test("open an app: the Mac's VoiceQueryTests cases, then Whisper's", () => {
+  assert.equal(appToOpen("ouvre Figma"), "Figma");
+  assert.equal(appToOpen("ouvre l'app Notes"), "Notes");
+  assert.equal(appToOpen("open Safari"), "Safari");
+  assert.deepEqual(parseTranscript("ouvre Figma", PILL_CATALOG), [{ kind: "openApp", name: "Figma" }]);
+  // Whisper's punctuation and capitals; the name kept as said.
+  assert.deepEqual(parseTranscript("Ouvre Visual Studio Code.", PILL_CATALOG), [{ kind: "openApp", name: "Visual Studio Code" }]);
+  assert.equal(appToOpen("Peux-tu ouvrir Spotify ?"), "Spotify");
+  assert.equal(appToOpen("Open the app Notion"), "Notion");
+  assert.equal(appToOpen("ouvre-moi la calculatrice"), "calculatrice");
+  // Nothing to open, or a sentence being dictated.
+  assert.equal(appToOpen("ouvre"), null);
+  assert.equal(appToOpen("open the app"), null);
+  assert.equal(appToOpen("please open the chat and show me the latest pull request"), null);
+  assert.equal(appToOpen("Ajoute GitHub"), null);
 });

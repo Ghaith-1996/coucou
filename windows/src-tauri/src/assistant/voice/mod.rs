@@ -47,6 +47,9 @@ pub const PREVIEW_TTL: Duration = Duration::from_secs(120);
 pub const SILENCE_RMS: f32 = 0.004;
 /// How long an action stays valid once the user pressed its button.
 pub const DRAFT_TTL_MS: u64 = 30_000;
+/// How long an action the card offers for confirmation stays valid: as long
+/// as the transcript it came from.
+pub const PROPOSAL_TTL_MS: u64 = 120_000;
 
 /// The app's transcriber: whisper.cpp with the picked model once it is
 /// installed, the simulated one until then (and again if it is deleted).
@@ -139,11 +142,20 @@ pub struct ChatDraft {
     pub text: String,
 }
 
+/// An action the card shows for the user to confirm (`launch-app`), and the
+/// capture it came from. At most one; Rust keeps it, the page only holds its
+/// grant.
+struct Proposal {
+    capture: String,
+    action: AssistantAction,
+}
+
 struct Inner {
     sink: Box<dyn Sink>,
     mic: Box<dyn Microphone>,
     stt: Box<dyn Transcriber>,
     phase: Mutex<Phase>,
+    proposal: Mutex<Option<Proposal>>,
     log: fn(String),
 }
 
@@ -158,6 +170,7 @@ impl Voice {
             mic: Box::new(mic),
             stt: Box::new(stt),
             phase: Mutex::new(Phase::Idle),
+            proposal: Mutex::new(None),
             log,
         }))
     }
@@ -175,6 +188,7 @@ impl Voice {
             Phase::Processing { .. } => None,
             // Idle, or a transcript / error on screen: a fresh capture replaces it.
             _ => {
+                *self.0.proposal.lock().unwrap() = None;
                 let id = policy::new_id("cap");
                 let signal = Arc::new(AtomicU8::new(RUN));
                 *phase = Phase::Listening { id: id.clone(), signal: signal.clone() };
@@ -212,6 +226,7 @@ impl Voice {
         if phase.id() != Some(capture_id) {
             return;
         }
+        *self.0.proposal.lock().unwrap() = None;
         if let Phase::Listening { signal, .. } = &*phase {
             // The capture thread closes the microphone and says idle.
             signal.store(CANCEL, Ordering::SeqCst);
@@ -248,9 +263,73 @@ impl Voice {
         Ok(self.decided(capture_id, kind, args, "pill set")?.id)
     }
 
+    /// An action that needs the user's confirmation (`launch-app`, with the
+    /// app the card names), for this capture's transcript. The policy must
+    /// say `ask`; Rust keeps the action and returns its grant, which the
+    /// card hands back on the user's click (`confirm`). A newer proposal
+    /// replaces it. The transcript stays on the card meanwhile.
+    pub fn propose(&self, capture_id: &str, kind: ActionKind, args: serde_json::Value) -> Result<policy::Grant, ErrorCode> {
+        if kind != ActionKind::LaunchApp {
+            return Err(ErrorCode::Unavailable);
+        }
+        match &*self.0.phase.lock().unwrap() {
+            Phase::Preview { id, since, .. } if id == capture_id && since.elapsed() <= PREVIEW_TTL => {}
+            _ => return Err(ErrorCode::Expired),
+        }
+        let now = policy::now_ms();
+        let action = AssistantAction {
+            v: CONTRACT_VERSION,
+            domain: Domain::DesktopAssistant,
+            id: policy::new_id("act"),
+            kind,
+            args,
+            intent_id: capture_id.to_string(),
+            expires_at_ms: now + PROPOSAL_TTL_MS,
+        };
+        let Some(grant) = policy::grant_for(&action, now) else {
+            let code = policy::decide(&action, now).error.unwrap_or(ErrorCode::InvalidArgs);
+            (self.0.log)(format!("voice: launch app refused ({})", code_name(code)));
+            return Err(code);
+        };
+        (self.0.log)(format!("voice: launch app {} proposed", action.id));
+        *self.0.proposal.lock().unwrap() = Some(Proposal { capture: capture_id.to_string(), action });
+        Ok(grant)
+    }
+
+    /// The user's click on a proposal: its grant must be the one Rust gave
+    /// for the action it kept, for this capture, still in time. Everything
+    /// is decided again (policy::check_grant). The proposal and the
+    /// transcript are used once, whatever the answer. Returns the action id
+    /// and its checked arguments, for the caller to run.
+    pub fn confirm(&self, capture_id: &str, grant: &policy::Grant) -> Result<(String, ValidArgs), ErrorCode> {
+        let proposal = self.0.proposal.lock().unwrap().take();
+        let result = match proposal {
+            Some(p) if p.capture == capture_id && p.action.id == grant.action_id => {
+                policy::check_grant(grant, &p.action, policy::now_ms()).map(|args| (p.action.id, args))
+            }
+            Some(_) => Err(ErrorCode::GrantMismatch),
+            None => Err(ErrorCode::Expired),
+        };
+        let preview = self.take_preview(capture_id);
+        match (result, preview) {
+            (Ok(done), Ok(_)) => {
+                (self.0.log)(format!("voice: {} confirmed", done.0));
+                Ok(done)
+            }
+            (Err(code), _) | (_, Err(code)) => {
+                (self.0.log)(format!("voice: confirmation refused ({})", code_name(code)));
+                Err(code)
+            }
+        }
+    }
+
     /// The transcript waiting on the island for this capture, taken off it:
     /// the card goes back to idle whatever comes next.
     fn take_preview(&self, capture_id: &str) -> Result<Transcript, ErrorCode> {
+        // Whatever the transcript was offering goes with it.
+        if self.0.proposal.lock().unwrap().as_ref().is_some_and(|p| p.capture == capture_id) {
+            *self.0.proposal.lock().unwrap() = None;
+        }
         let mut phase = self.0.phase.lock().unwrap();
         let Phase::Preview { id, transcript, since } = &*phase else {
             return Err(ErrorCode::Expired);

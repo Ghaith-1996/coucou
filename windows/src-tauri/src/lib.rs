@@ -767,6 +767,8 @@ pub fn run() {
             assistant::app::assistant_voice_use,
             assistant::app::assistant_voice_act,
             assistant::app::assistant_action_receipt,
+            assistant::app::assistant_app_propose,
+            assistant::app::assistant_app_launch,
             assistant::app::voice_model_status,
             assistant::app::voice_model_download,
             assistant::app::voice_model_cancel,

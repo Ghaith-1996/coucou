@@ -343,3 +343,63 @@ fn sleep_while_transcribing_stops_it_and_idle_changes_nothing() {
     }
     assert_eq!(*heard.lock().unwrap(), Some(true));
 }
+
+fn app() -> serde_json::Value {
+    serde_json::json!({ "appId": "figma-0a1b2c3d" })
+}
+
+#[test]
+fn opening_an_app_is_proposed_then_confirmed_once_with_its_grant() {
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    let grant = h.voice.propose(&id, ActionKind::LaunchApp, app()).unwrap();
+    assert!(grant.action_id.starts_with("act-"));
+    // Proposing leaves the transcript on the card.
+    assert!(h.events.recv_timeout(Duration::from_millis(100)).is_err(), "no event yet");
+    let (action, args) = h.voice.confirm(&id, &grant).unwrap();
+    assert_eq!(action, grant.action_id);
+    assert_eq!(args, ValidArgs::LaunchApp(LaunchAppArgs { app_id: "figma-0a1b2c3d".into() }));
+    h.wait(VoiceState::Idle);
+    assert_eq!(h.voice.confirm(&id, &grant), Err(ErrorCode::Expired), "only once");
+}
+
+#[test]
+fn a_grant_the_page_changed_or_made_up_launches_nothing() {
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    let grant = h.voice.propose(&id, ActionKind::LaunchApp, app()).unwrap();
+    let mut forged = grant.clone();
+    forged.digest = "0".repeat(64);
+    assert_eq!(h.voice.confirm(&id, &forged), Err(ErrorCode::GrantMismatch));
+    // The proposal and the transcript are gone: the real grant is worthless now too.
+    assert_eq!(h.voice.confirm(&id, &grant), Err(ErrorCode::Expired));
+
+    // Each capture needs its own microphone script.
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    let grant = h.voice.propose(&id, ActionKind::LaunchApp, app()).unwrap();
+    let longer = policy::Grant { expires_at_ms: grant.expires_at_ms + 60_000, ..grant.clone() };
+    assert_eq!(h.voice.confirm(&id, &longer), Err(ErrorCode::GrantMismatch), "a later expiry");
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    h.voice.propose(&id, ActionKind::LaunchApp, app()).unwrap();
+    let other = policy::Grant { action_id: "act-0000000000000000".into(), ..grant };
+    assert_eq!(h.voice.confirm(&id, &other), Err(ErrorCode::GrantMismatch), "another action");
+}
+
+#[test]
+fn only_an_app_id_may_be_proposed_and_only_for_a_waiting_transcript() {
+    let h = harness(speaking(400));
+    assert_eq!(h.voice.propose("cap-none", ActionKind::LaunchApp, app()).unwrap_err(), ErrorCode::Expired);
+    let id = preview(&h);
+    let chat = serde_json::json!({ "text": "hi" });
+    assert_eq!(h.voice.propose(&id, ActionKind::ChatDraft, chat).unwrap_err(), ErrorCode::Unavailable);
+    for bad in [serde_json::json!({ "appId": "C:/Windows/cmd.exe" }), serde_json::json!({ "appId": "x", "args": "-y" }), serde_json::json!({})] {
+        assert_eq!(h.voice.propose(&id, ActionKind::LaunchApp, bad).unwrap_err(), ErrorCode::InvalidArgs);
+    }
+    // Cancelling the card drops the proposal with the transcript.
+    let grant = h.voice.propose(&id, ActionKind::LaunchApp, app()).unwrap();
+    h.voice.cancel(&id);
+    h.wait(VoiceState::Idle);
+    assert_eq!(h.voice.confirm(&id, &grant), Err(ErrorCode::Expired));
+}

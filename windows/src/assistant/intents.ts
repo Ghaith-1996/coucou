@@ -282,12 +282,13 @@ function extractReplace(words: string[], pills: readonly PillDefinition[]): [str
   return null;
 }
 
+const INSTEAD_OF_MARKERS = [["a", "la", "place", "de"], ["a", "la", "place", "du"], ["au", "lieu", "de"], ["au", "lieu", "du"], ["instead", "of"]];
+
 /** "mets X à la place de Y" / "X au lieu de Y" / "X instead of Y" → [Y, X]. */
 function extractInsteadOf(words: string[], pills: readonly PillDefinition[]): [string, string] | null {
-  const markers = [["a", "la", "place", "de"], ["a", "la", "place", "du"], ["au", "lieu", "de"], ["au", "lieu", "du"], ["instead", "of"]];
   const leadVerbs = new Set(["mets", "met", "remets", "ajoute", "rajoute", "active", "affiche", "put", "add", "use", "utilise", "prends"]);
   const noise = new Set(["la", "le", "les", "l", "pilule", "pilules", "the", "pill", "me", "moi"]);
-  for (const m of markers) {
+  for (const m of INSTEAD_OF_MARKERS) {
     const i = indexOfSequence(m, words);
     if (i <= 0 || i + m.length >= words.length) continue;
     const left = words.slice(0, i).filter((w) => !leadVerbs.has(w) && !noise.has(w));
@@ -303,24 +304,25 @@ function extractInsteadOf(words: string[], pills: readonly PillDefinition[]): [s
 
 function extractOnly(words: string[], pills: readonly PillDefinition[]): string[] | null {
   for (const start of [["garde", "seulement"], ["keep", "only"], ["garder", "seulement"]]) {
-    if (!containsSeq(words, start)) continue;
-    const ids: string[] = [];
-    for (const part of splitByConjunction(words.slice(start.length).join(" "))) {
-      const clean = stripArticles(part);
-      const id = clean ? resolvePill(clean, pills) : null;
-      if (id) ids.push(id);
-    }
-    if (ids.length) return ids;
+    const at = indexOfSequence(start, words);
+    if (at < 0) continue;
+    // Polite prefixes have already been stripped. An incidental mention such
+    // as "explain how to keep only" must not become a destructive command.
+    if (at !== 0) return [];
+    return resolveAll(words.slice(at + start.length).join(" "), pills);
   }
   return null;
 }
 
 function resolveAll(clean: string, pills: readonly PillDefinition[]): string[] {
-  return splitByConjunction(clean)
-    .map((part) => stripArticles(part))
-    .filter(Boolean)
-    .map((p) => resolvePill(p, pills))
-    .filter((id): id is string => id != null);
+  const ids: string[] = [];
+  for (const part of splitByConjunction(clean)) {
+    const id = resolvePill(stripArticles(part), pills);
+    // A list is one request: never silently discard an unresolved segment.
+    if (!id) return [];
+    ids.push(id);
+  }
+  return ids;
 }
 
 function extractVolume(words: string[]): number | null {
@@ -522,7 +524,7 @@ export function parseIntent(raw: string, pills: readonly PillDefinition[]): Inte
   const replace = extractReplace(fwords, pills);
   if (replace) return { kind: "pillReplace", old: replace[0], new: replace[1] };
   const only = extractOnly(fwords, pills);
-  if (only) return { kind: "pillOnly", ids: only };
+  if (only !== null) return only.length ? { kind: "pillOnly", ids: only } : UNKNOWN;
 
   const playlist = extractAfter(fwords, frawWords, PLAYLIST);
   if (playlist) {
@@ -624,6 +626,77 @@ const SEGMENT_VERBS = new Set([
 ]);
 const JOINS = new Set(["et", "puis", "ensuite", "and", "then"]);
 
+// Wider than the multi-action splitter: guard the completeness of pill actions
+// without splitting words inside music titles into new commands.
+const PILL_ACTION_VERBS = new Set([
+  ...SEGMENT_VERBS,
+  ...PILL_ADD_ONLY.filter((trigger) => trigger.length === 1).map(([verb]) => verb),
+  ...PILL_REMOVE.filter((trigger) => trigger.length === 1).map(([verb]) => verb),
+  ...PILL_MAIN.map(([verb]) => verb),
+  ...MUSIC_OR_PILL.map(([verb]) => verb),
+  "keep", "garde", "replace", "remplace", "echange", "swap", "make", "veux", "faut", "besoin",
+]);
+
+function pillActionWords(raw: string): string[] {
+  let words = normalise(raw).split(" ").filter((w) => w && !FILLERS.has(w));
+  while (words.length > 1 && INTERJECTIONS.has(words[0])) words = words.slice(1);
+  for (const prefix of POLITENESS) {
+    if (prefix.every((word, i) => words[i] === word)) {
+      words = words.slice(prefix.length);
+      break;
+    }
+  }
+  return words;
+}
+
+const isPillActionVerb = (word: string) => PILL_ACTION_VERBS.has(INFINITIVES[word] ?? word);
+
+function hasMultiplePillActions(raw: string, pills: readonly PillDefinition[]): boolean {
+  const words = pillActionWords(raw);
+  if (words.filter(isPillActionVerb).length >= 2) return true;
+  // "La principale c'est Cursor" is an action without a verb. It must not
+  // survive a failed neighboring request (or hide a later one).
+  const isMain = (word: string) => word === "principal" || word === "principale";
+  if (words.filter(isMain).length >= 2) return true;
+  const mainAt = words.findIndex(isMain);
+  if (mainAt >= 0) {
+    const before = words.slice(0, mainAt);
+    if (words.slice(mainAt + 1).some(isPillActionVerb)) return true;
+    if (before.some(isPillActionVerb)) {
+      const verb = INFINITIVES[before[0]] ?? before[0];
+      const rest = before.slice(1);
+      const subject = rest.every((word) => ARTICLES.has(word));
+      const named = rest.at(-1) === "en" && resolvePill(stripArticles(rest.slice(0, -1).join(" ")), pills, "workspace");
+      if (!PILL_MAIN.some(([start]) => start === verb) || (!subject && !named)) return true;
+    }
+    if (INSTEAD_OF_MARKERS.some((marker) => containsSeq(before, marker))) return true;
+  }
+  // A replacement can omit its verb: "GitHub instead of Vercel". Only a verb
+  // after that marker starts another action; "add GitHub instead of Vercel"
+  // is still one complete replacement.
+  return INSTEAD_OF_MARKERS.some((marker) => {
+    const at = indexOfSequence(marker, words);
+    return at > 0 && words.slice(at + marker.length).some(isPillActionVerb);
+  });
+}
+
+function hasUnresolvedActionPrefix(raw: string, pills: readonly PillDefinition[]): boolean {
+  const words = pillActionWords(raw);
+  const firstAction = words.findIndex(isPillActionVerb);
+  if (firstAction === 0) return false;
+  if (firstAction < 0) {
+    const mainAt = words.findIndex((word) => word === "principal" || word === "principale");
+    if (mainAt < 0) return false;
+    const before = words.slice(0, mainAt);
+    const comme = before.indexOf("comme");
+    if (comme > 0) return !resolvePill(stripArticles(before.slice(0, comme).join(" ")), pills, "workspace");
+    return before.some((word) => !ARTICLES.has(word));
+  }
+  // Multi-word requests such as "je veux" and "plus besoin de" are valid
+  // prefixes. An entity left over from a failed list is not: "Frobnitz remove".
+  return ![...PILL_ADD_ONLY, ...PILL_REMOVE].some((trigger) => trigger.every((word, i) => words[i] === word));
+}
+
 export function splitOnActionVerbs(segment: string): string[] {
   const parts: string[][] = [];
   let cur: string[] = [];
@@ -668,19 +741,25 @@ export function parseMultiAction(raw: string, pills: readonly PillDefinition[]):
     }
     if (cur.length) parts.push(cur);
     const sub = parts.map((p) => parseIntent(p.join(" "), pills));
-    if (parts.length >= 2 && sub.every((s) => s.kind !== "unknown")) {
+    const complete = sub.every((intent, i) => {
+      if (intent.kind === "unknown") return false;
+      if (!intent.kind.startsWith("pill")) return true;
+      const part = parts[i].join(" ");
+      return !hasMultiplePillActions(part, pills) && !hasUnresolvedActionPrefix(part, pills);
+    });
+    if (parts.length >= 2 && complete) {
       intents.push(...sub);
       continue;
     }
     const whole = parseIntent(piece, pills);
-    if (whole.kind === "unknown") return null;
+    if (whole.kind === "unknown" || (whole.kind.startsWith("pill") && hasMultiplePillActions(piece, pills))) return null;
     intents.push(whole);
   }
   return intents.length >= 2 ? intents : null;
 }
 
 const OPEN_VERBS = new Set(["ouvre", "ouvrir", "open"]);
-const OPEN_FILLERS = new Set(["moi", "l", "la", "le", "app", "application", "the", "appli"]);
+const OPEN_FILLERS = new Set(["moi", "l", "la", "le", "les", "app", "application", "the", "an", "appli"]);
 /** Longer than this after "open", it is a sentence being dictated, not an app's name. */
 const MAX_APP_WORDS = 4;
 
@@ -714,5 +793,8 @@ export function parseTranscript(raw: string, pills: readonly PillDefinition[]): 
   const multi = parseMultiAction(text, pills);
   if (multi) return multi;
   const one = parseIntent(text, pills);
+  // Failed multi-action parsing cannot confirm just a surviving action. A
+  // comma alone may be Whisper punctuation in a valid single command.
+  if (one.kind.startsWith("pill") && hasMultiplePillActions(text, pills)) return [];
   return one.kind === "unknown" ? [] : [one];
 }

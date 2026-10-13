@@ -6,7 +6,7 @@
 // here the card shows the change and one click (or Enter) makes it, and a
 // command that can't be done says why instead of asking.
 
-import { MAX_DECLARED, mainPillChoices, pillDefinition, sanitizeDeclared, type HostOs } from "../core/pills";
+import { MAX_DECLARED, availablePills, mainPillChoices, pillDefinition, sanitizeDeclared, type HostOs } from "../core/pills";
 import { t } from "../i18n/i18n";
 import type { Intent } from "./intents";
 
@@ -31,6 +31,14 @@ const names = (ids: string[]) => ids.map(name).join(", ");
  */
 export function planPills(intents: Intent[], current: Declared, os: HostOs): PillPlan | null {
   if (intents.length === 0 || !intents.every((i) => PILL_KINDS.has(i.kind))) return null;
+  const offered = new Set(availablePills(os).map((p) => p.id));
+  for (const intent of intents) {
+    const ids = "ids" in intent ? intent.ids
+      : intent.kind === "pillReplace" ? [intent.old, intent.new]
+      : "id" in intent ? [intent.id] : [];
+    // Sanitization must not turn an invalid request into a different action.
+    if (ids.length === 0 || ids.some((id) => !offered.has(id))) return { ok: false, reason: t("Not available") };
+  }
   const mains = new Set(mainPillChoices(os).map((p) => p.id));
   let main = current.mainPill;
   let active = [...current.activeIntegrations];
@@ -74,8 +82,9 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
         break;
       }
       case "pillRemoveMultiple": {
-        const removed = intent.ids.filter((x) => active.includes(x));
-        if (removed.length === 0) return { ok: false, reason: t("{name} isn't in the island.", { name: names(intent.ids) }) };
+        const removed = [...new Set(intent.ids)];
+        const missing = removed.filter((id) => !active.includes(id));
+        if (missing.length) return { ok: false, reason: t("{name} isn't in the island.", { name: names(missing) }) };
         active = active.filter((x) => !removed.includes(x));
         labels.push(t("Remove {names}", { names: names(removed) }));
         break;
@@ -108,7 +117,7 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
         const kept = [...new Set(intent.ids.filter((x) => x !== main))];
         if (kept.length > MAX_DECLARED) return { ok: false, reason: full() };
         active = kept;
-        labels.push(t("Keep only {names}", { names: names(active) }));
+        labels.push(t("Keep only {names}", { names: names([...new Set(intent.ids)]) }));
         break;
       }
     }

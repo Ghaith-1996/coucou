@@ -7,6 +7,7 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 import { State } from "../src/core/state.ts";
+import { CONTRACT_VERSION } from "../src/assistant/contracts.ts";
 import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceDo, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
 
 // What the fake Rust answers, per command.
@@ -88,7 +89,7 @@ function registerVoiceHostOnly() {
   State.subscribe = subscribe;
 }
 
-const ev = (captureId, state, extra = {}) => ({ v: 1, captureId, state, ...extra });
+const ev = (captureId, state, extra = {}) => ({ v: CONTRACT_VERSION, captureId, state, ...extra });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 async function startListening(id = "cap-1") {
@@ -103,6 +104,24 @@ test("the shortcut opens the microphone and its card", async () => {
   assert.deepEqual(host.alerts, ["voice"]);
   assert.equal(Voice.event.state, "listening");
   assert.equal(Voice.event.level, 0.2);
+});
+
+test("the synthesized listening event uses the current contract version", async () => {
+  answers.set("assistant_voice_toggle", "cap-1");
+  await voiceShortcut();
+  assert.deepEqual(Voice.event, ev("cap-1", "listening", { level: 0, elapsedMs: 0 }));
+});
+
+test("old and future contract events cannot become spoken pill commands", async () => {
+  await startListening();
+  for (const v of [1, CONTRACT_VERSION + 1]) {
+    emit("assistant-voice", ev("cap-1", "preview", { v, transcript: "Add GitHub" }));
+    assert.equal(Voice.event.state, "listening");
+    assert.equal(Voice.command, null);
+    await voiceDo();
+  }
+  assert.deepEqual(sent("assistant_voice_act"), []);
+  assert.deepEqual(host.pillsApplied, []);
 });
 
 test("the card keeps the island open while it is up, then gives the pin back", async () => {
@@ -166,7 +185,7 @@ test("another capture's late events are ignored", async () => {
   assert.equal(Voice.event.captureId, "cap-2");
   assert.equal(Voice.event.state, "listening");
   // And anything malformed never reaches the card.
-  emit("assistant-voice", { v: 1, captureId: "cap-2", state: "approving" });
+  emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-2", state: "approving" });
   assert.equal(Voice.event.state, "listening");
 });
 

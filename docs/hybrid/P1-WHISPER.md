@@ -60,7 +60,7 @@ pull request, commit, branch"). Without it, "Mochi" came out as "Machi".
 | `npx tsc --noEmit` / `npm test` | clean / 415 pass |
 | Model download, live, from the Settings button (clicked via UI Automation) | `voice: model download started` → `voice: model installed` in **4 s**; file 147,951,465 bytes; `Get-FileHash` SHA-256 = the pinned `60ed5bc3…2efe` |
 | Real speech, opt-in test, release build, model loaded from disk | Two clips spoken by Windows' offline TTS at 48 kHz (so through the resampler): 15.6 s (David) → **0% WER, 1.32 s** including model load; 5.1 s (Zira) → **0% WER, 1.10 s**. Before the build-flag fix: 12.1 s / 11.4 s. |
-| Live, dev build | Settings → Voice: no model (red dot, URL, Download button), then download → installed (green) |
+| Live, dev build | Settings → Voice before the download: red dot, URL, Download button (screenshot). After it, "installed" is confirmed by the log and the file hash only; the section wasn't screenshotted again. |
 | **Not verified** | A live microphone capture transcribed by Whisper end to end. Each part is verified separately: the mic capture in P0, Whisper on recorded speech here, and `Auto` switching by unit test. I didn't record the room while the owner was using the PC. |
 | Not verified | CI on the fork (Actions off) |
 

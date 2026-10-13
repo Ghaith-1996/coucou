@@ -45,6 +45,11 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# Speech to text on this computer (assistant/voice/whisper.rs): whisper.cpp
+# (MIT), built from the source vendored in whisper-rs-sys (Unlicense) with
+# CMake, CPU only. Its model is downloaded by the user from Settings → Voice.
+# See windows/.cargo/config.toml for the bindings.
+whisper-rs = "0.16"
 # The island's file drop reads paths straight from WebView2 (webview_drop.rs).
 # Same versions as wry, so nothing new is compiled.
 webview2-com = "0.39"

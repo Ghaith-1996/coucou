@@ -2628,3 +2628,32 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
   unicode-bidi: plaintext;
   text-align: start;
 }
+
+/* ── Voice capture (src/assistant/voice-view.ts) ──────────────────────────── */
+
+/* The microphone's level while it is open: the visible sign that it is. */
+.voice-meter {
+  height: 4px;
+  width: 100%;
+  border-radius: 2px;
+  background: var(--hairline);
+  overflow: hidden;
+}
+
+.voice-meter > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.85);
+  transition: width 90ms linear;
+}
+
+/* A transcript can be longer than a title: it wraps, up to three lines. */
+.view.voice[data-state="preview"] .title {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

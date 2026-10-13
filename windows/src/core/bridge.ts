@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
+import type { ActionReceipt } from "../assistant/contracts";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -363,6 +364,17 @@ export const Bridge = {
   shortcutsStatus: () => call<ShortcutsReport>("shortcuts_status"),
   /** Lets go of every global shortcut while Settings records a new one. */
   shortcutsSuspend: (suspended: boolean) => call<void>("shortcuts_suspend", { suspended }),
+
+  // ── Desktop assistant (src-tauri/src/assistant) ───────────────────────────
+  /** Starts a voice capture, or stops the one listening. The capture id, or null when busy. */
+  voiceToggle: () => call<string | null>("assistant_voice_toggle"),
+  voiceStop: (captureId: string) => call<void>("assistant_voice_stop", { captureId }),
+  /** Ends the capture and drops its audio or transcript. Never an action. */
+  voiceCancel: (captureId: string) => call<void>("assistant_voice_cancel", { captureId }),
+  /** The transcript as a chat draft Rust's policy allowed; throws with the refusal code. */
+  voiceUse: (captureId: string) => callOrThrow<{ actionId: string; text: string }>("assistant_voice_use", { captureId }),
+  /** What came of an assistant action, for the log (never with its text). */
+  actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
 
   // ── Weekly recap ──────────────────────────────────────────────────────────
   /** Turns and decisions from `since` (Unix seconds) on, plus the recap prefs. */

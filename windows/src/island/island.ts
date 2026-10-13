@@ -22,6 +22,7 @@ import { USC, UploadSeq } from "../upload/sequence";
 import { closePlanCard, openPlanColor, planCardOpen } from "../views/usage";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
+import { applyChatDraft } from "../views/chat";
 import { IslandStateMachine } from "./fsm";
 import { refreshHookPills } from "./integrations";
 import { DesktopLink } from "./desktop";
@@ -496,6 +497,14 @@ export class Island {
       this.fsm.mouseLeft();
     }
     State.notify();
+  }
+
+  /** The assistant's chat draft: the chat opens with `text` in its field,
+   *  unsent. True when the field really holds it. */
+  showChatDraft(text: string): boolean {
+    const there = applyChatDraft(text);
+    this.setView("prompt");
+    return there;
   }
 
   /** The island takes the keyboard, so its own shortcuts work (Mac: makeKey).

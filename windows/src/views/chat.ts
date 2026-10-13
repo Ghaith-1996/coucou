@@ -199,6 +199,25 @@ function buildPicker(onChange: () => void): Picker {
   };
 }
 
+// ── Drafts ────────────────────────────────────────────────────────────────────
+
+/** The chat's text field, once the view is built. */
+let chatInput: HTMLInputElement | null = null;
+/** The next focus leaves the caret after a draft instead of selecting it. */
+let keepDraft = false;
+
+/**
+ * Puts `text` in the chat field without sending it — the assistant's
+ * `chat-draft` action. True only when the field really holds it afterwards:
+ * that is the action's evidence.
+ */
+export function applyChatDraft(text: string): boolean {
+  if (!chatInput || chatInput.disabled) return false;
+  chatInput.value = text;
+  keepDraft = true;
+  return chatInput.value === text;
+}
+
 // ── View ──────────────────────────────────────────────────────────────────────
 
 export function buildPrompt(onHeightChange: () => void): ViewHost {
@@ -210,6 +229,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     placeholder: t(STRINGS.placeholderFirst),
     spellcheck: "false",
   }) as HTMLInputElement;
+  chatInput = input;
   const send = h("button", { class: "send-btn", title: tl(STRINGS.send) }, svg(ICONS.arrowUp, 11));
   const bar = h("div", { class: "chat-bar" }, input, send);
 
@@ -346,7 +366,12 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     },
     focus() {
       input.focus();
-      input.select();
+      if (keepDraft) {
+        keepDraft = false;
+        input.setSelectionRange(input.value.length, input.value.length);
+      } else {
+        input.select();
+      }
     },
   };
 }

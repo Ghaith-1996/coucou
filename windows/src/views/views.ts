@@ -26,6 +26,7 @@ import { SPOTIFY_ID } from "../core/spotify";
 import type { Outfit, OutfitSelection } from "../mochi/wardrobe";
 import { language, t, tl, type Msg } from "../i18n/i18n";
 import type { ViewCommand } from "../island/shortcuts";
+import { buildVoice } from "../assistant/voice-view";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -68,13 +69,13 @@ export interface ViewHost {
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
 
-function card(wash: Wash, ...children: (Node | string)[]): HTMLElement {
+export function card(wash: Wash, ...children: (Node | string)[]): HTMLElement {
   const el = h("div", { class: wash ? "card wash" : "card" }, ...children);
   if (wash) el.style.setProperty("--wash", washRGBA(wash));
   return el;
 }
 
-function btn(
+export function btn(
   label: string | Msg,
   kind: "primary" | "secondary",
   onClick: () => void,
@@ -98,7 +99,7 @@ function agentWho(task: AgentTask | null, label: string): HTMLElement {
   return row;
 }
 
-function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElement {
+export function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElement {
   const el = h("div", { class: "stack" }, ...children);
   el.style.padding = `4px ${padRight}px 4px ${padLeft}px`;
   return el;
@@ -821,6 +822,7 @@ export function buildViews(
   map.set("choose", buildChoose(actions));
   map.set("recap", buildRecap(actions));
   map.set("wardrobe", buildWardrobe(actions));
+  map.set("voice", buildVoice());
   // Not in the Windows v1: sending a file by email, window attach + web result.
   map.set("mail", buildPlaceholder(tl("Sending by email isn't in this version."), ""));
   map.set("searching", buildPlaceholder(tl("Claude is searching…"), ""));

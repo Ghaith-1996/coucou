@@ -69,6 +69,10 @@ pub const ACTIONS: &[ActionDef] = &[
     action("muteToggle", "Ctrl+Alt+S", true, true),
     action("desktopToggle", "Ctrl+Alt+D", true, true),
     action("wardrobeToggle", "Ctrl+Alt+G", true, true),
+    // Not a Mac action: the hybrid assistant's voice capture. Off by default,
+    // since it opens the microphone. V types nothing with AltGr on the checked
+    // layouts (and the installed ones are checked at registration).
+    action("voiceCapture", "Ctrl+Alt+V", false, true),
 ];
 
 pub fn find(id: &str) -> Option<&'static ActionDef> {
@@ -92,6 +96,7 @@ pub fn description(id: &str) -> &'static str {
         "muteToggle" => n_("Mute or unmute Mochi"),
         "desktopToggle" => n_("Send Mochi to the desktop"),
         "wardrobeToggle" => n_("Open the wardrobe"),
+        "voiceCapture" => n_("Talk to Mochi (start or stop the microphone)"),
         _ => "Coucou",
     }
 }
@@ -692,6 +697,10 @@ mod tests {
         "toggleIsland", "openChat", "goToAlert", "jumpToTerminal", "attachFrontWindow",
         "nextPill", "prevPill", "muteToggle", "desktopToggle", "wardrobeToggle",
     ];
+    /// Actions the Mac doesn't have, after its own.
+    const HYBRID_IDS: [&str; 1] = ["voiceCapture"];
+    /// Off until the user turns them on.
+    const OFF_BY_DEFAULT: [&str; 2] = ["toggleIsland", "voiceCapture"];
 
     fn never(_: &Shortcut) -> Option<String> {
         None
@@ -701,7 +710,8 @@ mod tests {
     #[test]
     fn every_mac_action_has_a_default_and_keeps_its_id() {
         let ids: Vec<_> = ACTIONS.iter().map(|a| a.id).collect();
-        assert_eq!(ids, MAC_IDS);
+        assert_eq!(ids[..MAC_IDS.len()], MAC_IDS);
+        assert_eq!(ids[MAC_IDS.len()..], HYBRID_IDS);
     }
 
     // testAllDefaultsHaveModifier
@@ -725,9 +735,9 @@ mod tests {
 
     // testEnabledByDefault
     #[test]
-    fn only_the_island_toggle_is_off_by_default() {
+    fn only_the_island_toggle_and_the_microphone_are_off_by_default() {
         for def in ACTIONS {
-            assert_eq!(def.enabled_by_default, def.id != "toggleIsland", "{}", def.id);
+            assert_eq!(def.enabled_by_default, !OFF_BY_DEFAULT.contains(&def.id), "{}", def.id);
         }
     }
 
@@ -740,7 +750,10 @@ mod tests {
             match outcome {
                 Ok(_) => assert!(def.ported && def.enabled_by_default, "{}", def.id),
                 Err(s) if reserved => assert_eq!(s.status, Status::NotPorted),
-                Err(s) => assert_eq!((def.id, s.status), ("toggleIsland", Status::Off)),
+                Err(s) => {
+                    assert!(OFF_BY_DEFAULT.contains(&def.id), "{}", def.id);
+                    assert_eq!(s.status, Status::Off);
+                }
             }
         }
     }
@@ -798,7 +811,7 @@ mod tests {
         // Same key, other modifiers: not a duplicate.
         stored.insert("jumpToTerminal".into(), Binding { keys: "Ctrl+Shift+A".into(), enabled: true });
         let plan = super::plan(&stored, never);
-        assert!(plan.iter().all(|(d, o)| o.is_ok() || !d.ported || d.id == "toggleIsland"));
+        assert!(plan.iter().all(|(d, o)| o.is_ok() || !d.ported || OFF_BY_DEFAULT.contains(&d.id)));
 
         // A disabled action doesn't hold its keys.
         stored.insert("goToAlert".into(), Binding { keys: "Ctrl+Alt+A".into(), enabled: false });

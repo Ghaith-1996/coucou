@@ -2,8 +2,10 @@
 // later, desktop adapters, memory and routines. See contracts.rs for why it
 // is a domain apart from the agents' permission requests.
 
+pub mod app;
 pub mod contracts;
 pub mod policy;
+pub mod voice;
 
 #[cfg(test)]
 mod tests {

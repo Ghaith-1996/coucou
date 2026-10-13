@@ -3899,6 +3899,83 @@
    "pt-BR": "Este código também inclui a chave de acesso e a chave de ponta a ponta do relay {host}. «Parear de novo» cria uma chave e uma sala novas.",
    "ru": "Этот код также содержит ключ доступа и сквозной ключ для ретранслятора {host}. «Сопрячь заново» создаёт новый ключ и новую комнату.",
    "id": "Kode ini juga memuat kunci akses dan kunci ujung ke ujung untuk relay {host}. «Sandingkan ulang» membuat kunci dan ruang baru."
+  },
+  "Transcribing…": {
+   "zh-Hans": "正在转写…",
+   "hi": "ट्रांसक्राइब हो रहा है…",
+   "es": "Transcribiendo…",
+   "ar": "جارٍ النسخ…",
+   "fr": "Transcription…",
+   "bn": "ট্রান্সক্রাইব হচ্ছে…",
+   "pt-BR": "Transcrevendo…",
+   "ru": "Расшифровка…",
+   "id": "Mentranskripsi…"
+  },
+  "Stop": {
+   "zh-Hans": "停止",
+   "hi": "रोकें",
+   "es": "Detener",
+   "ar": "إيقاف",
+   "fr": "Arrêter",
+   "bn": "থামান",
+   "pt-BR": "Parar",
+   "ru": "Стоп",
+   "id": "Berhenti"
+  },
+  "Nothing was heard.": {
+   "zh-Hans": "什么也没听到。",
+   "hi": "कुछ सुनाई नहीं दिया।",
+   "es": "No se oyó nada.",
+   "ar": "لم يُسمع أي شيء.",
+   "fr": "Rien n'a été entendu.",
+   "bn": "কিছুই শোনা যায়নি।",
+   "pt-BR": "Nada foi ouvido.",
+   "ru": "Ничего не слышно.",
+   "id": "Tidak ada yang terdengar."
+  },
+  "Windows blocks the microphone for desktop apps. Allow it in Settings → Privacy & security → Microphone.": {
+   "zh-Hans": "Windows 阻止了桌面应用使用麦克风。请在 设置 → 隐私和安全性 → 麦克风 中允许。",
+   "hi": "Windows डेस्कटॉप ऐप्स के लिए माइक्रोफ़ोन रोकता है। इसे सेटिंग्स → गोपनीयता और सुरक्षा → माइक्रोफ़ोन में अनुमति दें।",
+   "es": "Windows bloquea el micrófono para las aplicaciones de escritorio. Permítelo en Configuración → Privacidad y seguridad → Micrófono.",
+   "ar": "يمنع Windows الميكروفون عن تطبيقات سطح المكتب. اسمح به في الإعدادات ← الخصوصية والأمان ← الميكروفون.",
+   "fr": "Windows bloque le micro pour les applications de bureau. Autorisez-le dans Paramètres → Confidentialité et sécurité → Microphone.",
+   "bn": "Windows ডেস্কটপ অ্যাপের জন্য মাইক্রোফোন আটকে রাখে। সেটিংস → গোপনীয়তা ও নিরাপত্তা → মাইক্রোফোন-এ এটি অনুমতি দিন।",
+   "pt-BR": "O Windows bloqueia o microfone para aplicativos da área de trabalho. Permita em Configurações → Privacidade e segurança → Microfone.",
+   "ru": "Windows блокирует микрофон для классических приложений. Разрешите его в Параметры → Конфиденциальность и защита → Микрофон.",
+   "id": "Windows memblokir mikrofon untuk aplikasi desktop. Izinkan di Pengaturan → Privasi & keamanan → Mikrofon."
+  },
+  "Speech recognition failed.": {
+   "zh-Hans": "语音识别失败。",
+   "hi": "वाक् पहचान विफल रही।",
+   "es": "El reconocimiento de voz falló.",
+   "ar": "فشل التعرف على الكلام.",
+   "fr": "La reconnaissance vocale a échoué.",
+   "bn": "কণ্ঠস্বর শনাক্তকরণ ব্যর্থ হয়েছে।",
+   "pt-BR": "O reconhecimento de fala falhou.",
+   "ru": "Не удалось распознать речь.",
+   "id": "Pengenalan suara gagal."
+  },
+  "Simulated transcript — real speech recognition comes next.": {
+   "zh-Hans": "模拟转写 — 真正的语音识别即将推出。",
+   "hi": "सिम्युलेटेड ट्रांसक्रिप्ट — असली वाक् पहचान आगे आएगी।",
+   "es": "Transcripción simulada: el reconocimiento de voz real llegará después.",
+   "ar": "نسخ محاكى — التعرف الحقيقي على الكلام قادم لاحقًا.",
+   "fr": "Transcription simulée — la vraie reconnaissance vocale arrive ensuite.",
+   "bn": "সিমুলেটেড ট্রান্সক্রিপ্ট — আসল কণ্ঠস্বর শনাক্তকরণ পরে আসছে।",
+   "pt-BR": "Transcrição simulada — o reconhecimento de fala real vem a seguir.",
+   "ru": "Имитация расшифровки — настоящее распознавание речи появится позже.",
+   "id": "Transkrip simulasi — pengenalan suara sungguhan menyusul."
+  },
+  "Talk to Mochi (start or stop the microphone)": {
+   "zh-Hans": "和 Mochi 说话（打开或关闭麦克风）",
+   "hi": "Mochi से बात करें (माइक्रोफ़ोन शुरू या बंद करें)",
+   "es": "Hablar con Mochi (activar o detener el micrófono)",
+   "ar": "تحدّث إلى Mochi (تشغيل الميكروفون أو إيقافه)",
+   "fr": "Parler à Mochi (activer ou arrêter le micro)",
+   "bn": "Mochi-র সাথে কথা বলুন (মাইক্রোফোন চালু বা বন্ধ করুন)",
+   "pt-BR": "Falar com o Mochi (ligar ou parar o microfone)",
+   "ru": "Поговорить с Mochi (включить или выключить микрофон)",
+   "id": "Bicara dengan Mochi (mulai atau hentikan mikrofon)"
   }
  }
 }

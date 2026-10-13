@@ -2,7 +2,8 @@
 
 mod agent_hooks;
 mod agents;
-// Contracts first (hybrid P0): the voice slice is what starts using them.
+// Hybrid P0. Grants and the reserved action kinds have no caller until a kind
+// that asks for confirmation is available.
 #[allow(dead_code)]
 mod assistant;
 mod chat;
@@ -754,6 +755,11 @@ pub fn run() {
             phone_link::phone_chat_status,
             phone_link::phone_chat_set_enabled,
             phone_link::phone_chat_set_models,
+            assistant::app::assistant_voice_toggle,
+            assistant::app::assistant_voice_stop,
+            assistant::app::assistant_voice_cancel,
+            assistant::app::assistant_voice_use,
+            assistant::app::assistant_action_receipt,
             recap::recap_history,
             recap::recap_prefs,
             recap::recap_set_enabled,
@@ -784,6 +790,7 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             app.manage(phone_link::PhoneLink::new(handle.clone()));
+            app.manage(assistant::app::voice(&handle));
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
             create_settings_window(&handle);
@@ -827,6 +834,10 @@ pub fn run() {
         .run(|app, event| {
             // Withdraw the phone link's announcement on the local network before the process ends.
             if let tauri::RunEvent::Exit = event {
+                // The microphone closes with the app, whatever it was doing.
+                if let Some(voice) = app.try_state::<assistant::voice::Voice>() {
+                    voice.shutdown();
+                }
                 phone_link::stop_on_exit(app);
             }
         });

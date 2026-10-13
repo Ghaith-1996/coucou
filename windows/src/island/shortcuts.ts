@@ -12,6 +12,7 @@ import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { cyclePill, islandKeyAction, navigate, pillByNumber, type IslandKeyAction } from "../core/shortcuts";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
+import { voiceShortcut } from "../assistant/voice";
 
 const CLAUDE_DESKTOP_ID = "agent_claude-desktop";
 
@@ -130,6 +131,13 @@ export function runGlobalShortcut(host: ShortcutHost, action: string, resume: ()
       }
       if (!State.mochiOnDesktop) resume();
       host.flyOutOrHome();
+      break;
+
+    // The assistant's microphone (src/assistant/voice.ts): never over an
+    // agent's waiting card, which it opens instead.
+    case "voiceCapture":
+      resume();
+      void voiceShortcut();
       break;
 
     // wardrobeToggle never comes this way (Rust sends `open-wardrobe`), and

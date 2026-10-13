@@ -18,11 +18,15 @@ const MAC_IDS = [
   "toggleIsland", "openChat", "goToAlert", "jumpToTerminal", "attachFrontWindow",
   "nextPill", "prevPill", "muteToggle", "desktopToggle", "wardrobeToggle",
 ];
+/** Actions the Mac doesn't have, after its own. */
+const HYBRID_IDS = ["voiceCapture"];
+/** Off until the user turns them on: the island toggle, and the microphone. */
+const OFF_BY_DEFAULT = ["toggleIsland", "voiceCapture"];
 
 // ── Defaults (testDefaultsExhaustive, testAllDefaultsHaveModifier, testNoDefaultDuplicates) ──
 
 test("every Mac action has a default, in the Mac's order, with its Mac id", () => {
-  assert.deepEqual(SHORTCUTS.map((d) => d.id), MAC_IDS);
+  assert.deepEqual(SHORTCUTS.map((d) => d.id), [...MAC_IDS, ...HYBRID_IDS]);
   for (const d of SHORTCUTS) assert.ok(SHORTCUT_TEXT[d.id], `${d.id} has no label`);
 });
 
@@ -73,9 +77,9 @@ test("the descriptions the Wayland portal shows are the labels Settings shows", 
 });
 
 // testEnabledByDefault
-test("only the island toggle is off by default; the one not ported yet is reserved", () => {
+test("only the island toggle and the microphone are off by default; the one not ported yet is reserved", () => {
   for (const d of SHORTCUTS) {
-    assert.equal(d.enabledByDefault, d.id !== "toggleIsland", d.id);
+    assert.equal(d.enabledByDefault, !OFF_BY_DEFAULT.includes(d.id), d.id);
     assert.equal(d.ported, d.id !== "attachFrontWindow", d.id);
   }
   assert.deepEqual(activeKeys({}).map(([id]) => id), [

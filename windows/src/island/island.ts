@@ -27,6 +27,7 @@ import { IslandStateMachine } from "./fsm";
 import { refreshHookPills } from "./integrations";
 import { DesktopLink } from "./desktop";
 import type { ViewCommand } from "./shortcuts";
+import { IslandMove, type MovePointer } from "./move";
 import { DRAG_THRESHOLD } from "../mochi/desktop-logic";
 
 const BOT_OVERHANG = 40;
@@ -108,6 +109,7 @@ export class Island {
   private botPress: { x: number; y: number } | null = null;
   /** Where a press on the island itself started: past DRAG_THRESHOLD it moves the island. */
   private islandPress: { x: number; y: number } | null = null;
+  private pageMove: IslandMove | null = null;
 
   /** The next reveal from hidden makes no peek (music starting, as on macOS). */
   private silentReveal = false;
@@ -456,6 +458,7 @@ export class Island {
    */
   hideIsland() {
     if (State.userHidden || State.pendingApproval) return;
+    this.pageMove?.cancel();
     State.userHidden = true;
     this.fsm.pinned = false;
     this.fsm.forceHidden();
@@ -749,6 +752,7 @@ export class Island {
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────
 
   private updateWindowCollapsed() {
+    if (this.pageMove?.active) return;
     if (this.collapseTimer != null) {
       window.clearTimeout(this.collapseTimer);
       this.collapseTimer = null;
@@ -786,7 +790,7 @@ export class Island {
       // A press on Mochi may become a drag out to the desktop.
       if (e.button === 0 && this.isBotHit(e.clientX, e.clientY)) {
         this.botPress = { x: e.clientX, y: e.clientY };
-      } else if (e.button === 0 && this.isMoveHandle(e.target)) {
+      } else if (!this.pageMove && e.button === 0 && this.isMoveHandle(e.target)) {
         // Anywhere else that isn't a control, it may become a drag of the island.
         this.islandPress = { x: e.clientX, y: e.clientY };
       }
@@ -814,6 +818,7 @@ export class Island {
 
     // Dragging Mochi out of the island puts him on the desktop.
     window.addEventListener("mousemove", (e) => {
+      if (this.pageMove?.active) return;
       if (this.desktop.carrying) {
         this.desktop.carry(e.clientX, e.clientY);
         return;
@@ -871,10 +876,81 @@ export class Island {
    * reported as a cursor far away, which is what the poll would have said.
    */
   followPageCursor() {
-    window.addEventListener("mousemove", (e) => this.onCursor(e.clientX, e.clientY));
+    if (this.pageMove) return;
+    this.wirePageMove();
+    window.addEventListener("mousemove", (e) => {
+      if (!this.pageMove?.active) this.onCursor(e.clientX, e.clientY);
+    });
     window.addEventListener("mouseout", (e) => {
       if (e.relatedTarget == null) this.onCursor(-10_000, -10_000);
     });
+  }
+
+  /** Linux never hands this gesture to a native move loop: pointer capture
+   * keeps release/cancel events ours even outside the island's input region. */
+  private wirePageMove() {
+    const overlay = () => window.innerWidth > PANEL_W + 20 || window.innerHeight > PANEL_H + 20;
+    const sample = (e: PointerEvent): MovePointer => ({
+      clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY, overlay: overlay(),
+    });
+    let press: { id: number; at: MovePointer } | null = null;
+    const move = this.pageMove = new IslandMove({
+      begin: Bridge.islandDragBegin,
+      move: Bridge.islandDragMove,
+      end: Bridge.islandDragEnd,
+      paint: (at, info) => {
+        if (!at || !info) {
+          const id = press?.id;
+          press = null;
+          if (id != null && this.islandEl.hasPointerCapture(id)) this.islandEl.releasePointerCapture(id);
+          this.root.style.width = this.root.style.height = this.root.style.transform = "";
+          this.updateWindowCollapsed();
+          return;
+        }
+        // Keep the normal 720x320 panel layout inside the temporary output-wide
+        // surface. Before its configure arrives, offsets are still panel-local.
+        this.root.style.width = `${PANEL_W}px`;
+        this.root.style.height = `${PANEL_H}px`;
+        this.root.style.transform = `translate(${at.x - (overlay() ? 0 : info.x)}px, ${at.y - (overlay() ? 0 : info.y)}px)`;
+      },
+    });
+    this.islandEl.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !e.isPrimary || move.active || this.isBotHit(e.clientX, e.clientY) || !this.isMoveHandle(e.target)) return;
+      try { this.islandEl.setPointerCapture(e.pointerId); } catch { return; }
+      press = { id: e.pointerId, at: sample(e) };
+    });
+    window.addEventListener("pointermove", (e) => {
+      if (press?.id !== e.pointerId) return;
+      const at = sample(e);
+      if (!(e.buttons & 1)) {
+        move.finish(at);
+        press = null;
+        return;
+      }
+      if (move.active) { move.update(at); return; }
+      if (Math.hypot(at.clientX - press.at.clientX, at.clientY - press.at.clientY) <= DRAG_THRESHOLD) return;
+      if (this.collapseTimer != null) window.clearTimeout(this.collapseTimer);
+      this.collapseTimer = null;
+      this.fsm.mouseEntered();
+      move.start(press.at, at);
+    });
+    window.addEventListener("pointerup", (e) => {
+      if (press?.id !== e.pointerId) return;
+      move.finish(sample(e));
+      press = null; // The implicit lostpointercapture after a normal drop is harmless.
+    });
+    const cancel = () => {
+      const id = press?.id;
+      press = null;
+      if (id != null && this.islandEl.hasPointerCapture(id)) this.islandEl.releasePointerCapture(id);
+      move.cancel();
+    };
+    this.islandEl.addEventListener("lostpointercapture", cancel);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancel);
+    window.addEventListener("pagehide", cancel);
+    window.addEventListener("keydown", e => { if (e.key === "Escape") cancel(); });
+    window.addEventListener("resize", () => move.paint());
   }
 
   /**
@@ -899,6 +975,7 @@ export class Island {
 
   /** Cursor in window-logical coordinates. */
   onCursor(x: number, y: number) {
+    if (this.pageMove?.active) return;
     // Put away by the Hide button: nothing under the pointer is the island.
     if (State.userHidden) {
       x = -10_000;

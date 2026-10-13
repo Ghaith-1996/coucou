@@ -73,6 +73,8 @@ pub struct BootInfo {
 
 #[tauri::command]
 fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
+    // Reloading the page must not leave a former captured drag's overlay up.
+    island::end_page_move(&app, None);
     let mut settings = shared.settings.lock().unwrap().clone();
     // The real state of ~/.claude/settings.json wins over whatever we stored.
     let hooks_status = hooks::status();
@@ -126,6 +128,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         }
     }
     if screen_changed {
+        island::end_page_move(&app, None);
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         island::apply_geometry(&app, &settings.screen, settings.island_spot, collapsed);
     }
@@ -163,6 +166,7 @@ fn language_changed(app: &AppHandle) {
 /// cursor poll; anything else → full panel and 60 Hz polling.
 #[tauri::command]
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
+    if collapsed { island::end_page_move(&app, None); }
     let (pref, spot) = place_pref(&shared);
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
     island::apply_geometry(&app, &pref, spot, collapsed);
@@ -217,8 +221,25 @@ fn island_drag_start(app: AppHandle, shared: State<Shared>) {
     );
 }
 
+/// Linux pointer capture owns the gesture and supplies its explicit drop.
+#[tauri::command]
+fn island_drag_begin(app: AppHandle) -> Option<island::MoveInfo> {
+    island::begin_page_move(&app)
+}
+
+#[tauri::command]
+fn island_drag_move(app: AppHandle, x: f64, y: f64) -> Result<(), String> {
+    island::update_page_move(&app, x, y)
+}
+
+#[tauri::command]
+fn island_drag_end(app: AppHandle, at: Option<(f64, f64)>) {
+    island::end_page_move(&app, at);
+}
+
 /// Back to the top centre of its display (the tray's "Put the island back at the top").
 pub fn island_dock(app: &AppHandle) {
+    island::end_page_move(app, None);
     let Some(shared) = app.try_state::<Shared>() else { return };
     let updated = {
         let mut current = shared.settings.lock().unwrap();
@@ -240,6 +261,7 @@ pub fn island_dock(app: &AppHandle) {
 fn set_island_hidden(app: AppHandle, shared: State<Shared>, hidden: bool) {
     let Some(win) = island::window(&app) else { return };
     if hidden {
+        island::end_page_move(&app, None);
         shared.gate.set_active(false);
         let _ = win.hide();
     } else {
@@ -748,6 +770,9 @@ pub fn run() {
             set_system_languages,
             set_collapsed,
             island_drag_start,
+            island_drag_begin,
+            island_drag_move,
+            island_drag_end,
             set_island_hidden,
             set_island_rect,
             focus_window,

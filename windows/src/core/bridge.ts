@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
+import type { MoveInfo, MovePoint } from "../island/move";
 import type { ActionReceipt } from "../assistant/contracts";
 
 export const IS_TAURI =
@@ -190,6 +191,9 @@ export const Bridge = {
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
   /** A press on the island became a drag: the OS moves it, Rust saves where. */
   islandDragStart: () => call<void>("island_drag_start"),
+  islandDragBegin: () => callOrThrow<MoveInfo | null>("island_drag_begin"),
+  islandDragMove: (p: MovePoint) => callOrThrow<void>("island_drag_move", { x: p.x, y: p.y }),
+  islandDragEnd: (p: MovePoint | null) => callOrThrow<void>("island_drag_end", { at: p ? [p.x, p.y] : null }),
   /** The Hide button (true), or bringing the island back (false). */
   setIslandHidden: (hidden: boolean) => call<void>("set_island_hidden", { hidden }),
 

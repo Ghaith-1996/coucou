@@ -66,8 +66,18 @@ let starting: {
 export const Voice = {
   /** The latest event of the current capture; null when there is none. */
   event: null as VoiceEvent | null,
-  /** What the transcript asks of the pills, when it is a pill command. */
-  command: null as PillPlan | null,
+  /** Derive the preview from current settings, including initially blocked plans.
+   * Render/keyboard listeners see the same up-to-date plan regardless of their
+   * subscription order; reading it never executes an action or renews the TTL.
+   */
+  get command(): PillPlan | null {
+    const event = this.event;
+    if (event?.state !== "preview" || event.simulated) return null;
+    return planPills(
+      parseTranscript(event.transcript ?? "", availablePills(HOST_OS)),
+      sanitizeDeclared(State.settings, HOST_OS), HOST_OS,
+    );
+  },
 
   get active(): boolean {
     const s = this.event?.state;
@@ -180,7 +190,6 @@ export async function voiceDo() {
   // intent to today's declaration, never the whole set saved in the preview.
   const before = sanitizeDeclared(State.settings, HOST_OS);
   const command = planPills(parseTranscript(current.transcript ?? "", availablePills(HOST_OS)), before, HOST_OS);
-  Voice.command = command;
   if (!command?.ok) {
     State.notify();
     return;
@@ -224,7 +233,6 @@ function end(close = true) {
   previewTimer = null;
   captureId = null;
   Voice.event = null;
-  Voice.command = null;
   shown = false;
   unpin();
   if (close && State.view === "voice" && host) host.collapse();
@@ -269,10 +277,6 @@ function accept(event: VoiceEvent) {
   }
   if (event.state === "preview" && current?.state !== "preview") {
     Sound.play("finish");
-    // Only a real transcript can be a command: a simulated one is a placeholder.
-    Voice.command = event.simulated
-      ? null
-      : planPills(parseTranscript(event.transcript ?? "", availablePills(HOST_OS)), State.settings, HOST_OS);
     previewTimer = setTimeout(() => {
       if (Voice.event?.captureId === event.captureId && Voice.event.state === "preview") voiceCancel();
     }, PREVIEW_TTL_MS);
@@ -329,7 +333,6 @@ export function resetVoiceForTests() {
   previewTimer = null;
   captureId = null;
   Voice.event = null;
-  Voice.command = null;
   shown = false;
   pinnedByVoice = false;
   userPinned = false;

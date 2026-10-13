@@ -50,6 +50,11 @@ webpki-roots = "1"
 # Stream/Sink traits for the WebSocket (already in the tree through tokio-tungstenite and tauri).
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
+[dev-dependencies]
+# A paused clock for the relay's timeouts (pipe.rs tests): tokio is already a
+# dependency, this only turns on a feature for the test build.
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 # Speech to text on this computer (assistant/voice/whisper.rs): whisper.cpp

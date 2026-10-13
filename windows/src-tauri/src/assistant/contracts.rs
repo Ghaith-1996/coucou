@@ -184,17 +184,50 @@ pub enum Outcome {
 /// What came of one action. `succeeded` always carries evidence of the
 /// effect; build receipts with the constructors so it can't be left out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ReceiptWire")]
 pub struct ActionReceipt {
     pub action_id: String,
-    pub outcome: Outcome,
+    outcome: Outcome,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub evidence_ref: Option<String>,
+    evidence_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<ErrorCode>,
 }
 
+// Keep unchecked wire data separate: neither JSON nor a Rust struct literal
+// may manufacture a success without nonblank evidence.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiptWire {
+    action_id: String,
+    outcome: Outcome,
+    evidence_ref: Option<String>,
+    error_code: Option<ErrorCode>,
+}
+
+impl TryFrom<ReceiptWire> for ActionReceipt {
+    type Error = &'static str;
+
+    fn try_from(raw: ReceiptWire) -> Result<Self, Self::Error> {
+        if raw.outcome == Outcome::Succeeded
+            && raw.evidence_ref.as_deref().is_none_or(|evidence| evidence.trim().is_empty())
+        {
+            return Err("a successful receipt requires nonblank evidenceRef");
+        }
+        Ok(Self {
+            action_id: raw.action_id,
+            outcome: raw.outcome,
+            evidence_ref: raw.evidence_ref,
+            error_code: raw.error_code,
+        })
+    }
+}
+
 impl ActionReceipt {
+    pub fn outcome(&self) -> Outcome {
+        self.outcome
+    }
+
     /// `None` when there is no evidence: then it is not a success.
     pub fn succeeded(action_id: &str, evidence: &str) -> Option<Self> {
         (!evidence.trim().is_empty()).then(|| Self {
@@ -279,7 +312,7 @@ pub enum VoiceError {
 /// One `assistant-voice` event. `capture_id` correlates every event of one
 /// capture; a stale one (another id) is ignored by the island.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "Value")]
 pub struct VoiceEvent {
     pub v: u32,
     pub capture_id: String,
@@ -311,5 +344,49 @@ impl VoiceEvent {
             simulated: false,
             error: None,
         }
+    }
+}
+
+// Match parseVoiceEvent exactly at the wire boundary. In particular, Serde's
+// usual positional structs and externally tagged unit-enum objects are not
+// voice event objects, and optional fields may be absent but never null.
+impl TryFrom<Value> for VoiceEvent {
+    type Error = &'static str;
+
+    fn try_from(raw: Value) -> Result<Self, Self::Error> {
+        let fields = raw.as_object().ok_or("voice event must be an object")?;
+        if fields.get("v").and_then(Value::as_f64) != Some(CONTRACT_VERSION as f64) {
+            return Err("unsupported voice contract version");
+        }
+        let id = fields.get("captureId").and_then(Value::as_str).filter(|id| !id.is_empty())
+            .ok_or("captureId must be a nonempty string")?;
+        let state = fields.get("state").filter(|value| value.is_string())
+            .ok_or("state must be a string")?;
+        let state = serde_json::from_value(state.clone()).map_err(|_| "unknown voice state")?;
+        let mut event = Self::new(id, state);
+        if let Some(value) = fields.get("level") {
+            let level = value.as_f64().filter(|level| level.is_finite() && (0.0..=1.0).contains(level))
+                .ok_or("level must be finite and between 0 and 1")?;
+            event.level = Some(level);
+        }
+        if let Some(value) = fields.get("elapsedMs") {
+            let elapsed = value.as_f64().filter(|elapsed| {
+                elapsed.is_finite() && (0.0..=9_007_199_254_740_991.0).contains(elapsed) && elapsed.fract() == 0.0
+            }).ok_or("elapsedMs must be a nonnegative safe integer")?;
+            event.elapsed_ms = Some(elapsed as u64);
+        }
+        if let Some(value) = fields.get("transcript") {
+            event.transcript = Some(value.as_str().ok_or("transcript must be a string")?.to_string());
+        }
+        if let Some(value) = fields.get("simulated") {
+            event.simulated = value.as_bool().ok_or("simulated must be a boolean")?;
+        }
+        if let Some(value) = fields.get("error") {
+            if !value.is_string() {
+                return Err("error must be a string");
+            }
+            event.error = Some(serde_json::from_value(value.clone()).map_err(|_| "unknown voice error")?);
+        }
+        Ok(event)
     }
 }

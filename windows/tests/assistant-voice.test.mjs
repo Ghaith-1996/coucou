@@ -7,7 +7,7 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 import { State } from "../src/core/state.ts";
-import { Voice, registerVoice, resetVoiceForTests, voiceDo, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
+import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceDo, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
 
 // What the fake Rust answers, per command.
 const answers = new Map();
@@ -257,4 +257,310 @@ test("a refused pill-set changes nothing", async () => {
   await voiceDo();
   assert.deepEqual(host.pillsApplied, []);
   assert.equal(sent("assistant_action_receipt").length, 0);
+});
+
+function pendingStart() {
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_toggle", deferred.promise);
+  return { ...deferred, finished: voiceShortcut() };
+}
+
+for (const error of ["no-microphone", "microphone-denied"]) {
+  test(`${error} before the toggle reply stays an error, then releases the island`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const start = pendingStart();
+    emit("assistant-voice", ev("cap-1", "error", { error }));
+    start.resolve("cap-1");
+    await start.finished;
+    assert.equal(Voice.event.state, "error");
+    assert.equal(Voice.event.error, error);
+    t.mock.timers.tick(4000);
+    assert.equal(Voice.event, null);
+    assert.equal(State.isPinned, false);
+    assert.equal(State.mode, "compact");
+  });
+}
+
+for (const state of ["processing", "preview", "idle"]) {
+  test(`${state} before the toggle reply is not overwritten by listening`, async () => {
+    const start = pendingStart();
+    emit("assistant-voice", ev("cap-1", "listening"));
+    emit("assistant-voice", ev("cap-1", state));
+    start.resolve("cap-1");
+    await start.finished;
+    assert.equal(Voice.event?.state ?? null, state === "idle" ? null : state);
+    if (state === "idle") {
+      assert.deepEqual(host.alerts, []);
+      assert.equal(State.isPinned, false);
+    }
+  });
+}
+
+for (const view of ["approval", "question"]) {
+  test(`${view} arriving during startup keeps the island and cancels the returned capture`, async () => {
+    const start = pendingStart();
+    State.pendingApproval = { requestId: "r1", ...(view === "question" && { questions: [] }) };
+    State.isPinned = true;
+    host.alert(view);
+    emit("assistant-voice", ev("cap-1", "listening"));
+    start.resolve("cap-1");
+    await start.finished;
+    assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+    assert.deepEqual(host.alerts, [view]);
+    assert.equal(State.view, view);
+    assert.equal(State.isPinned, true);
+    assert.equal(Voice.event, null);
+    emit("assistant-voice", ev("cap-1", "listening"));
+    assert.equal(Voice.event, null);
+  });
+}
+
+test("an approval seen during startup still cancels if it was withdrawn before the reply", async () => {
+  const start = pendingStart();
+  State.pendingApproval = { requestId: "r1" };
+  State.notify();
+  State.pendingApproval = null;
+  State.notify();
+  start.resolve("cap-1");
+  await start.finished;
+  assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+  assert.deepEqual(host.alerts, []);
+});
+
+test("cancel during startup retires the capture before any late event", async () => {
+  const start = pendingStart();
+  voiceCancel();
+  start.resolve("cap-1");
+  await start.finished;
+  for (const state of ["listening", "preview", "idle"]) emit("assistant-voice", ev("cap-1", state));
+  assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+  assert.equal(Voice.event, null);
+  assert.deepEqual(host.alerts, []);
+});
+
+test("stale listening cannot replace an active capture or revive an ended capture", async () => {
+  await startListening("cap-2");
+  emit("assistant-voice", ev("cap-1", "listening"));
+  assert.equal(Voice.event.captureId, "cap-2");
+  emit("assistant-voice", ev("cap-2", "idle"));
+  emit("assistant-voice", ev("cap-2", "listening"));
+  assert.equal(Voice.event, null);
+  assert.deepEqual(host.alerts, ["voice"]);
+});
+
+test("startup only keeps events for the returned capture id", async () => {
+  const start = pendingStart();
+  emit("assistant-voice", ev("old", "error", { error: "no-microphone" }));
+  start.resolve("cap-1");
+  await start.finished;
+  assert.equal(Voice.event.captureId, "cap-1");
+  assert.equal(Voice.event.state, "listening");
+});
+
+test("a second shortcut during startup queues stop instead of starting a second capture", async () => {
+  const start = pendingStart();
+  const second = voiceShortcut();
+  start.resolve("cap-1");
+  await Promise.all([start.finished, second]);
+  assert.equal(sent("assistant_voice_toggle").length, 1);
+  assert.deepEqual(sent("assistant_voice_stop"), [{ captureId: "cap-1" }]);
+});
+
+test("a null toggle response allows a later start", async () => {
+  const start = pendingStart();
+  start.resolve(null);
+  await start.finished;
+  await startListening("cap-2");
+  assert.equal(Voice.event.captureId, "cap-2");
+});
+
+test("approval cancels before the view has changed away from the expanded voice card", async () => {
+  await startListening();
+  State.pendingApproval = { requestId: "r1" };
+  State.notify();
+  assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+  assert.equal(State.isPinned, true);
+});
+
+for (const change of ["close", "hide", "navigate", "navigate-back"]) {
+  test(`${change} while startup is pending cancels without reopening voice`, async () => {
+    State.mode = "expanded";
+    const start = pendingStart();
+    emit("assistant-voice", ev("cap-1", "listening"));
+    if (change === "close") host.collapse();
+    else if (change === "hide") {
+      State.mode = "hidden";
+      State.notify();
+    } else {
+      State.view = "prompt";
+      State.notify();
+      if (change === "navigate-back") {
+        State.view = "overview";
+        State.notify();
+      }
+    }
+    const mode = State.mode;
+    const view = State.view;
+    start.resolve("cap-1");
+    await start.finished;
+    assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+    assert.equal(Voice.event, null);
+    assert.deepEqual(host.alerts, []);
+    assert.equal(State.mode, mode);
+    assert.equal(State.view, view);
+  });
+}
+
+
+test("a pill command is replanned against settings changed since preview", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  State.settings.mainPill = "agent_cursor";
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion"];
+  answers.set("assistant_voice_act", "act-77");
+  await voiceDo();
+  const expected = { mainPill: "agent_cursor", activeIntegrations: ["integration_vercel", "integration_notion", "integration_github"] };
+  assert.deepEqual(sent("assistant_voice_act")[0].args, expected);
+  assert.deepEqual(host.pillsApplied, [expected]);
+});
+
+test("a pill command made invalid by settings changes is not proposed or applied", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion", "integration_stripe", "integration_resend"];
+  answers.set("assistant_voice_act", "act-77");
+  await voiceDo();
+  assert.equal(sent("assistant_voice_act").length, 0);
+  assert.deepEqual(host.pillsApplied, []);
+  assert.equal(Voice.command.ok, false);
+});
+
+test("settings changed during the policy request are not overwritten", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_act", deferred.promise);
+  const done = voiceDo();
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion"];
+  deferred.resolve("act-77");
+  await done;
+  assert.deepEqual(host.pillsApplied, []);
+  assert.deepEqual(State.settings.activeIntegrations, ["integration_vercel", "integration_notion"]);
+  assert.deepEqual(sent("assistant_action_receipt"), [{ receipt: { actionId: "act-77", outcome: "cancelled", errorCode: "cancelled" } }]);
+});
+
+for (const result of ["success", "failure"]) {
+  test(`a stale Use ${result} cannot clear a newer capture`, async () => {
+    await startListening("cap-1");
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "old", simulated: true }));
+    const deferred = Promise.withResolvers();
+    answers.set("assistant_voice_use", deferred.promise);
+    const use = voiceUse();
+    // Rust consumes the preview and goes idle before the command reply arrives.
+    emit("assistant-voice", ev("cap-1", "idle"));
+    await startListening("cap-2");
+    if (result === "success") deferred.resolve({ actionId: "act-old", text: "old" });
+    else deferred.reject(new Error("expired"));
+    await use;
+    assert.equal(Voice.event.captureId, "cap-2");
+    assert.equal(Voice.event.state, "listening");
+    assert.equal(State.isPinned, true);
+    assert.equal(State.view, "voice");
+    assert.deepEqual(host.drafts, []);
+    emit("assistant-voice", ev("cap-2", "processing"));
+    assert.equal(Voice.event.state, "processing");
+  });
+}
+
+test("Use still completes after its ordinary Rust idle event", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello", simulated: true }));
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_use", deferred.promise);
+  const use = voiceUse();
+  emit("assistant-voice", ev("cap-1", "idle"));
+  deferred.resolve({ actionId: "act-1", text: "hello" });
+  await use;
+  assert.deepEqual(host.drafts, ["hello"]);
+});
+
+test("Cancel while Use is pending prevents its eventual draft", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello", simulated: true }));
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_use", deferred.promise);
+  const use = voiceUse();
+  voiceCancel();
+  deferred.resolve({ actionId: "act-1", text: "hello" });
+  await use;
+  assert.deepEqual(host.drafts, []);
+});
+
+test("an untouched preview expires and releases the microphone card", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello" }));
+  t.mock.timers.tick(119999);
+  assert.equal(Voice.event.state, "preview");
+  t.mock.timers.tick(1);
+  assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "cap-1" }]);
+  assert.equal(Voice.event, null);
+  assert.equal(State.isPinned, false);
+  assert.equal(State.mode, "compact");
+});
+
+test("an old preview timeout cannot cancel a newer capture", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await startListening("cap-1");
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello" }));
+  t.mock.timers.tick(60000);
+  await startListening("cap-2");
+  t.mock.timers.tick(60000);
+  assert.equal(Voice.event.captureId, "cap-2");
+  assert.deepEqual(sent("assistant_voice_cancel"), []);
+});
+
+for (const result of ["success", "failure"]) {
+  test(`a stale Do it ${result} cannot clear a newer capture`, async () => {
+    await startListening("cap-1");
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+    const deferred = Promise.withResolvers();
+    answers.set("assistant_voice_act", deferred.promise);
+    const done = voiceDo();
+    emit("assistant-voice", ev("cap-1", "idle"));
+    await startListening("cap-2");
+    if (result === "success") deferred.resolve("act-old");
+    else deferred.reject(new Error("expired"));
+    await done;
+    assert.equal(Voice.event.captureId, "cap-2");
+    assert.equal(State.isPinned, true);
+    assert.deepEqual(host.pillsApplied, []);
+  });
+}
+
+test("an approval during Do it retains the island", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_act", deferred.promise);
+  const done = voiceDo();
+  State.pendingApproval = { requestId: "r1" };
+  host.alert("approval");
+  deferred.resolve("act-old");
+  await done;
+  assert.equal(State.view, "approval");
+  assert.equal(State.isPinned, true);
+  assert.deepEqual(host.pillsApplied, []);
+});
+
+test("Do it still completes after its ordinary Rust idle event", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_act", deferred.promise);
+  const done = voiceDo();
+  emit("assistant-voice", ev("cap-1", "idle"));
+  deferred.resolve("act-1");
+  await done;
+  assert.equal(host.pillsApplied.length, 1);
 });

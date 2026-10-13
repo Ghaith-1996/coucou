@@ -20,6 +20,7 @@ mod integrations;
 mod island;
 mod local_chat;
 mod log;
+mod navigation;
 mod net;
 mod openai_compat;
 mod phone_link;
@@ -671,7 +672,9 @@ pub fn run() {
                 }
             }
         }))
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None));
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        // Before any window exists: every webview stays on the app's own pages.
+        .plugin(navigation::plugin());
     // Where no global shortcut can work, the plugin isn't even started.
     if platform::global_shortcuts_blocked().is_none() {
         builder = builder.plugin(shortcuts::plugin());
@@ -857,7 +860,41 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::diff_file;
+    use super::{diff_file, BROWSER_ARGS};
+
+    /// What wry passes to WebView2 when an app gives no arguments of its own
+    /// (wry 0.57, src/webview2/mod.rs). Giving any replaces it, so Coucou has to
+    /// repeat it to add the autoplay policy.
+    const WRY_DEFAULT_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+
+    /// The browser arguments only ever add the autoplay policy to wry's
+    /// defaults: nothing else gets switched off along the way. The webviews
+    /// never leave the app's own pages (navigation.rs), which is what keeps
+    /// msSmartScreenProtection off reasonable.
+    #[test]
+    fn browser_args_are_wry_defaults_plus_autoplay_only() {
+        assert_eq!(
+            BROWSER_ARGS,
+            format!("{WRY_DEFAULT_ARGS} --autoplay-policy=no-user-gesture-required")
+        );
+    }
+
+    /// WebView2 takes its options from the first webview: every window and
+    /// both configuration files must ask for the very same arguments.
+    #[test]
+    fn every_config_asks_for_the_same_browser_args() {
+        for (name, text) in [
+            ("tauri.conf.json", include_str!("../tauri.conf.json")),
+            ("tauri.linux.conf.json", include_str!("../tauri.linux.conf.json")),
+        ] {
+            let conf: serde_json::Value = serde_json::from_str(text).unwrap();
+            let windows = conf["app"]["windows"].as_array().unwrap();
+            assert!(!windows.is_empty(), "{name}");
+            for win in windows {
+                assert_eq!(win["additionalBrowserArgs"].as_str(), Some(BROWSER_ARGS), "{name}");
+            }
+        }
+    }
 
     #[test]
     fn only_an_existing_file_by_its_full_path_reaches_the_editor() {

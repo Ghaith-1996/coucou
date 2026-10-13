@@ -6,7 +6,9 @@
 // one is picked. Each capture gets its own whisper state, so nothing of one
 // capture carries into the next.
 
+use std::ffi::c_void;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -45,7 +47,16 @@ impl Local {
 impl Local {
     /// Transcribes with the model in `model`, loading it first when another
     /// one (or none) is loaded.
-    pub fn transcribe_with(&self, model: &Path, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
+    /// Gives up at whisper.cpp's next check once `abort` is true: after the
+    /// encoder pass under way, or the next decoder step. (Its scheduler does
+    /// not pass the callback into a pass, so a pass is never cut short.)
+    pub fn transcribe_with(
+        &self,
+        model: &Path,
+        samples: &[f32],
+        sample_rate: u32,
+        abort: &AtomicBool,
+    ) -> Result<Transcript, VoiceError> {
         let audio = resample(samples, sample_rate, WHISPER_RATE);
         let mut guard = self.ctx.lock().unwrap();
         if guard.as_ref().is_none_or(|(loaded, _)| loaded != model) {
@@ -70,6 +81,16 @@ impl Local {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
+        // Through the raw setter: whisper-rs 0.16's `set_abort_callback_safe`
+        // hands whisper.cpp a pointer of another type than its trampoline
+        // reads. `abort` outlives `full`, which is the only caller.
+        unsafe {
+            params.set_abort_callback(Some(aborted));
+            params.set_abort_callback_user_data(abort as *const AtomicBool as *mut c_void);
+        }
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
+        }
         state.full(params, &audio).map_err(|_| VoiceError::Provider)?;
 
         let segments: Vec<String> = state
@@ -78,6 +99,11 @@ impl Local {
             .collect();
         Ok(Transcript { text: clean(&segments), simulated: false })
     }
+}
+
+/// whisper.cpp's abort check: `data` is the `AtomicBool` given with it.
+unsafe extern "C" fn aborted(data: *mut c_void) -> bool {
+    !data.is_null() && unsafe { (*(data as *const AtomicBool)).load(Ordering::SeqCst) }
 }
 
 /// Half the cores, at least one and at most eight: fast, without taking the
@@ -229,7 +255,7 @@ mod tests {
             let (samples, rate) = read_wav(&std::fs::read(clip).unwrap());
             let seconds = samples.len() as f64 / rate as f64;
             let started = std::time::Instant::now();
-            let transcript = local.transcribe_with(&model::path(chosen), &samples, rate).unwrap();
+            let transcript = local.transcribe_with(&model::path(chosen), &samples, rate, &AtomicBool::new(false)).unwrap();
             let took = started.elapsed().as_secs_f64();
             let error = wer(&expected, &transcript.text);
             println!(
@@ -245,6 +271,44 @@ mod tests {
             }
         }
         assert!(too_many.is_empty(), "too many errors in {too_many:?}");
+    }
+
+    /// Cancelling stops the real model mid-way. Same setup as above; best
+    /// with a slow case (a large model on the CPU build).
+    #[test]
+    #[ignore]
+    fn real_speech_transcription_stops_when_cancelled() {
+        use super::super::model;
+        use std::sync::Arc;
+        let dir = std::env::var("COUCOU_SPEECH_DIR").expect("COUCOU_SPEECH_DIR");
+        let id = std::env::var("COUCOU_MODEL").unwrap_or_else(|_| model::DEFAULT_MODEL.into());
+        let chosen = model::find(&id).expect("unknown COUCOU_MODEL");
+        let clip = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|x| x == "wav"))
+            .expect("a clip");
+        let (samples, rate) = read_wav(&std::fs::read(clip).unwrap());
+        let local = Local::default();
+        let started = std::time::Instant::now();
+        local.transcribe_with(&model::path(chosen), &samples, rate, &AtomicBool::new(false)).unwrap();
+        let full = started.elapsed();
+
+        let abort = Arc::new(AtomicBool::new(false));
+        let flag = abort.clone();
+        let after = full / 5;
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            flag.store(true, Ordering::SeqCst);
+        });
+        let started = std::time::Instant::now();
+        let result = local.transcribe_with(&model::path(chosen), &samples, rate, &abort);
+        let cancelled = started.elapsed();
+        println!("{}: full {:.2} s; cancelled at {:.2} s, returned at {:.2} s ({result:?})", chosen.label, full.as_secs_f64(), after.as_secs_f64(), cancelled.as_secs_f64());
+        assert!(result.is_err(), "an aborted transcription gives no text");
+        // whisper.cpp checks between passes, not inside one: the encoder
+        // pass under way finishes first (most of the time on the CPU).
+        assert!(cancelled < full, "it stopped before the end");
     }
 
     #[test]

@@ -17,7 +17,7 @@ impl voice::Sink for IslandSink {
     }
 }
 
-fn log(line: String) {
+pub fn log(line: String) {
     crate::log::line(line);
 }
 

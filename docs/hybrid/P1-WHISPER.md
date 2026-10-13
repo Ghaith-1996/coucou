@@ -34,12 +34,36 @@ the simulated transcriber.
 The release workflow (`windows.yml`, `tauri build`) needs the same environment.
 That isn't changed here; it belongs to the P4 packaging work.
 
+## Build flags (`windows/.cargo/config.toml`)
+
+whisper-rs-sys passes `GGML_*`/`CMAKE_*` environment variables to CMake. Two
+problems found by measuring, fixed there:
+
+- **No optimisation.** The cmake crate left MSVC's Release flags as
+  `-nologo -MD -Brepro -W0`, with no `/O`. A 5 s clip took **11.4 s**. With
+  `CMAKE_{C,CXX}_FLAGS_RELEASE = /O2 /Ob2 /DNDEBUG` it takes **1.1 s**.
+- **Not portable.** `GGML_NATIVE` defaulted to ON: built on this Ryzen it would use
+  AVX-512 and crash on CPUs without it. Now `GGML_NATIVE=OFF` + AVX/AVX2/FMA/F16C,
+  which covers every x86-64 PC since about 2013.
+
+The build script doesn't watch these variables. After changing them, run
+`scripts\cargo-vs.cmd clean -p whisper-rs-sys` (and with `--release`).
+
+Whisper also gets the app's vocabulary as context ("Mochi, Coucou, Claude Code…,
+pull request, commit, branch"). Without it, "Mochi" came out as "Machi".
+
 ## Verification
 
 | Check | Result |
 |---|---|
-| `scripts\cargo-vs.cmd test --workspace --locked` | app **442 pass** (436 + 6: model pin/verify, resampling, marker cleanup), hook 30, no warnings |
+| `scripts\cargo-vs.cmd test --workspace --locked` | app **443 pass**, 3 ignored (1 is the opt-in real-speech test), hook 30, no warnings |
 | `npx tsc --noEmit` / `npm test` | clean / 415 pass |
-| Live, dev build | Settings → Voice renders: red status dot (no model), `ggml-base.bin · 148 MB`, source URL, "Download the model (148 MB)". The new shortcut row "Talk to Mochi … Ctrl+Alt+V" is off by default. |
-| **Not verified** | **Real transcription and the actual download.** Downloading the 148 MB model needs the user's explicit OK, which hasn't been given yet. Until then, Whisper has only been compiled, not run. |
-| Not verified | CI on the fork (GitHub Actions is off on the fork), so the `cargo-vs.cmd` step has only run locally. |
+| Model download, live, from the Settings button (clicked via UI Automation) | `voice: model download started` → `voice: model installed` in **4 s**; file 147,951,465 bytes; `Get-FileHash` SHA-256 = the pinned `60ed5bc3…2efe` |
+| Real speech, opt-in test, release build, model loaded from disk | Two clips spoken by Windows' offline TTS at 48 kHz (so through the resampler): 15.6 s (David) → **0% WER, 1.32 s** including model load; 5.1 s (Zira) → **0% WER, 1.10 s**. Before the build-flag fix: 12.1 s / 11.4 s. |
+| Live, dev build | Settings → Voice: no model (red dot, URL, Download button), then download → installed (green) |
+| **Not verified** | A live microphone capture transcribed by Whisper end to end. Each part is verified separately: the mic capture in P0, Whisper on recorded speech here, and `Auto` switching by unit test. I didn't record the room while the owner was using the PC. |
+| Not verified | CI on the fork (Actions off) |
+
+Opt-in real-speech test: put `name.wav` (PCM16) + `name.wav.txt` (expected text)
+in a folder, then
+`set COUCOU_SPEECH_DIR=<folder>` and `scripts\cargo-vs.cmd test --release -p coucou real_speech -- --ignored --nocapture`.

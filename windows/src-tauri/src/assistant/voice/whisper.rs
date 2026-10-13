@@ -12,6 +12,9 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 use super::{Transcript, VoiceError};
 
+/// The app's own names, given to Whisper as context so it spells them right.
+const VOCABULARY: &str = "Mochi, Coucou, Claude Code, Codex, Gemini, Cursor, GitHub, pull request, commit, branch.";
+
 /// What whisper.cpp wants: 16 kHz mono.
 pub const WHISPER_RATE: u32 = 16_000;
 
@@ -49,6 +52,8 @@ impl super::Transcriber for Local {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         // The language is detected from the audio: Coucou speaks ten.
         params.set_language(Some("auto"));
+        // Names Whisper would otherwise spell like common words ("Machi").
+        params.set_initial_prompt(VOCABULARY);
         params.set_n_threads(threads());
         params.set_no_context(true);
         params.set_suppress_blank(true);
@@ -127,6 +132,102 @@ mod tests {
     #[test]
     fn an_integer_ratio_averages_each_block() {
         assert_eq!(resample(&[0.0, 0.3, 0.6, 1.0, 1.0, 1.0], 48_000, 16_000), vec![0.3, 1.0]);
+    }
+
+    /// PCM16 WAV → mono f32 and its rate. Enough for the test clips.
+    fn read_wav(bytes: &[u8]) -> (Vec<f32>, u32) {
+        let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+        let u32_at = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+        assert_eq!(&bytes[0..4], b"RIFF");
+        let (mut channels, mut rate, mut at) = (1usize, 16_000u32, 12usize);
+        while at + 8 <= bytes.len() {
+            let (id, len) = (&bytes[at..at + 4], u32_at(at + 4) as usize);
+            if id == b"fmt " {
+                assert_eq!(u16_at(at + 8), 1, "PCM only");
+                channels = u16_at(at + 10) as usize;
+                rate = u32_at(at + 12);
+                assert_eq!(u16_at(at + 22), 16, "16-bit only");
+            } else if id == b"data" {
+                let data = &bytes[at + 8..(at + 8 + len).min(bytes.len())];
+                let frames: Vec<f32> = data
+                    .chunks_exact(2 * channels)
+                    .map(|f| {
+                        f.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]) as f32 / 32_768.0).sum::<f32>()
+                            / channels as f32
+                    })
+                    .collect();
+                return (frames, rate);
+            }
+            at += 8 + len + (len & 1);
+        }
+        panic!("no data chunk");
+    }
+
+    fn words(text: &str) -> Vec<String> {
+        text.split_whitespace()
+            .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect()
+    }
+
+    /// Word error rate: word-level edit distance over the reference length.
+    fn wer(reference: &str, heard: &str) -> f64 {
+        let (r, h) = (words(reference), words(heard));
+        let mut row: Vec<usize> = (0..=h.len()).collect();
+        for i in 1..=r.len() {
+            let mut prev = row[0];
+            row[0] = i;
+            for j in 1..=h.len() {
+                let cur = row[j];
+                row[j] = (row[j] + 1).min(row[j - 1] + 1).min(prev + usize::from(r[i - 1] != h[j - 1]));
+                prev = cur;
+            }
+        }
+        row[h.len()] as f64 / r.len().max(1) as f64
+    }
+
+    #[test]
+    fn word_error_rate_counts_edits() {
+        assert_eq!(wer("open the chat", "Open the chat."), 0.0);
+        assert!((wer("open the chat now", "open a chat now") - 0.25).abs() < 1e-9);
+    }
+
+    /// The real model on real speech. Needs the downloaded model and a folder
+    /// of `<name>.wav` clips with their text in `<name>.wav.txt`:
+    ///   set COUCOU_SPEECH_DIR=…  then
+    ///   scripts\cargo-vs.cmd test --release -p coucou real_speech -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_speech_is_transcribed_on_this_computer() {
+        use super::super::Transcriber;
+        let dir = std::env::var("COUCOU_SPEECH_DIR").expect("COUCOU_SPEECH_DIR");
+        assert!(super::super::model::installed(), "download the model from Settings → Voice first");
+        let local = Local::new(super::super::model::path());
+        let mut clips: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        clips.sort();
+        assert!(!clips.is_empty());
+        for (n, clip) in clips.iter().enumerate() {
+            let expected = std::fs::read_to_string(clip.with_extension("wav.txt")).unwrap();
+            let (samples, rate) = read_wav(&std::fs::read(clip).unwrap());
+            let seconds = samples.len() as f64 / rate as f64;
+            let started = std::time::Instant::now();
+            let transcript = local.transcribe(&samples, rate).unwrap();
+            let took = started.elapsed().as_secs_f64();
+            let error = wer(&expected, &transcript.text);
+            println!(
+                "{}: {seconds:.1} s of audio at {rate} Hz, transcribed in {took:.2} s{} — WER {:.0}%\n  heard: {}",
+                clip.file_name().unwrap().to_string_lossy(),
+                if n == 0 { " (includes loading the model)" } else { "" },
+                error * 100.0,
+                transcript.text
+            );
+            assert!(!transcript.simulated);
+            assert!(error <= 0.15, "too many errors");
+        }
     }
 
     #[test]

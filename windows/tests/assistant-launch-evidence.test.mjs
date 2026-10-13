@@ -7,6 +7,25 @@ import { readFileSync } from "node:fs";
 const source = readFileSync(new URL("../src-tauri/src/assistant/launch.rs", import.meta.url), "utf8")
   .split("#[cfg(test)]")[0]
   .replace(/\/\/.*$/gm, "");
+const app = readFileSync(new URL("../src-tauri/src/assistant/app.rs", import.meta.url), "utf8")
+  .replace(/\/\/.*$/gm, "");
+
+test("the shell launch uses a dedicated thread instead of a reused blocking worker", () => {
+  assert.match(source, /pub async fn open\([\s\S]*on_launch_thread\(move \|\| open_in_sta\(&action_id, &app_id\)\)\.await/);
+  assert.match(source, /std::thread::Builder::new\(\)[\s\S]*\.spawn\(move \|\|/);
+  assert.match(source, /send\.send\(with_sta\(launch\)\)/);
+  assert.match(source, /recv\.await\.map_err/);
+  assert.match(app, /Some\(app\) => super::launch::open\(action_id, app\.target\)\.await\?/);
+  assert.doesNotMatch(app, /spawn_blocking[\s\S]*super::launch::open/);
+});
+
+test("the launch thread enters STA before the shell operation and balances COM on drop", () => {
+  assert.match(source, /CoInitializeEx\(None, COINIT_APARTMENTTHREADED \| COINIT_DISABLE_OLE1DDE\)[\s\S]*\.ok\(\)\.map_err/);
+  assert.match(source, /let _com = Sta::initialize\(\)\?;\s*Ok\(launch\(\)\)/);
+  assert.match(source, /struct Sta\(PhantomData<Rc<\(\)>>\)/);
+  assert.match(source, /impl Drop for Sta[\s\S]*CoUninitialize\(\)/);
+  assert.match(source, /SEE_MASK_NOCLOSEPROCESS \| SEE_MASK_FLAG_NO_UI \| SEE_MASK_NOASYNC/);
+});
 
 test("an unrelated foreground switch cannot become launch success evidence", () => {
   assert.doesNotMatch(source, /\bGetForegroundWindow\b|foreground:pid:/);

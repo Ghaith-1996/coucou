@@ -184,6 +184,152 @@ test("multi-action plans free slots before adding pills", () => {
   assert.deepEqual(full.activeIntegrations, ["integration_vercel", "integration_stripe", "integration_notion", "integration_resend"]);
 });
 
+test("a spoken addition can use the slot freed by a later main promotion", () => {
+  const current = declared("integration_claude", "agent_cursor", "integration_vercel", "integration_notion", "integration_stripe");
+  assert.deepEqual(plan("Add GitHub, then switch to Cursor.", current), {
+    ok: true,
+    label: "Add GitHub · Make Cursor the main pill",
+    next: declared("agent_cursor", "integration_vercel", "integration_notion", "integration_stripe", "integration_github"),
+  });
+});
+
+test("atomic plans check capacity after all requested changes", async (t) => {
+  const addGitHub = { kind: "pillAdd", id: "integration_github" };
+  const promoteCursor = { kind: "pillSetMain", id: "agent_cursor" };
+  const cases = [
+    {
+      name: "main promotion frees its secondary slot in either order",
+      intents: [addGitHub, promoteCursor],
+      label: "Add GitHub · Make Cursor the main pill",
+      reverseLabel: "Make Cursor the main pill · Add GitHub",
+      next: declared("agent_cursor", "integration_vercel", "integration_notion", "integration_stripe", "integration_github"),
+    },
+    {
+      name: "main replacement frees its secondary slot",
+      intents: [addGitHub, { kind: "pillReplace", old: "integration_claude", new: "agent_cursor" }],
+      label: "Add GitHub · Replace VS Code with Cursor",
+      reverseLabel: "Replace VS Code with Cursor · Add GitHub",
+      next: declared("agent_cursor", "integration_vercel", "integration_notion", "integration_stripe", "integration_github"),
+    },
+    {
+      name: "replacement with an active secondary frees a slot",
+      intents: [addGitHub, { kind: "pillReplace", old: "integration_vercel", new: "integration_stripe" }],
+      label: "Add GitHub · Replace Vercel with Stripe",
+      reverseLabel: "Replace Vercel with Stripe · Add GitHub",
+      next: declared("integration_claude", "agent_cursor", "integration_notion", "integration_stripe", "integration_github"),
+    },
+    {
+      name: "replacement with the main frees a slot",
+      intents: [addGitHub, { kind: "pillReplace", old: "integration_vercel", new: "integration_claude" }],
+      label: "Add GitHub · Replace Vercel with VS Code",
+      reverseLabel: "Replace Vercel with VS Code · Add GitHub",
+      next: declared("integration_claude", "agent_cursor", "integration_notion", "integration_stripe", "integration_github"),
+    },
+    {
+      name: "explicit removals retain their established remove-first order",
+      intents: [addGitHub, { kind: "pillRemove", id: "integration_vercel" }],
+      label: "Remove Vercel · Add GitHub",
+      reverseLabel: "Remove Vercel · Add GitHub",
+      next: declared("integration_claude", "agent_cursor", "integration_notion", "integration_stripe", "integration_github"),
+    },
+    {
+      name: "multiple removals free every requested slot in either order",
+      intents: [
+        { kind: "pillAddMultiple", ids: ["integration_github", "integration_resend"] },
+        { kind: "pillRemoveMultiple", ids: ["agent_cursor", "integration_vercel"] },
+      ],
+      label: "Remove Cursor, Vercel · Add GitHub, Resend",
+      reverseLabel: "Remove Cursor, Vercel · Add GitHub, Resend",
+      next: declared("integration_claude", "integration_notion", "integration_stripe", "integration_github", "integration_resend"),
+    },
+    {
+      name: "multi-add keeps every new pill after two slots are freed",
+      intents: [
+        { kind: "pillAddMultiple", ids: ["integration_github", "integration_resend", "integration_github", "integration_claude"] },
+        promoteCursor,
+        { kind: "pillReplace", old: "integration_vercel", new: "integration_stripe" },
+      ],
+      label: "Add GitHub, Resend · Make Cursor the main pill · Replace Vercel with Stripe",
+      next: declared("agent_cursor", "integration_notion", "integration_stripe", "integration_github", "integration_resend"),
+    },
+    {
+      name: "replacement while temporarily oversized retains its new target",
+      intents: [addGitHub, { kind: "pillReplace", old: "integration_vercel", new: "integration_resend" }, promoteCursor],
+      label: "Add GitHub · Replace Vercel with Resend · Make Cursor the main pill",
+      next: declared("agent_cursor", "integration_notion", "integration_stripe", "integration_github", "integration_resend"),
+    },
+    {
+      name: "replacement can depend on an earlier addition",
+      intents: [addGitHub, { kind: "pillReplace", old: "integration_github", new: "integration_resend" }, promoteCursor],
+      label: "Add GitHub · Replace GitHub with Resend · Make Cursor the main pill",
+      next: declared("agent_cursor", "integration_vercel", "integration_notion", "integration_stripe", "integration_resend"),
+    },
+    {
+      name: "keep-only retains every requested pill after a main promotion",
+      intents: [
+        { kind: "pillOnly", ids: ["agent_cursor", "integration_vercel", "integration_notion", "integration_stripe", "integration_github"] },
+        promoteCursor,
+      ],
+      label: "Keep only Cursor, Vercel, Notion, Stripe, GitHub · Make Cursor the main pill",
+      next: declared("agent_cursor", "integration_vercel", "integration_notion", "integration_stripe", "integration_github"),
+    },
+    {
+      name: "explicit keep-only can reduce a temporarily oversized plan",
+      intents: [addGitHub, { kind: "pillOnly", ids: ["integration_github", "integration_notion"] }],
+      label: "Add GitHub · Keep only GitHub, Notion",
+      next: declared("integration_claude", "integration_github", "integration_notion"),
+    },
+  ];
+  for (const os of ["windows", "linux"]) {
+    for (const c of cases) {
+      const orders = [[c.intents, c.label]];
+      if (c.reverseLabel) orders.push([[...c.intents].reverse(), c.reverseLabel]);
+      for (const [intents, label] of orders) {
+        await t.test(`${os}: ${c.name}: ${label}`, () => {
+          const current = declared("integration_claude", "agent_cursor", "integration_vercel", "integration_notion", "integration_stripe");
+          const before = structuredClone({ current, intents });
+          assert.deepEqual(planPills(intents, current, os), { ok: true, label, next: c.next });
+          assert.deepEqual({ current, intents }, before);
+        });
+      }
+    }
+  }
+});
+
+test("atomic final-capacity validation rejects overflow and invalid later actions", async (t) => {
+  const addGitHub = { kind: "pillAdd", id: "integration_github" };
+  const full = "Already 4 pills: remove one first.";
+  for (const [name, intents, reason] of [
+    ["a new main does not free a secondary slot", [addGitHub, { kind: "pillSetMain", id: "agent_codex" }], full],
+    ["one freed slot cannot fit two additions", [
+      { kind: "pillAddMultiple", ids: ["integration_github", "integration_resend"] },
+      { kind: "pillSetMain", id: "agent_cursor" },
+    ], full],
+    ["a fresh replacement target does not free a slot", [
+      addGitHub, { kind: "pillReplace", old: "integration_vercel", new: "integration_resend" },
+    ], full],
+    ["an oversized keep-only is not truncated", [
+      { kind: "pillOnly", ids: ["agent_cursor", "integration_vercel", "integration_notion", "integration_stripe", "integration_github"] },
+      { kind: "pillSetMain", id: "agent_codex" },
+    ], full],
+    ["replacement still requires its source", [
+      addGitHub, { kind: "pillReplace", old: "integration_n8n", new: "integration_stripe" },
+    ], "n8n isn't in the island."],
+    ["replacement cannot depend on a later addition", [
+      { kind: "pillReplace", old: "integration_github", new: "integration_resend" },
+      addGitHub, { kind: "pillSetMain", id: "agent_cursor" },
+    ], "GitHub isn't in the island."],
+    ["a promoted main still needs to be eligible", [addGitHub, { kind: "pillSetMain", id: "integration_github" }], "GitHub can't be the main pill."],
+  ]) {
+    await t.test(name, () => {
+      const current = declared("integration_claude", "agent_cursor", "integration_vercel", "integration_notion", "integration_stripe");
+      const before = structuredClone({ current, intents });
+      assert.deepEqual(planPills(intents, current, "windows"), { ok: false, reason });
+      assert.deepEqual({ current, intents }, before);
+    });
+  }
+});
+
 test("multiple removals run first without mutating the input intent order", () => {
   const intents = [
     { kind: "pillAddMultiple", ids: ["integration_github", "integration_resend"] },

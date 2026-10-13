@@ -122,9 +122,7 @@ pub async fn assistant_app_launch(voice: State<'_, Voice>, capture_id: String, g
         match found {
             // Gone since it was offered (uninstalled, renamed).
             None => ActionReceipt::failed(&action_id, ErrorCode::Unavailable),
-            Some(app) => tauri::async_runtime::spawn_blocking(move || super::launch::open(&action_id, &app.target))
-                .await
-                .map_err(|_| ErrorCode::Failed)?,
+            Some(app) => super::launch::open(action_id, app.target).await?,
         }
     };
     #[cfg(not(windows))]

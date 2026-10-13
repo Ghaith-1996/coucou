@@ -83,7 +83,7 @@ export function parseVoiceEvent(raw: unknown): VoiceEvent | null {
   const optional = (key: string, ok: (value: unknown) => boolean) => e[key] === undefined || ok(e[key]);
   const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
   if (!optional("level", (x) => isNumber(x) && x >= 0 && x <= 1)) return null;
-  if (!optional("elapsedMs", (x) => isNumber(x) && x >= 0)) return null;
+  if (!optional("elapsedMs", (x) => isNumber(x) && Number.isSafeInteger(x) && x >= 0)) return null;
   if (!optional("transcript", (x) => typeof x === "string")) return null;
   if (!optional("simulated", (x) => typeof x === "boolean")) return null;
   if (!optional("error", (x) => VOICE_ERRORS.includes(x as VoiceError))) return null;

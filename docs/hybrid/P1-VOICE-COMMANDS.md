@@ -34,6 +34,16 @@ search. For Windows:
 
 A **simulated** transcript is never taken for a command.
 
+This slice advances the shared assistant contract to **v2** because `pill-set`
+adds to the closed v1 action registry. Rust emits v2 voice events, and the
+island uses the same version for its synthesized listening state. Both parsers
+reject other event versions; known actions with another version get the policy's
+`version` error before expiry or argument checks. The shared fixture
+keeps v1 and future-version rejection cases alongside the v2 cases. This is
+version tagging, not an IPC handshake: `assistant_voice_act` is new in this
+slice, and an older backend does not have that command. Unknown action kinds
+still fail deserialization before they can reach the policy.
+
 ## Verification
 
 | Check | Result |

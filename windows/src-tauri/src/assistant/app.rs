@@ -86,6 +86,7 @@ pub fn assistant_action_receipt(voice: State<Voice>, receipt: ActionReceipt) {
 
 /// Only the settings window manages the model, from a click there.
 fn from_settings(webview: &Webview) -> Result<(), String> {
+    model::require_supported()?;
     if webview.label() == "settings" {
         Ok(())
     } else {

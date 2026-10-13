@@ -44,7 +44,11 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
     return true;
   };
 
-  for (const intent of intents) {
+  // Match the Mac's multi-action flow: free requested slots before checking
+  // additions against capacity, while preserving order within each group.
+  const removes = (intent: Intent) => intent.kind === "pillRemove" || intent.kind === "pillRemoveMultiple";
+  const ordered = [...intents.filter(removes), ...intents.filter((intent) => !removes(intent))];
+  for (const intent of ordered) {
     switch (intent.kind) {
       case "pillAdd": {
         if (intent.id === main || active.includes(intent.id)) return { ok: false, reason: t("{name} is already in the island.", { name: name(intent.id) }) };

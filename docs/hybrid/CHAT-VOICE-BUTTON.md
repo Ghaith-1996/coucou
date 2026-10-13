@@ -19,9 +19,9 @@ preserved. Settings → Voice now explains both ways to start a capture.
 - Regression tests failed before the button existed, then passed: button to
   voice controller to unsent draft, waiting-agent priority, and capture blocked
   during a pending chat reply.
-- `npm test`: 853 passed. `npx tsc --noEmit`: passed.
+- `npm test`: 857 passed. `npx tsc --noEmit`: passed.
 - `npx vite build`: passed.
-- `scripts\cargo-vs.cmd test --workspace --locked`, from `windows/`: 502 app
+- `scripts\cargo-vs.cmd test --workspace --locked`, from `windows/`: 508 app
   tests and 30 relay tests passed; 7 opt-in app tests ignored.
 - Headless Edge/Playwright at `http://127.0.0.1:1421`: the real chat and voice
   views rendered at 640 px and 560 px card widths without overflow, a blank

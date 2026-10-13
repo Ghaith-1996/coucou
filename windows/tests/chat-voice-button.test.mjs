@@ -9,6 +9,7 @@ installFakeDom();
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent: "Windows" } });
 const { buildPrompt, applyChatDraft } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
+const { CONTRACT_VERSION } = await import("../src/assistant/contracts.ts");
 const { Voice, registerVoice, resetVoiceForTests, voiceUse } = await import("../src/assistant/voice.ts");
 
 let answers = {};
@@ -70,7 +71,7 @@ test("the chat microphone starts voice with the shortcut off and returns an unse
   assert.equal(Voice.event.state, "listening");
   assert.equal(State.isPinned, true);
   assert.equal(view.el.querySelector(".chat-input").value, "existing draft");
-  emit("assistant-voice", { v: 1, captureId: "cap-chat", state: "preview", transcript: "Dictated text" });
+  emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-chat", state: "preview", transcript: "Dictated text" });
   answers.assistant_voice_use = { actionId: "act-chat", text: "Dictated text" };
   await voiceUse();
   assert.equal(State.view, "prompt");

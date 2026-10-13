@@ -7,8 +7,9 @@
 // Start opens it (`shell:AppsFolder\<AppID>`, launch.rs).
 //
 // Uninstallers, readmes, help and web links are left out. Matching a spoken
-// name is deterministic: the whole name, then its first words, then one of
-// its words, then a near spelling (Whisper's), the shortest name first on a tie.
+// name is deterministic: exact names before interpreting leading articles or
+// app qualifiers, then its first words, then one of its words, then a near
+// spelling (Whisper's), the shortest name first on a tie.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppEntry {
@@ -127,14 +128,38 @@ const FRENCH_NAMES: [(&str, &str); 14] = [
     ("enregistreur vocal", "sound recorder"),
 ];
 
-/// The app a spoken name means, if any.
+// Keep in sync with intents.ts. The frontend preserves the original query so
+// "The Witness" can beat "Witness", including after "the app" or "une appli".
+const OPEN_FILLERS: [&str; 14] = [
+    "moi", "l", "la", "le", "les", "un", "une", "des", "app", "application", "the", "a", "an", "appli",
+];
+
+/// The app a spoken query means, if any. Exact labels at each leading-filler
+/// boundary win longest-first; only the fully stripped tail may match loosely.
 pub fn find<'a>(entries: &'a [AppEntry], spoken: &str) -> Option<&'a AppEntry> {
     let q = normalise(spoken);
     if q.is_empty() {
         return None;
     }
-    find_normalised(entries, &q).or_else(|| {
-        let english = FRENCH_NAMES.iter().find(|(fr, _)| *fr == q)?.1;
+    let mut candidate = q.as_str();
+    loop {
+        if let Some(exact) = entries
+            .iter()
+            .filter(|e| normalise(&e.label) == candidate)
+            .min_by(|a, b| a.label.len().cmp(&b.label.len()).then(a.label.cmp(&b.label)))
+        {
+            return Some(exact);
+        }
+        match candidate.split_once(' ') {
+            Some((word, tail)) if OPEN_FILLERS.contains(&word) => candidate = tail,
+            _ => break,
+        }
+    }
+    if OPEN_FILLERS.contains(&candidate) {
+        return None;
+    }
+    find_normalised(entries, candidate).or_else(|| {
+        let english = FRENCH_NAMES.iter().find(|(fr, _)| *fr == candidate)?.1;
         find_normalised(entries, english)
     })
 }
@@ -280,8 +305,57 @@ mod tests {
         assert_eq!(find("Calculatrice"), Some("Calculator"));
         assert_eq!(find("bloc-notes"), Some("Notepad"));
         assert_eq!(find("paramètres"), Some("Settings"));
-        assert_eq!(find("l'explorateur de fichiers"), None, "articles are the parser's job");
+        assert_eq!(find("l'explorateur de fichiers"), Some("File Explorer"));
         assert_eq!(find("explorateur de fichiers"), Some("File Explorer"));
+    }
+
+    #[test]
+    fn app_queries_accept_common_english_and_french_articles() {
+        let list: Vec<AppEntry> = ["Notion", "Notepad", "Settings", "Calculator"].iter().map(|l| entry(l)).collect();
+        for prefix in [
+            "a ", "an ", "the ", "an app ", "an application ", "the app ",
+            "un ", "une ", "des ", "le ", "la ", "les ", "l'", "l’",
+            "une app ", "une application ", "une appli ", "l'app ", "l’application ", "l’appli ",
+        ] {
+            let spoken = format!("{prefix}Notion");
+            assert_eq!(find(&list, &spoken).map(|e| e.label.as_str()), Some("Notion"), "{spoken}");
+            assert_eq!(find(&list, prefix), None, "an article or app qualifier is not a name: {prefix}");
+        }
+        for (spoken, want) in [("un Bloc-notes", "Notepad"), ("les paramètres", "Settings"), ("moi la calculatrice", "Calculator")] {
+            assert_eq!(find(&list, spoken).map(|e| e.label.as_str()), Some(want), "{spoken}");
+        }
+    }
+
+    #[test]
+    fn exact_article_led_app_names_win_before_stripping_or_fuzzy_matching() {
+        for (label, shorter) in [
+            ("The Witness", "Witness"), ("A Way Out", "Way Out"), ("An Editor", "Editor"),
+            ("Un Monde", "Monde"), ("Une Histoire", "Histoire"), ("Des Chiffres", "Chiffres"),
+            ("Le Monde", "Monde"), ("La Suite", "Suite"), ("Les Sims", "Sims"), ("L'Éditeur", "Éditeur"),
+            ("App Inventor", "Inventor"), ("À la carte", "Carte"),
+        ] {
+            let list = vec![entry(shorter), entry(label)];
+            for prefix in ["", "an app ", "the application ", "une appli "] {
+                let spoken = format!("{prefix}{label}");
+                assert_eq!(find(&list, &spoken).map(|e| e.label.as_str()), Some(label), "{spoken}");
+            }
+        }
+        let list = vec![entry("A Motion"), entry("Notion")];
+        assert_eq!(find(&list, "a Notion").map(|e| e.label.as_str()), Some("Notion"));
+    }
+
+    #[test]
+    fn article_fallback_preserves_name_words_and_existing_matching() {
+        for label in [
+            "Android Studio", "Aegis", "Leslie", "Unity", "Unearth", "Desmos", "Create an App",
+            "Design a Home", "Tous les outils", "Dessine un plan", "Crée une application", "Gestionnaire des tâches",
+        ] {
+            let list = vec![entry(label)];
+            assert_eq!(find(&list, &format!("the app {label}")).map(|e| e.label.as_str()), Some(label));
+        }
+        assert_eq!(found("the app Visual Studio").as_deref(), Some("Visual Studio Code"));
+        assert_eq!(found("an app studio code").as_deref(), Some("Visual Studio Code"));
+        assert_eq!(found("une application Spotfy").as_deref(), Some("Spotify"));
     }
 
     #[test]

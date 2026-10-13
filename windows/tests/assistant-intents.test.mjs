@@ -99,7 +99,7 @@ test("a pill command becomes the whole result, labelled", () => {
 test("several commands in one sentence make one plan", () => {
   const got = plan("Add GitHub, then remove Vercel.", declared("integration_claude", "integration_vercel"));
   assert.equal(got.ok, true);
-  assert.equal(got.label, "Add GitHub · Remove Vercel");
+  assert.equal(got.label, "Remove Vercel · Add GitHub");
   assert.deepEqual(got.next, declared("integration_claude", "integration_github"));
 });
 
@@ -126,4 +126,26 @@ test("anything that isn't only pill commands offers nothing but the chat", () =>
   assert.equal(plan("Hello Mochi, open the chat.", declared("integration_claude")), null);
   assert.equal(plan("pause et ajoute Notion", declared("integration_claude")), null);
   assert.equal(plan("mets du Daft Punk", declared("integration_claude")), null);
+});
+
+
+test("multi-action plans free slots before adding pills", () => {
+  const full = declared("integration_claude", "integration_vercel", "integration_stripe", "integration_notion", "integration_resend");
+  const got = plan("Add GitHub, then remove Vercel.", full);
+  assert.equal(got.ok, true);
+  assert.deepEqual(got.next, declared("integration_claude", "integration_stripe", "integration_notion", "integration_resend", "integration_github"));
+  assert.deepEqual(full.activeIntegrations, ["integration_vercel", "integration_stripe", "integration_notion", "integration_resend"]);
+});
+
+test("multiple removals run first without mutating the input intent order", () => {
+  const intents = [
+    { kind: "pillAddMultiple", ids: ["integration_github", "integration_resend"] },
+    { kind: "pillRemoveMultiple", ids: ["integration_vercel", "integration_notion"] },
+  ];
+  const before = structuredClone(intents);
+  const full = declared("integration_claude", "integration_vercel", "integration_stripe", "integration_notion", "integration_n8n");
+  const got = planPills(intents, full, "windows");
+  assert.equal(got.ok, true);
+  assert.deepEqual(got.next, declared("integration_claude", "integration_stripe", "integration_n8n", "integration_github", "integration_resend"));
+  assert.deepEqual(intents, before);
 });

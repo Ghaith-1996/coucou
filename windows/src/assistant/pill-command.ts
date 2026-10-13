@@ -45,29 +45,20 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
   const labels: string[] = [];
   const full = () => t("Already {count} pills: remove one first.", { count: MAX_DECLARED });
 
-  const add = (id: string): boolean => {
-    if (id === main || active.includes(id)) return false;
-    if (active.length >= MAX_DECLARED) return false;
-    active.push(id);
-    return true;
-  };
-
-  // Match the Mac's multi-action flow: free requested slots before checking
-  // additions against capacity, while preserving order within each group.
+  // Preserve the Mac's remove-first flow and the order within each group.
+  // Capacity applies to the final declaration, not these intermediate steps.
   const removes = (intent: Intent) => intent.kind === "pillRemove" || intent.kind === "pillRemoveMultiple";
   const ordered = [...intents.filter(removes), ...intents.filter((intent) => !removes(intent))];
   for (const intent of ordered) {
     switch (intent.kind) {
       case "pillAdd": {
         if (intent.id === main || active.includes(intent.id)) return { ok: false, reason: t("{name} is already in the island.", { name: name(intent.id) }) };
-        if (!add(intent.id)) return { ok: false, reason: full() };
+        active.push(intent.id);
         labels.push(t("Add {names}", { names: name(intent.id) }));
         break;
       }
       case "pillAddMultiple": {
         const added = [...new Set(intent.ids)].filter((id) => id !== main && !active.includes(id));
-        // One spoken request is atomic: never confirm only the subset that fits.
-        if (active.length + added.length > MAX_DECLARED) return { ok: false, reason: full() };
         if (added.length === 0) {
           return { ok: false, reason: active.length >= MAX_DECLARED ? full() : t("{name} is already in the island.", { name: names(intent.ids) }) };
         }
@@ -106,7 +97,6 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
           if (!active.includes(intent.old)) return { ok: false, reason: t("{name} isn't in the island.", { name: name(intent.old) }) };
           active = active.filter((x) => x !== intent.old);
           if (intent.new !== main && !active.includes(intent.new)) {
-            if (active.length >= MAX_DECLARED) return { ok: false, reason: full() };
             active.push(intent.new);
           }
         }
@@ -115,7 +105,6 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
       }
       case "pillOnly": {
         const kept = [...new Set(intent.ids.filter((x) => x !== main))];
-        if (kept.length > MAX_DECLARED) return { ok: false, reason: full() };
         active = kept;
         labels.push(t("Keep only {names}", { names: names([...new Set(intent.ids)]) }));
         break;
@@ -124,6 +113,9 @@ export function planPills(intents: Intent[], current: Declared, os: HostOs): Pil
   }
 
   const next = sanitizeDeclared({ mainPill: main, activeIntegrations: active }, os);
+  // A later promotion, replacement or keep-only can free an earlier add's slot.
+  // Reject an oversized result atomically; never truncate requested additions.
+  if (next.activeIntegrations.length > MAX_DECLARED) return { ok: false, reason: full() };
   const before = sanitizeDeclared(current, os);
   if (next.mainPill === before.mainPill && sameList(next.activeIntegrations, before.activeIntegrations)) {
     return { ok: false, reason: t("Already active") };

@@ -19,18 +19,19 @@ use tauri::Manager;
 use tauri::{Runtime, Url};
 
 /// True when `url` is one of the app's own pages: Tauri's asset protocol
-/// (`tauri://localhost` on Linux, `http(s)://tauri.localhost` on Windows),
+/// (`tauri://localhost` on Linux, `http://tauri.localhost` on Windows),
 /// `about:blank`, or — in a dev build only — the Vite dev server's origin.
+/// All windows keep Tauri's default `useHttpsScheme: false`; other platforms'
+/// origins and the unused HTTPS origin could reach a network service instead.
 pub fn allowed(url: &Url, dev_origin: Option<&Url>) -> bool {
     if url.as_str() == "about:blank" {
         return true;
     }
     let host = url.host_str().unwrap_or_default();
     match url.scheme() {
-        "tauri" => host == "localhost" && url.port().is_none(),
+        "tauri" => cfg!(target_os = "linux") && host == "localhost" && url.port().is_none(),
         "http" | "https" => {
-            matches!(url.origin().ascii_serialization().as_str(),
-                "http://tauri.localhost" | "https://tauri.localhost")
+            (cfg!(windows) && url.origin().ascii_serialization() == "http://tauri.localhost")
                 || dev_origin.is_some_and(|dev| dev.origin() == url.origin())
         }
         _ => false,
@@ -70,19 +71,59 @@ mod tests {
         Url::parse(s).unwrap()
     }
 
+    #[cfg(windows)]
     #[test]
-    fn the_bundled_pages_are_allowed() {
+    fn windows_bundled_pages_are_allowed() {
         for page in [
             "http://tauri.localhost/index.html",
             "http://tauri.localhost:80/index.html",
-            "https://tauri.localhost:443/settings.html",
-            "https://tauri.localhost/settings.html",
+            "http://tauri.localhost/settings.html",
             "http://tauri.localhost/mochi.html#x",
-            "tauri://localhost/index.html",
-            "about:blank",
         ] {
             assert!(allowed(&url(page), None), "{page}");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_inactive_asset_origins() {
+        for page in [
+            "https://tauri.localhost/settings.html",
+            "https://tauri.localhost:443/settings.html",
+            "tauri://localhost/index.html",
+        ] {
+            assert!(!allowed(&url(page), None), "{page}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_bundled_pages_are_allowed() {
+        for page in [
+            "tauri://localhost/index.html",
+            "tauri://localhost/settings.html",
+            "tauri://localhost/mochi.html#x",
+        ] {
+            assert!(allowed(&url(page), None), "{page}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_refuses_http_asset_lookalikes() {
+        for page in [
+            "http://tauri.localhost/index.html",
+            "http://tauri.localhost:80/index.html",
+            "https://tauri.localhost/settings.html",
+            "https://tauri.localhost:443/settings.html",
+        ] {
+            assert!(!allowed(&url(page), None), "{page}");
+        }
+    }
+
+    #[test]
+    fn about_blank_is_allowed() {
+        assert!(allowed(&url("about:blank"), None));
     }
 
     #[test]

@@ -10,6 +10,13 @@ license.workspace = true
 name = "coucou_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Speech recognition on the graphics card through Vulkan (whisper.cpp's ggml
+# backend). Off by default: building it needs the Vulkan SDK, and the binary
+# then needs vulkan-1.dll, which ships with GPU drivers but not with Windows
+# itself. See docs/hybrid/P1-VULKAN.md.
+gpu-vulkan = ["whisper-rs/vulkan"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

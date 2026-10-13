@@ -108,6 +108,8 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         settings.phone_relay = current.phone_relay;
         settings.phone_relay_url = current.phone_relay_url.clone();
         settings.phone_chat_models = current.phone_chat_models.clone();
+        // And for the speech model: only its own command picks one.
+        settings.voice_model = current.voice_model.clone();
         *current = settings;
         (screen_changed, autostart_changed, shortcuts_changed)
     };
@@ -655,6 +657,7 @@ pub fn run() {
     platform::prepare_environment();
     let loaded = settings::load();
     i18n::set_picked(&loaded.language);
+    assistant::voice::model::init(&loaded.voice_model);
     let gate = Arc::new(PollGate::new());
 
     let mut builder = tauri::Builder::default()
@@ -765,6 +768,7 @@ pub fn run() {
             assistant::app::voice_model_download,
             assistant::app::voice_model_cancel,
             assistant::app::voice_model_delete,
+            assistant::app::voice_model_select,
             recap::recap_history,
             recap::recap_prefs,
             recap::recap_set_enabled,

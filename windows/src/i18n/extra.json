@@ -4043,17 +4043,6 @@
    "ru": "Без модели голосовая карточка показывает имитацию расшифровки.",
    "id": "Tanpa model, kartu suara menampilkan transkrip simulasi."
   },
-  "Download the model ({size})": {
-   "zh-Hans": "下载模型（{size}）",
-   "hi": "मॉडल डाउनलोड करें ({size})",
-   "es": "Descargar el modelo ({size})",
-   "ar": "تنزيل النموذج ({size})",
-   "fr": "Télécharger le modèle ({size})",
-   "bn": "মডেল ডাউনলোড করুন ({size})",
-   "pt-BR": "Baixar o modelo ({size})",
-   "ru": "Скачать модель ({size})",
-   "id": "Unduh model ({size})"
-  },
   "Could not download: {error}": {
    "zh-Hans": "无法下载：{error}",
    "hi": "डाउनलोड नहीं हो सका: {error}",
@@ -4163,6 +4152,61 @@
    "pt-BR": "Manter só {names}",
    "ru": "Оставить только {names}",
    "id": "Simpan hanya {names}"
+  },
+  "Download ({size})": {
+   "zh-Hans": "下载（{size}）",
+   "hi": "डाउनलोड करें ({size})",
+   "es": "Descargar ({size})",
+   "ar": "تنزيل ({size})",
+   "fr": "Télécharger ({size})",
+   "bn": "ডাউনলোড করুন ({size})",
+   "pt-BR": "Baixar ({size})",
+   "ru": "Скачать ({size})",
+   "id": "Unduh ({size})"
+  },
+  "Use this model": {
+   "zh-Hans": "使用此模型",
+   "hi": "यह मॉडल इस्तेमाल करें",
+   "es": "Usar este modelo",
+   "ar": "استخدام هذا النموذج",
+   "fr": "Utiliser ce modèle",
+   "bn": "এই মডেল ব্যবহার করুন",
+   "pt-BR": "Usar este modelo",
+   "ru": "Использовать эту модель",
+   "id": "Gunakan model ini"
+  },
+  "Fastest. Fine for short commands, makes more mistakes.": {
+   "zh-Hans": "最快。适合简短指令，但错误较多。",
+   "hi": "सबसे तेज़। छोटे कमांड के लिए ठीक, पर गलतियाँ ज़्यादा।",
+   "es": "El más rápido. Sirve para órdenes cortas, pero se equivoca más.",
+   "ar": "الأسرع. مناسب للأوامر القصيرة، لكنه يخطئ أكثر.",
+   "fr": "Le plus rapide. Bien pour les commandes courtes, mais fait plus d'erreurs.",
+   "bn": "সবচেয়ে দ্রুত। ছোট কমান্ডের জন্য ঠিক আছে, তবে ভুল বেশি করে।",
+   "pt-BR": "O mais rápido. Bom para comandos curtos, mas erra mais.",
+   "ru": "Самая быстрая. Подходит для коротких команд, но ошибается чаще.",
+   "id": "Paling cepat. Cukup untuk perintah pendek, tapi lebih sering salah."
+  },
+  "The most accurate, and the slowest.": {
+   "zh-Hans": "最准确，也最慢。",
+   "hi": "सबसे सटीक, और सबसे धीमा।",
+   "es": "El más preciso, y el más lento.",
+   "ar": "الأدق، والأبطأ.",
+   "fr": "Le plus précis, et le plus lent.",
+   "bn": "সবচেয়ে নির্ভুল, এবং সবচেয়ে ধীর।",
+   "pt-BR": "O mais preciso, e o mais lento.",
+   "ru": "Самая точная и самая медленная.",
+   "id": "Paling akurat, dan paling lambat."
+  },
+  "Much more accurate, but much slower without a graphics card.": {
+   "zh-Hans": "准确得多，但没有显卡时会慢很多。",
+   "hi": "कहीं ज़्यादा सटीक, पर ग्राफ़िक्स कार्ड के बिना बहुत धीमा।",
+   "es": "Mucho más preciso, pero mucho más lento sin tarjeta gráfica.",
+   "ar": "أدق بكثير، لكنه أبطأ بكثير من دون بطاقة رسومات.",
+   "fr": "Bien plus précis, mais beaucoup plus lent sans carte graphique.",
+   "bn": "অনেক বেশি নির্ভুল, তবে গ্রাফিক্স কার্ড ছাড়া অনেক ধীর।",
+   "pt-BR": "Muito mais preciso, mas bem mais lento sem placa de vídeo.",
+   "ru": "Гораздо точнее, но без видеокарты намного медленнее.",
+   "id": "Jauh lebih akurat, tapi jauh lebih lambat tanpa kartu grafis."
   }
  }
 }

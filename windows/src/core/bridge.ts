@@ -378,12 +378,14 @@ export const Bridge = {
     callOrThrow<string>("assistant_voice_act", { captureId, kind, args }),
   /** What came of an assistant action, for the log (never with its text). */
   actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
-  /** The speech model (Settings → Voice). Only the settings window may change it. */
+  /** The speech models (Settings → Voice). Only the settings window may change them. */
   voiceModelStatus: () => call<VoiceModelStatus>("voice_model_status"),
-  /** Downloads it, verified; progress comes as `voice-model` events. Throws with why not. */
-  voiceModelDownload: () => callOrThrow<VoiceModelStatus>("voice_model_download"),
+  /** Downloads one, verified; progress comes as `voice-model` events. Throws with why not. */
+  voiceModelDownload: (id: string) => callOrThrow<VoiceModelStatus>("voice_model_download", { id }),
   voiceModelCancel: () => call<void>("voice_model_cancel"),
-  voiceModelDelete: () => callOrThrow<VoiceModelStatus>("voice_model_delete"),
+  voiceModelDelete: (id: string) => callOrThrow<VoiceModelStatus>("voice_model_delete", { id }),
+  /** Picks an installed one for the next captures. */
+  voiceModelSelect: (id: string) => callOrThrow<VoiceModelStatus>("voice_model_select", { id }),
 
   // ── Weekly recap ──────────────────────────────────────────────────────────
   /** Turns and decisions from `since` (Unix seconds) on, plus the recap prefs. */
@@ -431,14 +433,24 @@ export const Bridge = {
   spotifyInstalled: () => call<boolean>("spotify_installed"),
 };
 
-/** The speech model, as assistant/voice/model.rs reports it. */
+/** The speech models, as assistant/voice/model.rs reports them. */
 export interface VoiceModelStatus {
-  installed: boolean;
-  downloading: boolean;
+  models: VoiceModel[];
+  /** The picked one (used once it is installed). */
+  selected: string;
+  /** The one being downloaded, and how far it got. */
+  downloading: string | null;
   received: number;
+}
+
+export interface VoiceModel {
+  id: string;
+  label: string;
+  file: string;
   size: number;
   /** The address it is downloaded from. */
   source: string;
+  installed: boolean;
 }
 
 export type SpotifyAction = "playPause" | "next" | "previous" | "seek" | "shuffle" | "repeat" | "volume";

@@ -1,11 +1,12 @@
 // Speech to text on this computer: whisper.cpp (MIT) through whisper-rs,
-// with the model the user downloaded (model.rs). No network, no key; the
-// audio and the text never leave the process.
+// with the model the user downloaded and picked (model.rs). No network, no
+// key; the audio and the text never leave the process.
 //
-// The model loads on the first transcription and stays loaded. Each capture
-// gets its own whisper state, so nothing of one capture carries into the next.
+// The model loads on the first transcription and stays loaded until another
+// one is picked. Each capture gets its own whisper state, so nothing of one
+// capture carries into the next.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -19,18 +20,21 @@ const VOCABULARY: &str =
 /// What whisper.cpp wants: 16 kHz mono.
 pub const WHISPER_RATE: u32 = 16_000;
 
+/// The loaded model, and which file it came from.
 pub struct Local {
-    model: PathBuf,
-    ctx: Mutex<Option<WhisperContext>>,
+    ctx: Mutex<Option<(PathBuf, WhisperContext)>>,
 }
 
-impl Local {
-    pub fn new(model: PathBuf) -> Self {
+impl Default for Local {
+    fn default() -> Self {
         // whisper.cpp and ggml would print to stderr, model details and the
         // decoded text included. Silenced, once per process.
         whisper_rs::install_logging_hooks();
-        Self { model, ctx: Mutex::new(None) }
+        Self { ctx: Mutex::new(None) }
     }
+}
+
+impl Local {
 
     /// Forgets the loaded model (it was deleted, or replaced).
     pub fn unload(&self) {
@@ -38,16 +42,19 @@ impl Local {
     }
 }
 
-impl super::Transcriber for Local {
-    fn transcribe(&self, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
+impl Local {
+    /// Transcribes with the model in `model`, loading it first when another
+    /// one (or none) is loaded.
+    pub fn transcribe_with(&self, model: &Path, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
         let audio = resample(samples, sample_rate, WHISPER_RATE);
         let mut guard = self.ctx.lock().unwrap();
-        if guard.is_none() {
+        if guard.as_ref().is_none_or(|(loaded, _)| loaded != model) {
+            *guard = None;
             let params = WhisperContextParameters { use_gpu: false, ..Default::default() };
-            let ctx = WhisperContext::new_with_params(&self.model, params).map_err(|_| VoiceError::Provider)?;
-            *guard = Some(ctx);
+            let ctx = WhisperContext::new_with_params(model, params).map_err(|_| VoiceError::Provider)?;
+            *guard = Some((model.to_path_buf(), ctx));
         }
-        let ctx = guard.as_ref().ok_or(VoiceError::Provider)?;
+        let (_, ctx) = guard.as_ref().ok_or(VoiceError::Provider)?;
         let mut state = ctx.create_state().map_err(|_| VoiceError::Provider)?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -200,10 +207,14 @@ mod tests {
     #[test]
     #[ignore]
     fn real_speech_is_transcribed_on_this_computer() {
-        use super::super::Transcriber;
+        use super::super::model;
         let dir = std::env::var("COUCOU_SPEECH_DIR").expect("COUCOU_SPEECH_DIR");
-        assert!(super::super::model::installed(), "download the model from Settings → Voice first");
-        let local = Local::new(super::super::model::path());
+        // COUCOU_MODEL picks the model by id (base when unset).
+        let id = std::env::var("COUCOU_MODEL").unwrap_or_else(|_| model::DEFAULT_MODEL.into());
+        let chosen = model::find(&id).expect("unknown COUCOU_MODEL");
+        assert!(model::installed(chosen), "download {id} from Settings → Voice first");
+        println!("model: {}", chosen.label);
+        let local = Local::default();
         let mut clips: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -217,7 +228,7 @@ mod tests {
             let (samples, rate) = read_wav(&std::fs::read(clip).unwrap());
             let seconds = samples.len() as f64 / rate as f64;
             let started = std::time::Instant::now();
-            let transcript = local.transcribe(&samples, rate).unwrap();
+            let transcript = local.transcribe_with(&model::path(chosen), &samples, rate).unwrap();
             let took = started.elapsed().as_secs_f64();
             let error = wer(&expected, &transcript.text);
             println!(

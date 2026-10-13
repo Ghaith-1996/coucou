@@ -46,8 +46,8 @@ pub const SILENCE_RMS: f32 = 0.004;
 /// How long an action stays valid once the user pressed its button.
 pub const DRAFT_TTL_MS: u64 = 30_000;
 
-/// The app's transcriber: whisper.cpp once its model is installed, the
-/// simulated one until then (and again if the model is deleted).
+/// The app's transcriber: whisper.cpp with the picked model once it is
+/// installed, the simulated one until then (and again if it is deleted).
 pub struct Auto {
     #[cfg(windows)]
     local: whisper::Local,
@@ -57,7 +57,7 @@ impl Default for Auto {
     fn default() -> Self {
         Self {
             #[cfg(windows)]
-            local: whisper::Local::new(model::path()),
+            local: whisper::Local::default(),
         }
     }
 }
@@ -66,8 +66,8 @@ impl Transcriber for Auto {
     fn transcribe(&self, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
         #[cfg(windows)]
         {
-            if model::installed() {
-                return self.local.transcribe(samples, sample_rate);
+            if let Some(chosen) = model::active() {
+                return self.local.transcribe_with(&model::path(chosen), samples, sample_rate);
             }
             // Deleted while loaded: let the memory go too.
             self.local.unload();

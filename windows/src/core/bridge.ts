@@ -32,6 +32,9 @@ export interface BootInfo {
   hookPath: string;
   /** False where the OS has no global cursor (Wayland): see Island.followPageCursor. */
   cursorPoll: boolean;
+  /** Native Hide-button state and wake-strip geometry survive page reloads. */
+  islandHidden: boolean;
+  islandCollapsed: boolean;
 }
 
 /** The phone link (src-tauri/src/phone_link): how it is, never its secrets. */

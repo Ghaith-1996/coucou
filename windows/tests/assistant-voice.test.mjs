@@ -251,6 +251,20 @@ for (const state of ["processing", "preview", "idle"]) {
   });
 }
 
+for (const state of ["listening", "processing", "preview", "error"]) {
+  test(`startup idle cannot be revived by a late ${state} event`, async () => {
+    const start = pendingStart();
+    emit("assistant-voice", ev("cap-1", "listening"));
+    emit("assistant-voice", ev("cap-1", "idle"));
+    emit("assistant-voice", ev("cap-1", state, state === "error" ? { error: "provider" } : {}));
+    start.resolve("cap-1");
+    await start.finished;
+    assert.equal(Voice.event, null);
+    assert.equal(State.isPinned, false);
+    assert.deepEqual(host.alerts, []);
+  });
+}
+
 for (const view of ["approval", "question"]) {
   test(`${view} arriving during startup keeps the island and cancels the returned capture`, async () => {
     const start = pendingStart();

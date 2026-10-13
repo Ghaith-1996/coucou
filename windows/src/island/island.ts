@@ -347,8 +347,17 @@ export class Island {
     };
   }
 
+  /** Restore native state before boot-time events can reveal or expand us. */
+  restoreVisibility(hidden: boolean, collapsed: boolean) {
+    State.userHidden = hidden;
+    this.collapsed = collapsed;
+  }
+
   launch() {
-    this.fsm.launch();
+    // Reloading a hidden page must not replay the greeting; neither may the
+    // greeting replace an alert that arrived while boot registered listeners.
+    if (!State.userHidden && this.fsm.state === "hidden") this.fsm.launch();
+    else if (this.fsm.state !== "coucou") this.desktop.launch();
   }
 
   // ── Mode / view ─────────────────────────────────────────────────────────────
@@ -466,11 +475,11 @@ export class Island {
     State.notify();
   }
 
-  /** Back on screen after the Hide button (no-op otherwise). */
+  /** Explicit reopen: native state wins if a reload left the page out of step. */
   showIsland() {
+    void Bridge.setIslandHidden(false);
     if (!State.userHidden) return;
     State.userHidden = false;
-    void Bridge.setIslandHidden(false);
     State.notify();
   }
 

@@ -61,6 +61,9 @@ pub struct PollGate {
     active: Mutex<bool>,
     cv: Condvar,
     pub collapsed: AtomicBool,
+    /// The Hide button's native state survives a webview reload. A floating
+    /// island can be hidden without ever becoming a collapsed wake strip.
+    pub user_hidden: AtomicBool,
     pub rect: Mutex<IslandRect>,
     /// Mirrors the window flag so we only call into the OS when it changes.
     ignoring: AtomicBool,
@@ -77,12 +80,25 @@ impl PollGate {
             active: Mutex::new(false),
             cv: Condvar::new(),
             collapsed: AtomicBool::new(true),
+            user_hidden: AtomicBool::new(false),
             rect: Mutex::new(IslandRect::default()),
             ignoring: AtomicBool::new(false),
             moving: AtomicBool::new(false),
             #[cfg(target_os = "linux")]
             page_move: Mutex::new(None),
         }
+    }
+
+    /// Both the cursor poll and GTK pointer watcher follow the same native
+    /// visibility policy. Page shape updates must never wake a hidden window.
+    fn island_polling_active(&self) -> bool {
+        !self.user_hidden.load(Ordering::Relaxed) && !self.collapsed.load(Ordering::Relaxed)
+    }
+
+    pub fn sync_island_polling(&self) {
+        let active = self.island_polling_active();
+        self.set_active(active);
+        platform::set_pointer_watch(active);
     }
 
     pub fn set_rect(&self, rect: IslandRect) {
@@ -109,6 +125,43 @@ impl PollGate {
 
     pub(crate) fn is_active(&self) -> bool {
         *self.active.lock().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod visibility_tests {
+    use super::*;
+
+    #[test]
+    fn native_hide_parks_floating_islands_without_collapsing_their_geometry() {
+        let gate = PollGate::new();
+        gate.collapsed.store(false, Ordering::Relaxed);
+        assert!(gate.island_polling_active());
+        gate.user_hidden.store(true, Ordering::Relaxed);
+        assert!(!gate.island_polling_active());
+        assert!(!gate.collapsed.load(Ordering::Relaxed));
+        gate.user_hidden.store(false, Ordering::Relaxed);
+        assert!(gate.island_polling_active());
+    }
+
+    #[test]
+    fn shape_updates_and_reload_cannot_restart_polling_while_user_hidden() {
+        let gate = PollGate::new();
+        gate.user_hidden.store(true, Ordering::Relaxed);
+        for collapsed in [true, false, true, false] {
+            gate.collapsed.store(collapsed, Ordering::Relaxed);
+            assert!(!gate.island_polling_active());
+        }
+    }
+
+    #[test]
+    fn reopening_a_wake_strip_waits_for_expansion_before_polling() {
+        let gate = PollGate::new();
+        gate.user_hidden.store(true, Ordering::Relaxed);
+        gate.user_hidden.store(false, Ordering::Relaxed);
+        assert!(!gate.island_polling_active());
+        gate.collapsed.store(false, Ordering::Relaxed);
+        assert!(gate.island_polling_active());
     }
 }
 

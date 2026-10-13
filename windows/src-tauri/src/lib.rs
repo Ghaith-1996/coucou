@@ -69,6 +69,9 @@ pub struct BootInfo {
     /// False where the OS has no global cursor (Wayland): the page then reports
     /// the cursor from its own mouse events.
     cursor_poll: bool,
+    /// Native visibility and window shape survive a page reload.
+    island_hidden: bool,
+    island_collapsed: bool,
 }
 
 #[tauri::command]
@@ -87,6 +90,8 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
         cursor_poll: platform::CURSOR_POLL,
+        island_hidden: shared.gate.user_hidden.load(Ordering::Relaxed),
+        island_collapsed: shared.gate.collapsed.load(Ordering::Relaxed),
     }
 }
 
@@ -172,8 +177,7 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     island::apply_geometry(&app, &pref, spot, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
-    shared.gate.set_active(!collapsed);
-    platform::set_pointer_watch(!collapsed);
+    shared.gate.sync_island_polling();
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
@@ -260,17 +264,23 @@ pub fn island_dock(app: &AppHandle) {
 #[tauri::command]
 fn set_island_hidden(app: AppHandle, shared: State<Shared>, hidden: bool) {
     let Some(win) = island::window(&app) else { return };
+    // Explicit reopen requests can arrive from a freshly reloaded page. Native
+    // state is authoritative; already-visible alerts must not remap/reposition.
+    if shared.gate.user_hidden.load(Ordering::Relaxed) == hidden { return; }
     if hidden {
+        shared.gate.user_hidden.store(true, Ordering::Relaxed);
         island::end_page_move(&app, None);
-        shared.gate.set_active(false);
+        shared.gate.sync_island_polling();
         let _ = win.hide();
     } else {
-        let _ = win.show();
+        // Keep the hidden flag on failure so the next explicit reopen retries.
+        if win.show().is_err() { return; }
+        shared.gate.user_hidden.store(false, Ordering::Relaxed);
         let (pref, spot) = place_pref(&shared);
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         island::apply_geometry(&app, &pref, spot, collapsed);
         island::refresh_click_through(&app, &shared.gate);
-        shared.gate.set_active(!collapsed);
+        shared.gate.sync_island_polling();
     }
 }
 
@@ -907,7 +917,7 @@ pub fn run() {
             if !platform::CURSOR_POLL {
                 island::refresh_click_through(&handle, &gate);
             }
-            gate.set_active(true);
+            gate.sync_island_polling();
             island::spawn_cursor_poll(handle.clone(), gate.clone());
 
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));

@@ -455,7 +455,7 @@ thread_local! {
 /// the page uses. While the island is hidden the timer is removed altogether
 /// (set_pointer_watch), so a hidden island costs nothing.
 static POINTER_WIN: std::sync::OnceLock<WebviewWindow> = std::sync::OnceLock::new();
-static WATCH_WANTED: AtomicBool = AtomicBool::new(true);
+static WATCH_WANTED: AtomicBool = AtomicBool::new(false);
 static WATCH_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn watch_pointer_leave(win: &WebviewWindow) {
@@ -463,7 +463,8 @@ fn watch_pointer_leave(win: &WebviewWindow) {
     start_pointer_watch();
 }
 
-/// Starts or parks the pointer watch. Called with the island's collapsed state;
+/// Starts or parks the pointer watch. Active only while the island is both
+/// natively visible and not collapsed (including after page reloads);
 /// safe from any thread (the timer itself lives on the GTK main loop).
 pub fn set_pointer_watch(active: bool) {
     WATCH_WANTED.store(active, Ordering::Relaxed);
@@ -482,7 +483,9 @@ fn start_pointer_watch() {
         WATCH_RUNNING.store(false, Ordering::Relaxed);
         return;
     };
-    let inside = std::cell::Cell::new(false);
+    // On restart, even an initial "outside" must reach the page: Hide may
+    // have parked us while it still considered the pointer inside the island.
+    let inside = std::cell::Cell::new(None);
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         if !WATCH_WANTED.load(Ordering::Relaxed) {
             WATCH_RUNNING.store(false, Ordering::Relaxed);
@@ -497,7 +500,7 @@ fn start_pointer_watch() {
                 Some(under?.toplevel() == ours.toplevel())
             })
             .unwrap_or(false);
-        if inside.replace(now_inside) != now_inside {
+        if pointer_sample_changed(&inside, now_inside) {
             // The page gates its own (late, sometimes stale) mouse events on
             // this state, so a mousemove queued before the pointer left cannot
             // pull the island back to "inside".
@@ -508,6 +511,27 @@ fn start_pointer_watch() {
         }
         gtk::glib::ControlFlow::Continue
     });
+}
+
+fn pointer_sample_changed(previous: &std::cell::Cell<Option<bool>>, inside: bool) -> bool {
+    previous.replace(Some(inside)) != Some(inside)
+}
+
+#[cfg(test)]
+mod pointer_watch_tests {
+    use super::pointer_sample_changed;
+    use std::cell::Cell;
+
+    #[test]
+    fn restarting_publishes_initial_outside_as_well_as_inside_then_only_edges() {
+        for initial in [false, true] {
+            let previous = Cell::new(None);
+            assert!(pointer_sample_changed(&previous, initial));
+            assert!(!pointer_sample_changed(&previous, initial));
+            assert!(pointer_sample_changed(&previous, !initial));
+            assert!(!pointer_sample_changed(&previous, !initial));
+        }
+    }
 }
 
 /// Puts the layer surface on the display whose logical origin is (`x`, `y`).

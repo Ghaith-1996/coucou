@@ -64,8 +64,8 @@ pub struct PollGate {
     pub rect: Mutex<IslandRect>,
     /// Mirrors the window flag so we only call into the OS when it changes.
     ignoring: AtomicBool,
-    /// The user is dragging the island: the poll thread ends the move when
-    /// the button comes up (`finish_move`).
+    /// The user is dragging the island on a cursor-poll platform: the poll
+    /// thread ends the move when the button comes up (`finish_move`).
     pub moving: AtomicBool,
 }
 
@@ -320,6 +320,59 @@ mod display_tests {
     }
 }
 
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_linux_drag_does_not_query_the_global_button_or_arm_the_cursor_poll() {
+        let gate = PollGate::new();
+        let started = Cell::new(false);
+        start_move(
+            &gate,
+            false,
+            || panic!("Linux has no global button state"),
+            || {
+                assert!(!gate.moving.load(Ordering::SeqCst));
+                started.set(true);
+                true
+            },
+        );
+        assert!(started.get(), "the native drag must be requested on Linux");
+        assert!(!gate.moving.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_windows_drag_requires_the_physical_left_button() {
+        let gate = PollGate::new();
+        start_move(&gate, true, || false, || panic!("a released button must not start a drag"));
+        assert!(!gate.moving.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_windows_drag_arms_the_release_poll_before_entering_the_native_move_loop() {
+        let gate = PollGate::new();
+        let started = Cell::new(false);
+        start_move(&gate, true, || true, || {
+            assert!(gate.moving.load(Ordering::SeqCst));
+            started.set(true);
+            true
+        });
+        assert!(started.get());
+        assert!(gate.moving.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_failed_native_drag_clears_the_release_poll() {
+        for cursor_poll in [false, true] {
+            let gate = PollGate::new();
+            start_move(&gate, cursor_poll, || true, || false);
+            assert!(!gate.moving.load(Ordering::SeqCst));
+        }
+    }
+}
+
 pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
     match target_monitor(app, pref) {
         Some(m) => {
@@ -406,6 +459,25 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, spot: Option<IslandSpot>, col
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+}
+
+/// Starts a native move from the page's held-button drag gesture. Only the
+/// cursor-poll platform (Windows) can verify the physical button and detect
+/// release globally. Linux's button probe is a stub, so it must neither block
+/// the request nor immediately finish the move on the next display poll.
+pub fn start_move(
+    gate: &PollGate,
+    cursor_poll: bool,
+    left_button_down: impl FnOnce() -> bool,
+    start_dragging: impl FnOnce() -> bool,
+) {
+    if cursor_poll && !left_button_down() {
+        return;
+    }
+    gate.moving.store(cursor_poll, Ordering::SeqCst);
+    if !start_dragging() {
+        gate.moving.store(false, Ordering::SeqCst);
+    }
 }
 
 /// The user let go of the island after dragging it: remember where (and on

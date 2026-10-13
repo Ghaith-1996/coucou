@@ -205,17 +205,16 @@ fn place_pref(shared: &Shared) -> (String, Option<settings::IslandSpot>) {
 }
 
 /// A press on the island became a drag: the OS moves the window with the
-/// pointer, and the cursor poll saves where it ends (island::finish_move).
+/// pointer. On Windows the cursor poll saves where it ends (island::finish_move).
 #[tauri::command]
 fn island_drag_start(app: AppHandle, shared: State<Shared>) {
     let Some(win) = island::window(&app) else { return };
-    if !platform::left_button_down() {
-        return;
-    }
-    shared.gate.moving.store(true, Ordering::SeqCst);
-    if win.start_dragging().is_err() {
-        shared.gate.moving.store(false, Ordering::SeqCst);
-    }
+    island::start_move(
+        &shared.gate,
+        platform::CURSOR_POLL,
+        platform::left_button_down,
+        || win.start_dragging().is_ok(),
+    );
 }
 
 /// Back to the top centre of its display (the tray's "Put the island back at the top").

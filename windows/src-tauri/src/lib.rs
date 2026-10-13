@@ -2,6 +2,9 @@
 
 mod agent_hooks;
 mod agents;
+// Contracts first (hybrid P0): the voice slice is what starts using them.
+#[allow(dead_code)]
+mod assistant;
 mod chat;
 mod claude;
 mod codex_plan;

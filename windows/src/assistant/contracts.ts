@@ -1,0 +1,100 @@
+// The desktop assistant's contracts, version 1 — the TypeScript side of
+// src-tauri/src/assistant/contracts.rs. tests/fixtures/assistant-contracts.json
+// keeps the two in step.
+//
+// Rust decides and runs assistant actions; the page only shows them. Nothing
+// here can answer an agent's permission request: those go through the
+// approval_* commands, from a click on the agent's own card, and the
+// assistant's code never calls them (tests/assistant-contracts.test.mjs).
+
+export const CONTRACT_VERSION = 1;
+
+/** The event the island listens to for voice capture. */
+export const VOICE_EVENT = "assistant-voice";
+
+export type ActionKind = "chat-draft" | "insert-text" | "launch-app" | "ask-region";
+
+/** The closed registry. `available`: implemented in this version. */
+export const ACTION_KINDS: readonly { kind: ActionKind; available: boolean; idempotent: boolean }[] = [
+  { kind: "chat-draft", available: true, idempotent: true },
+  { kind: "insert-text", available: false, idempotent: false },
+  { kind: "launch-app", available: false, idempotent: false },
+  { kind: "ask-region", available: false, idempotent: false },
+];
+
+export interface AssistantAction {
+  v: number;
+  domain: "desktop-assistant";
+  id: string;
+  kind: ActionKind;
+  /** Checked against the kind's closed schema by Rust, never trusted as is. */
+  args: unknown;
+  intentId: string;
+  /** Unix milliseconds. */
+  expiresAtMs: number;
+}
+
+export type Decision = "allow" | "ask" | "deny";
+
+export type ErrorCode =
+  | "version" | "invalid-args" | "unavailable" | "expired"
+  | "grant-mismatch" | "cancelled" | "unverified" | "failed";
+
+export interface ActionReceipt {
+  actionId: string;
+  outcome: "succeeded" | "failed" | "cancelled" | "unknown";
+  evidenceRef?: string;
+  errorCode?: ErrorCode;
+}
+
+export type VoiceState = "idle" | "listening" | "processing" | "preview" | "speaking" | "error";
+
+export const VOICE_STATES: readonly VoiceState[] = [
+  "idle", "listening", "processing", "preview", "speaking", "error",
+];
+
+export type VoiceError = "no-microphone" | "microphone-denied" | "silence" | "provider";
+
+export const VOICE_ERRORS: readonly VoiceError[] = [
+  "no-microphone", "microphone-denied", "silence", "provider",
+];
+
+export interface VoiceEvent {
+  v: number;
+  /** Every event of one capture carries the same id; others are stale. */
+  captureId: string;
+  state: VoiceState;
+  /** Input level 0…1 while listening. */
+  level?: number;
+  elapsedMs?: number;
+  transcript?: string;
+  /** The transcript came from the simulated provider, not real speech. */
+  simulated?: boolean;
+  error?: VoiceError;
+}
+
+/** A voice event as it arrived, or null when it isn't one this version knows. */
+export function parseVoiceEvent(raw: unknown): VoiceEvent | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const e = raw as Record<string, unknown>;
+  if (e.v !== CONTRACT_VERSION) return null;
+  if (typeof e.captureId !== "string" || e.captureId === "") return null;
+  if (!VOICE_STATES.includes(e.state as VoiceState)) return null;
+  const optional = (key: string, ok: (value: unknown) => boolean) => e[key] === undefined || ok(e[key]);
+  const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+  if (!optional("level", (x) => isNumber(x) && x >= 0 && x <= 1)) return null;
+  if (!optional("elapsedMs", (x) => isNumber(x) && x >= 0)) return null;
+  if (!optional("transcript", (x) => typeof x === "string")) return null;
+  if (!optional("simulated", (x) => typeof x === "boolean")) return null;
+  if (!optional("error", (x) => VOICE_ERRORS.includes(x as VoiceError))) return null;
+  return {
+    v: CONTRACT_VERSION,
+    captureId: e.captureId,
+    state: e.state as VoiceState,
+    ...(e.level !== undefined && { level: e.level as number }),
+    ...(e.elapsedMs !== undefined && { elapsedMs: e.elapsedMs as number }),
+    ...(e.transcript !== undefined && { transcript: e.transcript as string }),
+    ...(e.simulated !== undefined && { simulated: e.simulated as boolean }),
+    ...(e.error !== undefined && { error: e.error as VoiceError }),
+  };
+}

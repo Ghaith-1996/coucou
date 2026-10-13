@@ -188,6 +188,10 @@ export const Bridge = {
 
   /** Shrink the window down to the invisible wake strip (hidden) or back to full. */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
+  /** A press on the island became a drag: the OS moves it, Rust saves where. */
+  islandDragStart: () => call<void>("island_drag_start"),
+  /** The Hide button (true), or bringing the island back (false). */
+  setIslandHidden: (hidden: boolean) => call<void>("set_island_hidden", { hidden }),
 
   /**
    * Pushes the island shape in window coordinates. Rust flips click-through from

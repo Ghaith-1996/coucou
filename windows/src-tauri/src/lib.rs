@@ -967,6 +967,8 @@ pub fn run() {
             assistant::app::assistant_action_receipt,
             assistant::app::assistant_app_propose,
             assistant::app::assistant_app_launch,
+            assistant::app::assistant_insert_offer,
+            assistant::app::assistant_insert_text,
             assistant::app::voice_model_status,
             assistant::app::voice_model_download,
             assistant::app::voice_model_cancel,
@@ -1006,6 +1008,7 @@ pub fn run() {
             #[cfg(windows)]
             assistant::voice::session::watch(voice.clone(), assistant::app::log);
             app.manage(voice);
+            app.manage(assistant::dictation::Dictation::start(assistant::app::log));
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
             create_settings_window(&handle);

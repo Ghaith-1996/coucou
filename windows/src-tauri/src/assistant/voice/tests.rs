@@ -676,3 +676,69 @@ fn only_an_app_id_may_be_proposed_and_only_for_a_waiting_transcript() {
     h.wait(VoiceState::Idle);
     assert_eq!(h.voice.confirm(&id, &grant), Err(ErrorCode::Expired));
 }
+
+/// A real (not simulated) transcript waiting on the card, set directly.
+fn spoken(h: &Harness, capture_id: &str, text: &str) {
+    *h.voice.0.phase.lock().unwrap() = Phase::Preview {
+        id: capture_id.into(),
+        transcript: Transcript { text: text.into(), simulated: false },
+        since: Instant::now(),
+    };
+}
+
+fn insertion(text: &str) -> serde_json::Value {
+    serde_json::json!({ "text": text, "targetWindow": 4242, "targetPid": 77 })
+}
+
+#[test]
+fn dictated_text_is_proposed_for_its_field_then_confirmed_once() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "Hello there");
+    assert_eq!(h.voice.preview_text("cap-dictate").unwrap(), "Hello there");
+    assert_eq!(h.voice.preview_text("cap-other"), Err(ErrorCode::Expired));
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Hello there")).unwrap();
+    // Peeking and proposing leave the transcript on the card.
+    assert_eq!(h.voice.preview_text("cap-dictate").unwrap(), "Hello there");
+    let (action, args) = h.voice.confirm("cap-dictate", &grant).unwrap();
+    assert_eq!(action, grant.action_id);
+    assert_eq!(
+        args,
+        ValidArgs::InsertText(InsertTextArgs { text: "Hello there".into(), target_window: 4242, target_pid: 77 }),
+    );
+    assert_eq!(h.voice.confirm("cap-dictate", &grant), Err(ErrorCode::Expired), "only once");
+    assert_eq!(h.voice.preview_text("cap-dictate"), Err(ErrorCode::Expired), "the transcript is used");
+}
+
+#[test]
+fn a_simulated_transcript_is_never_offered_to_another_app() {
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    assert_eq!(h.voice.preview_text(&id), Err(ErrorCode::Unavailable));
+}
+
+#[test]
+fn an_insertion_needs_a_target_and_sane_text() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "hi");
+    for bad in [
+        serde_json::json!({ "text": "hi", "targetWindow": 0, "targetPid": 77 }),
+        serde_json::json!({ "text": "hi", "targetWindow": 4242, "targetPid": 0 }),
+        serde_json::json!({ "text": "   ", "targetWindow": 4242, "targetPid": 77 }),
+        serde_json::json!({ "text": "a\u{1b}[2J", "targetWindow": 4242, "targetPid": 77 }),
+        serde_json::json!({ "text": "hi", "targetWindow": 4242, "targetPid": 77, "submit": true }),
+    ] {
+        assert_eq!(h.voice.propose("cap-dictate", ActionKind::InsertText, bad.clone()).unwrap_err(), ErrorCode::InvalidArgs, "{bad}");
+    }
+}
+
+#[test]
+fn text_that_could_not_be_inserted_becomes_an_allowed_chat_draft() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "keep me");
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("keep me")).unwrap();
+    h.voice.confirm("cap-dictate", &grant).unwrap();
+    let draft = h.voice.fallback_draft("cap-dictate", "keep me".into()).unwrap();
+    assert_eq!(draft.text, "keep me");
+    assert!(draft.action_id.starts_with("act-"));
+    assert_eq!(h.voice.fallback_draft("cap-dictate", " ".into()).unwrap_err(), ErrorCode::InvalidArgs);
+}

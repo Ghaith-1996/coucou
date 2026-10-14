@@ -19,13 +19,25 @@
 // keeps the `launch-app` action and gives back the app's name and a grant;
 // the card shows "Open <that name>", and the user's click hands the grant
 // back, Rust checks it and opens the app. Nothing opens without that click.
+//
+// Dictation: when the capture started in another app's text field, Rust
+// remembered that field. A plain transcript (no command) is then offered as
+// "Insert into <app>" if the field can take it. The click hands Rust's grant
+// back; Rust checks the field again and writes the words there, never
+// sending anything. If the field moved or went away, nothing is written and
+// the transcript stays on the card; if writing fails, the words land in the
+// chat instead.
 
 import { Bridge, onEvent } from "../core/bridge";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
 import { State } from "../core/state";
-import { CONTRACT_VERSION, VOICE_EVENT, parseVoiceEvent, succeededReceipt, type AppGrant, type VoiceEvent } from "./contracts";
+import {
+  CONTRACT_VERSION, VOICE_EVENT, parseVoiceEvent, succeededReceipt,
+  type AppGrant, type InsertRefusal, type VoiceEvent,
+} from "./contracts";
+import { writeClipboard } from "../views/markdown";
 import { parseTranscript } from "./intents";
 import { planPills, sameList, type Declared, type PillPlan } from "./pill-command";
 
@@ -85,6 +97,8 @@ export const Voice = {
   },
   /** "Open <app>": the name said, then the app Rust found and its grant. */
   app: null as AppOffer | null,
+  /** Dictation: the field the capture started in, if it can take the words. */
+  insert: null as InsertOffer | null,
 
   get active(): boolean {
     const s = this.event?.state;
@@ -95,6 +109,13 @@ export const Voice = {
 export type AppOffer =
   | { name: string; status: "finding" | "missing" }
   | { name: string; status: "ready" | "opening"; label: string; grant: AppGrant };
+
+export type InsertOffer =
+  | { status: "finding" }
+  /** `reason`: the last Insert was refused before writing; it may be tried again. */
+  | { status: "ready"; label: string; grant: AppGrant; reason?: InsertRefusal }
+  | { status: "inserting"; label: string; grant: AppGrant }
+  | { status: "refused"; reason: InsertRefusal };
 
 function waitingCard(): IslandViewName | null {
   const req = State.pendingApproval;
@@ -273,6 +294,78 @@ export async function voiceOpen() {
   }
 }
 
+/** Asks Rust whether the field the capture started in can take the transcript. */
+async function findField(id: string) {
+  const requestGeneration = generation;
+  const stale = () => requestGeneration !== generation || Voice.event?.captureId !== id || Voice.insert?.status !== "finding";
+  try {
+    const offer = await Bridge.insertOffer(id);
+    if (stale()) return;
+    Voice.insert = !offer ? null
+      : offer.status === "ready" ? { status: "ready", label: offer.label, grant: offer.grant }
+      : { status: "refused", reason: offer.reason };
+  } catch {
+    if (stale()) return;
+    Voice.insert = null;
+  }
+  State.notify();
+}
+
+/** The user's click on "Insert into <app>": Rust checks the field again, then writes. */
+export async function voiceInsert() {
+  const current = Voice.event;
+  const offer = Voice.insert;
+  if (current?.state !== "preview" || offer?.status !== "ready" || !host) return;
+  Voice.insert = { status: "inserting", label: offer.label, grant: offer.grant };
+  State.notify();
+  const requestGeneration = generation;
+  try {
+    const result = await Bridge.insertText(current.captureId, offer.grant);
+    if (requestGeneration !== generation) return;
+    if (result.status === "kept") {
+      // Nothing was written: the transcript stays, and Insert may be tried again.
+      Voice.insert = { status: "ready", label: offer.label, grant: offer.grant, reason: result.reason };
+      Sound.play("error");
+      State.notify();
+      return;
+    }
+    if (result.status === "done") {
+      end();
+      // `unknown`: it may be there or not. Never written twice.
+      Sound.play(result.receipt.outcome === "succeeded" ? "approve" : "error");
+      if (result.receipt.outcome !== "succeeded") host.emote("annoyed");
+      return;
+    }
+    end(false);
+    Sound.play("error");
+    host.emote("annoyed");
+    // The words aren't lost: they wait in the chat field, unsent.
+    const draft = result.draft;
+    if (!draft) {
+      host.collapse();
+      return;
+    }
+    const there = host.showChatDraft(draft.text);
+    void Bridge.actionReceipt(
+      there
+        ? succeededReceipt(draft.actionId, "chat-field:draft-set")
+        : { actionId: draft.actionId, outcome: "failed", errorCode: "unverified" },
+    );
+  } catch {
+    if (requestGeneration !== generation) return;
+    end();
+    Sound.play("error");
+  }
+}
+
+/** Copy: the transcript on the clipboard, for a field Coucou can't write to. */
+export async function voiceCopy() {
+  const current = Voice.event;
+  if (current?.state !== "preview" || current.simulated) return;
+  await writeClipboard(current.transcript ?? "");
+  Sound.play("approve");
+}
+
 /** Forgets the capture; `close` folds the card away. */
 function end(close = true) {
   if (errorTimer) clearTimeout(errorTimer);
@@ -282,6 +375,7 @@ function end(close = true) {
   captureId = null;
   Voice.event = null;
   Voice.app = null;
+  Voice.insert = null;
   shown = false;
   unpin();
   if (close && State.view === "voice" && host) host.collapse();
@@ -335,6 +429,10 @@ function accept(event: VoiceEvent) {
     const open = intents.length === 1 && intents[0].kind === "openApp" ? intents[0].name : null;
     Voice.app = open ? { name: open, status: "finding" } : null;
     if (open) void findApp(event.captureId, open);
+    // Plain words, not a command: they may go into the field the capture
+    // started in.
+    Voice.insert = !event.simulated && intents.length === 0 ? { status: "finding" } : null;
+    if (Voice.insert) void findField(event.captureId);
     previewTimer = setTimeout(() => {
       if (Voice.event?.captureId === event.captureId && Voice.event.state === "preview") voiceCancel();
     }, PREVIEW_TTL_MS);
@@ -392,6 +490,7 @@ export function resetVoiceForTests() {
   captureId = null;
   Voice.event = null;
   Voice.app = null;
+  Voice.insert = null;
   shown = false;
   pinnedByVoice = false;
   userPinned = false;

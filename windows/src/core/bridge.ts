@@ -10,6 +10,29 @@ import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
 import type { ActionReceipt, AppGrant, InsertCopyReply, InsertOfferReply, InsertTextReply, RegionRect } from "../assistant/contracts";
+import type { ChatGptDisconnectResult, ChatGptModel, ChatGptStatus } from "./chatgpt";
+import type { ChatMessage } from "./state";
+
+/** chat_store.rs `Summary`. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: number;
+  count: number;
+}
+
+/** chat_store.rs `MAX_LISTED` and `ListCursor`. A full page may have more. */
+export const CONVERSATION_PAGE_SIZE = 500;
+export type ConversationCursor = Pick<ConversationSummary, "updatedAt" | "id">;
+
+/** chat_store.rs `Conversation`. */
+export interface SavedConversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: Omit<ChatMessage, "id">[];
+}
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -22,6 +45,40 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T |
     console.error(`[coucou] ${cmd} failed`, err);
     return null;
   }
+}
+
+// Opens restore native model history, so every caller (including file drops
+// and keyboard resets) must finish one context change before starting another.
+let chatNavigation: Promise<void> | null = null;
+let chatNavigationRevision = 0;
+// Reset callers clear the visible transcript immediately. If native reset
+// fails, no turn may use its old history until reset/open succeeds again.
+let chatContextFailure: { error: unknown } | null = null;
+
+function navigateChat<T>(action: () => Promise<T>): Promise<T> {
+  chatNavigationRevision++;
+  const result = chatNavigation ? chatNavigation.then(action) : action();
+  const settled = result.then(() => {}, () => {});
+  chatNavigation = settled;
+  void settled.then(() => {
+    if (chatNavigation === settled) chatNavigation = null;
+  });
+  return result;
+}
+
+function withChatContext<T>(action: () => Promise<T>): Promise<T> {
+  return chatContextFailure ? Promise.reject(chatContextFailure.error) : action();
+}
+
+function afterChatNavigation<T>(action: () => Promise<T>): Promise<T> {
+  if (!chatNavigation) return action();
+  const revision = chatNavigationRevision;
+  return chatNavigation.then(() => {
+    // Navigation or Stop after Send cancels that queued turn. Running answers
+    // remain native's concern.
+    if (revision !== chatNavigationRevision) throw new Error("Conversation changed.");
+    return action();
+  });
 }
 
 export interface BootInfo {
@@ -340,8 +397,48 @@ export const Bridge = {
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
   chatSend: (query: string, context: ChatContext | null) =>
-    callOrThrow<{ text: string }>("chat_send", { query, context }),
-  chatReset: () => call<void>("chat_reset"),
+    afterChatNavigation(() => withChatContext(() => callOrThrow<{ text: string }>("chat_send", { query, context }))),
+  chatReset: () => navigateChat(async () => {
+    if (!IS_TAURI) return null;
+    try {
+      await callOrThrow<void>("chat_reset");
+      chatContextFailure = null;
+    } catch (error) {
+      chatContextFailure = { error };
+      console.error("[coucou] chat_reset failed", error);
+      return null;
+    }
+  }),
+  /** Stops the answer under way, whoever is answering. */
+  chatStop: () => {
+    // Cancel a Send still waiting for navigation, and stop a running native turn
+    // immediately rather than putting cancellation behind the same queue.
+    chatNavigationRevision++;
+    return call<void>("chat_stop");
+  },
+  /** Regenerate: the last question and answer leave the model's history. */
+  chatUndoLast: () => navigateChat(() => withChatContext(() => callOrThrow<boolean>("chat_undo_last"))),
+  /** Saved conversations (chat_store.rs). */
+  chatHistoryList: (before: ConversationCursor | null = null) =>
+    IS_TAURI ? callOrThrow<ConversationSummary[]>("chat_history_list", { before }) : Promise.resolve([]),
+  chatHistorySave: (conversation: SavedConversation) => callOrThrow<void>("chat_history_save", { conversation }),
+  /** Reopens one: its messages, and its turns become the model's history. */
+  chatHistoryOpen: (id: string) => navigateChat(async () => {
+    const saved = await callOrThrow<SavedConversation>("chat_history_open", { id });
+    chatContextFailure = null;
+    return saved;
+  }),
+  chatHistoryRename: (id: string, title: string) => callOrThrow<void>("chat_history_rename", { id, title }),
+  chatHistoryDelete: (id: string) => callOrThrow<void>("chat_history_delete", { id }),
+  /** ChatGPT sign-in (chatgpt.rs): only a status ever comes back, never a token. */
+  chatgptStatus: () => call<ChatGptStatus>("chatgpt_status"),
+  chatgptConnect: (newAccount = false, pendingAccountId: string | null = null, startAnother = false) =>
+    callOrThrow<ChatGptStatus>("chatgpt_connect", newAccount ? { newAccount, pendingAccountId, startAnother } : { newAccount }),
+  chatgptSelectAccount: (clientId: string) => callOrThrow<ChatGptStatus>("chatgpt_select_account", { clientId }),
+  /** Remote revocation and local cleanup are separate; IPC errors propagate. */
+  chatgptDisconnect: () => callOrThrow<ChatGptDisconnectResult>("chatgpt_disconnect"),
+  chatgptModels: () => callOrThrow<ChatGptModel[]>("chatgpt_models"),
+  chatgptWelcomed: (clientId: string | null) => call<void>("chatgpt_welcomed", { clientId }),
   /**
    * The models a provider offers, for the picker in the chat view. Rust asks
    * the provider only when it has a key (or a server address).

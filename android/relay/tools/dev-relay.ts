@@ -8,6 +8,7 @@
 // logs nothing and fails closed without an access key.
 
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -35,8 +36,13 @@ export interface Relay {
   close(): Promise<void>;
 }
 
+// Same first eight SHA-256 bytes as protocol.accessGeneration, but synchronous in Node. Awaiting a separate WebCrypto
+// digest in each message callback lets a later frame overtake an earlier one and breaks the clients' replay counters.
+const accessGenerationSync = (key: string | undefined): string => key ? createHash("sha256").update(key).digest("hex").slice(0, 16) : "";
+
 export async function startRelay(options: { port?: number; host?: string; accessKey?: string; connectsPerMinute?: number } = {}): Promise<Relay> {
   let accessKey = options.accessKey;
+  let currentGeneration = accessGenerationSync(accessKey);
   const rooms = new Map<string, Partial<Record<Role, Peer>> & { verifier?: string }>();
   const connects = new Map<string, number[]>();
   const wss = new WebSocketServer({
@@ -96,8 +102,10 @@ export async function startRelay(options: { port?: number; host?: string; access
         peer.ws.send(PEER_ONLINE);
       }
 
-      ws.on("message", async (data, isBinary) => {
-        if ((await accessGeneration(accessKey)) !== me.gen || !me.gen) return ws.close(1008, "access key changed");
+      // No awaits or application-level queue: ws delivers each connection's messages in wire order. Cache only the
+      // configured key's generation, and still check every frame so setAccessKey revokes existing sockets immediately.
+      ws.on("message", (data, isBinary) => {
+        if (currentGeneration !== me.gen || !me.gen) return ws.close(1008, "access key changed");
         if (!isBinary) {
           if (data.toString() === "ping") return ws.send("pong"); // the platform's auto-response in the Worker
           return ws.close(1003, "binary only");
@@ -127,7 +135,11 @@ export async function startRelay(options: { port?: number; host?: string; access
   const port = typeof address === "object" && address ? address.port : 0;
   return {
     port,
-    setAccessKey: (key) => void (accessKey = key),
+    setAccessKey: (key) => {
+      const gen = accessGenerationSync(key);
+      accessKey = key;
+      currentGeneration = gen;
+    },
     rooms: () => rooms.size,
     close: () =>
       new Promise<void>((resolve) => {

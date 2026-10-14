@@ -1402,6 +1402,234 @@ input[type="range"]::-webkit-slider-thumb {
   opacity: 0.35;
 }
 
+/* ── ChatGPT, Stop, signatures, history (views/chat.ts) ───────────────────── */
+
+.model-row {
+  align-items: center;
+  gap: 6px;
+}
+
+.model-spacer {
+  flex: 1 1 auto;
+}
+
+.history-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #7b8089;
+  cursor: default;
+}
+
+.history-btn:hover:not(:disabled),
+.history-btn.open {
+  background: rgba(255, 255, 255, 0.1);
+  color: #c8cdd4;
+}
+
+.history-btn:disabled {
+  opacity: 0.6;
+}
+
+.effort-select {
+  max-width: 110px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #9aa0a9;
+  font: 500 10.5px var(--font);
+  outline: none;
+  cursor: default;
+}
+
+.effort-select:hover:not(:disabled),
+.effort-select:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  color: #c8cdd4;
+}
+
+.effort-select option {
+  background: #16171b;
+  color: #c8cdd4;
+}
+
+.send-btn.stop {
+  background: #e8e9ec;
+}
+
+.send-btn:focus-visible,
+.history-btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.reply-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.reply-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.reply-sig {
+  font: 500 10px var(--font);
+  color: #5c6370;
+}
+
+.reply-stopped {
+  font: 500 10px var(--font);
+  color: #f5a524;
+}
+
+.reply-meta .md-copy {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  opacity: 0.7;
+}
+
+.reply-meta .md-copy:hover {
+  opacity: 1;
+}
+
+.picker-model:disabled {
+  opacity: 0.45;
+}
+
+.picker-tag {
+  flex: 0 0 auto;
+  font: 400 10px var(--font);
+  color: #6b717b;
+}
+
+.picker-status.plan {
+  color: #74aa9c;
+}
+
+.chatgpt-connect {
+  align-self: flex-start;
+  padding: 5px 12px;
+  border: 1px solid rgba(116, 170, 156, 0.5);
+  border-radius: 999px;
+  background: rgba(116, 170, 156, 0.16);
+  color: #e8e9ec;
+  font: 600 11.5px var(--font);
+  cursor: default;
+}
+
+.chatgpt-connect:hover {
+  background: rgba(116, 170, 156, 0.26);
+}
+
+.chat-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(116, 170, 156, 0.35);
+  background: rgba(116, 170, 156, 0.1);
+}
+
+.chat-notice.warn {
+  border-color: rgba(245, 165, 36, 0.4);
+  background: rgba(245, 165, 36, 0.1);
+}
+
+.chat-notice-title {
+  font: 600 12px var(--font);
+  color: var(--ink-2);
+}
+
+.chat-notice-body {
+  font: 400 11px var(--font);
+  color: #a0a5ae;
+}
+
+.chat-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.history-title {
+  font: 600 12px var(--font);
+  color: var(--ink-2);
+}
+
+.chat-body.picking .picker.history.on {
+  display: flex;
+}
+
+.chat-body.picking .picker:not(.on) {
+  display: none;
+}
+
+.history-row {
+  cursor: default;
+}
+
+.history-act {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #6b717b;
+  cursor: default;
+}
+
+.history-act:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #c8cdd4;
+}
+
+.history-confirm {
+  font: 600 10px var(--font);
+  color: #f4505e;
+}
+
+.history-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--ink);
+  font: 400 12px var(--font);
+  outline: none;
+}
+
+/* Code colours: quiet, legible on the island's black. */
+.md-pre .hl-k { color: #c792ea; }
+.md-pre .hl-s { color: #a5d6a7; }
+.md-pre .hl-n { color: #f78c6c; }
+.md-pre .hl-c { color: #6b717b; font-style: italic; }
+
 /* ── Drop zone ──────────────────────────────────────────────────────────── */
 
 .drop-card {

@@ -36,6 +36,14 @@ export const ICONS = {
   bang: "M11 4h2v10h-2V4zm0 12.2h2v2.2h-2v-2.2z",
   // minus (the Hide button: the island goes away, like minimising)
   minus: "M5 11h14v2H5v-2z",
+  // clock (stroke): the chat's saved conversations
+  clock: "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 8v4.4l2.8 1.9",
+  // pencil: rename
+  pencil: "M15.6 4.6a2 2 0 0 1 2.8 0l1 1a2 2 0 0 1 0 2.8L8.8 19H5v-3.8L15.6 4.6zm-1.4 3.4L7 15.2V17h1.8L16 9.8 14.2 8z",
+  // trash: delete
+  trash: "M9 3h6l1 2h4v2H4V5h4l1-2zM6 9h12l-1 11a2 2 0 0 1-2 1.8H9A2 2 0 0 1 7 20L6 9zm4 2v8h1.6v-8H10zm2.4 0v8H14v-8h-1.6z",
+  // stop.fill: Stop while an answer comes
+  stopSquare: "M6.5 6.5h11v11h-11z",
   // xmark
   xmark: "M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4 6.4 5z",
   // timer

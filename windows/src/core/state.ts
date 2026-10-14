@@ -63,6 +63,12 @@ export interface ChatMessage {
   id: number;
   role: "user" | "assistant";
   content: string;
+  /** Who answered (an assistant message): the provider, model and, for ChatGPT, the effort. */
+  provider?: string;
+  model?: string;
+  effort?: string;
+  /** The user pressed Stop: shown, never sent back as context. */
+  stopped?: boolean;
 }
 
 export type PromptContext =
@@ -126,6 +132,8 @@ export interface Settings {
   chatProvider: ProviderId;
   /** The model picked for each provider other than Anthropic, by provider id. */
   chatModels: Record<string, string>;
+  /** The reasoning effort last picked for each ChatGPT model, by model id (core/chatgpt.ts). */
+  chatEfforts: Record<string, string>;
   /** Model server addresses once connected; empty means not connected. */
   ollamaUrl: string;
   lmstudioUrl: string;
@@ -186,6 +194,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showCodexPlanInNotch: false,
   chatProvider: "anthropic",
   chatModels: {},
+  chatEfforts: {},
   ollamaUrl: "",
   lmstudioUrl: "",
   customUrl: "",
@@ -236,6 +245,8 @@ class AppState {
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
+  /** The saved conversation the chat is (chat_store.rs); null until its first answer. */
+  chatId: string | null = null;
   pendingApproval: ApprovalInfo | null = null;
   /** The pill that was in front when the card came up; it comes back after. */
   focusBeforeApproval: string | null = null;

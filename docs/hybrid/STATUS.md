@@ -1,6 +1,6 @@
 # Hybrid assistant — where things stand (handoff)
 
-Last updated 2026-10-13. Read this first to pick the work up.
+Last updated 2026-10-13 (night). Read this first to pick the work up.
 
 ## Goal and rules
 
@@ -41,22 +41,12 @@ cd windows && npx tsc --noEmit && npm test               # JS tests
 
 ## PRs (base `hybrid/main`)
 
-| PR | Branch | State |
-|---|---|---|
-| #1–#4, #9 | security baseline, contracts, voice, whisper, receipts | merged |
-| #5 | `hybrid/p1-voice-commands` | open (stack start, on `hybrid/main`) |
-| #6 | `hybrid/p1-model-choice` | open, on #5 |
-| #7 | `hybrid/p1-vulkan-experiment` | open, on #6 |
-| #10 | `hybrid/p1-interruptions` | open, on #7 |
-| #12 | `hybrid/p2-launch-app` | open, on #10 |
-| #11 | `hybrid/island-move-hide` | open, on `hybrid/main` (independent) |
-
-- Merge in order: #5 → #6 → #7 → #10 → #12. #11 can go in at any time.
-- #11 and the stack both append to the end of `windows/src/i18n/extra.json`.
-  Whichever merges second has a conflict there: keep both blocks.
+- #1–#13 are merged; #14 was closed (main already had that fix).
+- **#15 `hybrid/chatgpt-plan`** (the chat on the ChatGPT plan) is open, based on `hybrid/main`.
+- When a PR is stacked on another, re-point it to `hybrid/main` once its base is merged.
+  Otherwise it merges into the old branch instead of main (that happened to #10).
 - The owner's reviewer sometimes pushes fixes onto PR branches. Run
-  `git pull --ff-only` before working on a branch, then merge `hybrid/main`
-  down the stack. Merge, never rebase.
+  `git pull --ff-only` before working on one, then merge `hybrid/main` in. Merge, never rebase.
 
 ## Done
 
@@ -69,6 +59,7 @@ cd windows && npx tsc --noEmit && npm test               # JS tests
 | P2 (1/3) | "open <app>" by voice: Windows' All apps list, a confirmation bound by a grant, success only with a window as evidence | `P2-LAUNCH-APP.md` |
 | P2 (2/3) | Dictation into another app's field (`insert-text`, PR open): the field is remembered when the capture starts, re-checked before writing (focus, password, read-only), written with UI Automation at the caret, read back as evidence; never keystrokes, never Enter | `P2-DICTATION.md` |
 | P2 (3/3) | Ask about a screen region (`ask-region`, PR open, stacked on dictation): one overlay per monitor, one GDI copy of the picked rectangle without Coucou's windows, a preview with black-out masks and the destination, attached to the chat only on the click | `P2-ASK-REGION.md` |
+| Chat | ChatGPT plan chat (#15): Sign in with ChatGPT, GPT-6 Luna / GPT-6.1 Sol, reasoning effort per model, Stop, Regenerate, saved conversations. The owner signed in for real (plan usage enabled); a streamed answer is still to be tried | PR #15 body |
 
 ## Next (in order)
 

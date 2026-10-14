@@ -377,7 +377,10 @@ for (const destination of ["another chat", "a new chat", "a replaced transcript"
     t.after(async () => { pending.resolve(); await flush(); });
     answers.chat_history_delete = async ({ id }) => { await pending.promise; records.delete(id); };
     await confirmDelete(CURRENT);
-    if (destination === "another chat") await open(OTHER);
+    if (destination === "another chat") {
+      newConversation();
+      await open(OTHER);
+    }
     else if (destination === "a new chat") {
       $(".history-new").fire("click");
       await send("A new beginning");
@@ -402,28 +405,65 @@ for (const destination of ["another chat", "a new chat", "a replaced transcript"
   });
 }
 
-test("a successful deletion cannot reset native context while a newer chat is opening", async (t) => {
+for (const outcome of ["success", "failure"]) {
+  test(`active deletion reserves other history rows until its ${outcome}`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    seed(OTHER, "Paris trip");
+    await open(CURRENT);
+    const original = structuredClone(nativeHistory);
+    const deletion = Promise.withResolvers();
+    t.after(async () => { deletion.resolve(); await flush(); });
+    answers.chat_history_delete = async ({ id }) => { await deletion.promise; records.delete(id); };
+    await confirmDelete(CURRENT);
+    await open(OTHER);
+    for (const key of ["Enter", " "]) pressKey(historyRow(OTHER), key);
+    await flush();
+    assert.equal(sent("chat_history_open").length, 1, "blocked selection must not change the deletion's navigation ownership");
+    assert.equal(State.chatId, CURRENT);
+    assert.deepEqual(nativeHistory, original);
+    $(".history-btn").fire("click");
+    await history();
+    if (outcome === "success") deletion.resolve();
+    else deletion.reject(new Error("Deletion unavailable"));
+    await flush();
+    assert.equal(sent("chat_history_open").length, 1, "opening must require a fresh selection after deletion");
+    assert.equal(State.chatId, outcome === "success" ? null : CURRENT);
+    assert.deepEqual(nativeHistory, outcome === "success" ? [] : original);
+    answers.chat_history_open = () => Promise.reject(new Error("Paris unavailable"));
+    await open(OTHER);
+    assert.match($(".history").textContent, /Paris unavailable/);
+    assert.equal(State.chatId, outcome === "success" ? null : CURRENT, "failed navigation cannot restore a successfully deleted fallback");
+    assert.deepEqual(nativeHistory, outcome === "success" ? [] : original);
+    delete answers.chat_history_open;
+    $(".history-btn").fire("click");
+    await open(OTHER);
+    assert.equal(State.chatId, OTHER);
+    await send("Keep planning Paris");
+    assert.equal(records.get(OTHER).title, "Paris trip");
+    assert.equal(records.has(CURRENT), outcome === "failure");
+  });
+}
+
+test("deleting an inactive conversation still permits unrelated history navigation", async (t) => {
   observeView(t);
   seed(CURRENT, "Lisbon trip");
   seed(OTHER, "Paris trip");
-  await open(CURRENT);
   const deletion = Promise.withResolvers();
-  const opening = Promise.withResolvers();
-  t.after(async () => { deletion.resolve(); opening.resolve(); await flush(); });
+  t.after(async () => { deletion.resolve(); await flush(); });
   answers.chat_history_delete = async ({ id }) => { await deletion.promise; records.delete(id); };
   await confirmDelete(CURRENT);
-  answers.chat_history_open = async ({ id }) => { await opening.promise; return structuredClone(records.get(id)); };
   await open(OTHER);
+  assert.equal(State.chatId, OTHER);
   const messages = State.chatHistory;
+  const expected = structuredClone(nativeHistory);
   deletion.resolve();
   await flush();
-  assert.equal(sent("chat_reset").length, 0, "the newer native open owns the context even before its reply arrives");
   assert.equal(State.chatHistory, messages);
-  opening.resolve();
-  await flush();
-  assert.equal(State.chatId, OTHER);
-  await send("Keep planning Paris");
-  assert.equal(records.get(OTHER).title, "Paris trip");
+  assert.deepEqual(nativeHistory, expected);
+  assert.equal(sent("chat_reset").length, 0);
+  await send("Keep this newer conversation");
+  assert.deepEqual(sendHistories.at(-1), expected);
 });
 
 test("a delayed deletion failure cannot replace a newer view or its error", async (t) => {
@@ -1201,6 +1241,186 @@ function deferredOpen(t, id) {
   const saved = structuredClone(records.get(id));
   t.after(async () => { pending.resolve(saved); await flush(); });
   return { ...pending, saved };
+}
+
+// Delete and open must reserve synchronously: either native completion order
+// used to leave a deleted conversation active and recreate its file on Send.
+for (const order of ["open first", "delete first"]) {
+  test(`deletion of a pending open needs fresh confirmation when ${order}`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    const opening = deferredOpen(t, CURRENT);
+    const deletion = Promise.withResolvers();
+    t.after(async () => { deletion.resolve(); await flush(); });
+    answers.chat_history_open = () => opening.promise;
+    answers.chat_history_delete = async ({ id }) => { await deletion.promise; records.delete(id); };
+    await open(CURRENT);
+    await confirmDelete(CURRENT);
+    assert.equal(sent("chat_history_delete").length, 0, "Delete cannot overlap an already-selected open");
+    if (order === "open first") opening.resolve(opening.saved);
+    else deletion.resolve();
+    await flush();
+    opening.resolve(opening.saved);
+    deletion.resolve();
+    await flush();
+    assert.equal(records.has(CURRENT), true, "blocked clicks must not queue a later deletion");
+    assert.equal(State.chatId, CURRENT);
+    assert.deepEqual(nativeHistory, opening.saved.messages);
+    assert.equal($(".chat-input").disabled, false);
+    await history();
+    const button = deleteButton(CURRENT);
+    assert.equal(button.disabled, false);
+    button.fire("click");
+    assert.equal(sent("chat_history_delete").length, 0, "confirmation starts over after opening");
+    button.fire("click");
+    await flush();
+    assert.equal(records.has(CURRENT), false);
+    assert.equal(State.chatId, null);
+    assert.deepEqual(nativeHistory, []);
+    await send("A new question");
+    assert.equal(records.has(CURRENT), false, "Send must not recreate the deleted file");
+    assert.deepEqual(sendHistories.at(-1), []);
+  });
+}
+
+test("opening disarms existing Delete controls and keeps rebuilt controls reserved", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  seed(OTHER, "Paris trip");
+  await history();
+  const armed = deleteButton(CURRENT);
+  const unrelated = deleteButton(OTHER);
+  armed.fire("click");
+  assert.match(armed.textContent, /Delete\?/);
+  const opening = deferredOpen(t, CURRENT);
+  answers.chat_history_open = () => opening.promise;
+  await open(CURRENT);
+  assert.equal(armed.disabled, true);
+  assert.equal(unrelated.disabled, true);
+  assert.doesNotMatch(armed.textContent, /Delete\?/);
+  for (const button of [armed, unrelated]) {
+    button.fire("click");
+    button.fire("click");
+  }
+  $(".history-btn").fire("click");
+  await history();
+  const rebuilt = deleteButton(CURRENT);
+  assert.notEqual(rebuilt, armed);
+  assert.equal(rebuilt.disabled, true);
+  rebuilt.fire("click");
+  rebuilt.fire("click");
+  assert.equal(sent("chat_history_delete").length, 0);
+  opening.resolve(opening.saved);
+  await flush();
+  assert.equal(records.size, 2);
+  assert.deepEqual(nativeHistory, opening.saved.messages);
+  assert.equal($(".send-btn").disabled, false);
+  await send("Continue this conversation");
+  assert.equal(records.get(CURRENT).messages.at(-2).content, "Continue this conversation");
+});
+
+for (const first of ["success", "failure"]) {
+  for (const last of ["success", "failure"]) {
+    test(`Delete stays reserved across queued opens ending in ${first} then ${last}`, async (t) => {
+      observeView(t);
+      seed(CURRENT, "Lisbon trip");
+      seed(OTHER, "Paris trip");
+      const opening = deferredOpen(t, CURRENT);
+      const later = deferredOpen(t, OTHER);
+      answers.chat_history_open = ({ id }) => id === CURRENT ? opening.promise : later.promise;
+      await open(CURRENT);
+      await open(OTHER);
+      assert.equal(deleteButton(CURRENT).disabled, true);
+      assert.equal(deleteButton(OTHER).disabled, true);
+      if (first === "success") opening.resolve(opening.saved);
+      else opening.reject(new Error("Earlier open failed"));
+      await flush();
+      assert.equal(deleteButton(CURRENT).disabled, true, "one settled open cannot release the remaining reservation");
+      await confirmDelete(CURRENT);
+      assert.equal(sent("chat_history_delete").length, 0);
+      assert.equal($(".chat-input").disabled, true);
+      if (last === "success") later.resolve(later.saved);
+      else later.reject(new Error("Latest open failed"));
+      await flush();
+      const expected = last === "success" ? later.saved : first === "success" ? opening.saved : null;
+      assert.equal(State.chatId, expected?.id ?? null);
+      assert.deepEqual(nativeHistory, expected?.messages ?? []);
+      assert.equal($(".chat-input").disabled, false);
+      if (last === "failure") {
+        assert.match($(".history").textContent, /Latest open failed/, "restoring controls must not redraw away the current error");
+        assert.doesNotMatch($(".history").textContent, /Earlier open failed/);
+        $(".history-btn").fire("click");
+      }
+      await history();
+      assert.equal(deleteButton(CURRENT).disabled, false);
+      assert.equal(deleteButton(OTHER).disabled, false);
+      assert.equal(records.size, 2, "no blocked deletion runs when the queue settles");
+      await send("Keep the last successful context");
+      assert.deepEqual(sendHistories.at(-1), expected?.messages ?? []);
+    });
+  }
+}
+
+for (const destination of ["New chat", "file drop"]) {
+  test(`a blocked deletion preserves ${destination} while its older open settles`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    const opening = deferredOpen(t, CURRENT);
+    answers.chat_history_open = () => opening.promise;
+    await open(CURRENT);
+    await confirmDelete(CURRENT);
+    if (destination === "New chat") $(".history-new").fire("click");
+    else {
+      State.chatHistory = [];
+      State.chatId = null;
+      State.droppedFile = { name: "new.txt", path: "/inbox/new.txt" };
+      State.promptContext = { kind: "file", ...State.droppedFile };
+      void Bridge.chatReset();
+      State.notify();
+    }
+    const messages = State.chatHistory;
+    const context = State.promptContext;
+    opening.resolve(opening.saved);
+    await flush();
+    assert.equal(State.chatHistory, messages);
+    assert.equal(State.chatId, null);
+    assert.equal(State.promptContext, context);
+    assert.equal(records.has(CURRENT), true);
+    assert.equal(sent("chat_history_delete").length, 0);
+    assert.deepEqual(nativeHistory, []);
+    assert.equal($(".chat-input").disabled, false);
+    await send("A newer question");
+    assert.notEqual(State.chatId, CURRENT);
+    assert.deepEqual(sendHistories.at(-1), []);
+    assert.deepEqual(sent("chat_send").at(-1).context, context);
+  });
+}
+
+for (const outcome of ["success", "failure"]) {
+  test(`a pending deletion blocks same-row opens until its ${outcome}`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    const deletion = Promise.withResolvers();
+    t.after(async () => { deletion.resolve(); await flush(); });
+    answers.chat_history_delete = async ({ id }) => { await deletion.promise; records.delete(id); };
+    await confirmDelete(CURRENT);
+    await open(CURRENT);
+    assert.equal(sent("chat_history_open").length, 0);
+    assert.equal(State.chatId, null);
+    assert.deepEqual(nativeHistory, []);
+    if (outcome === "success") deletion.resolve();
+    else deletion.reject(new Error("Delete failed"));
+    await flush();
+    assert.equal(sent("chat_history_open").length, 0, "blocked navigation must not run later");
+    assert.equal($(".chat-input").disabled, false);
+    assert.equal(records.has(CURRENT), outcome === "failure");
+    if (outcome === "failure") {
+      assert.match($(".history").textContent, /Delete failed/);
+      await open(CURRENT);
+      assert.equal(State.chatId, CURRENT);
+      assert.deepEqual(nativeHistory, records.get(CURRENT).messages);
+    }
+  });
 }
 
 for (const first of [CURRENT, OTHER]) {

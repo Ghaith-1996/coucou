@@ -503,6 +503,24 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     armedButton = null;
   }
 
+  function openBlocked(id: string): boolean {
+    // Deleting the visible fallback also reserves navigation: if the next
+    // open fails, it must not leave a deleted conversation active.
+    return pendingDeletes.has(id) || (State.chatId !== null && pendingDeletes.has(State.chatId));
+  }
+
+  function syncDeleteButtons() {
+    if (!isOpen) return;
+    // Update controls in place: rendering here would erase a failed open's
+    // error, or a rename draft, when another queued open settles.
+    for (const line of list.children) {
+      const id = line.getAttribute("data-id");
+      if (!id) continue;
+      const button = line.querySelector<HTMLButtonElement>(".history-delete");
+      if (button) button.disabled = pendingOpens > 0 || pendingDeletes.has(id);
+    }
+  }
+
   fresh.addEventListener("click", () => {
     newConversation();
     Sound.play("blip");
@@ -544,11 +562,11 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     const name = h("span", { class: "picker-model-name", text: s.title });
     const when = h("span", { class: "picker-tag", text: whenLabel(s.updatedAt) });
     const rename = h("button", { class: "history-act", title: tl(STRINGS.rename), "aria-label": tl(STRINGS.rename) }, svg(ICONS.pencil, 11));
-    const del = h("button", { class: "history-act", title: tl(STRINGS.delete), "aria-label": tl(STRINGS.delete) }, svg(ICONS.trash, 11));
+    const del = h("button", { class: "history-act history-delete", title: tl(STRINGS.delete), "aria-label": tl(STRINGS.delete) }, svg(ICONS.trash, 11));
     const line = h("div", { class: State.chatId === s.id ? "picker-model on history-row" : "picker-model history-row", "data-id": s.id, role: "button", tabindex: "0" }, name, when, rename, del);
 
-    del.disabled = pendingDeletes.has(s.id);
-    rename.disabled = del.disabled || pendingRenames.has(s.id);
+    del.disabled = pendingOpens > 0 || pendingDeletes.has(s.id);
+    rename.disabled = pendingDeletes.has(s.id) || pendingRenames.has(s.id);
     line.addEventListener("click", () => void open_(s.id));
     line.addEventListener("keydown", (ev) => {
       if (!isOpen || ev.target !== line || (ev.key !== "Enter" && ev.key !== " ")) return;
@@ -583,7 +601,9 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     });
     del.addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (pendingDeletes.has(s.id)) return;
+      // An open changes both the visible and native transcript. Do not let
+      // a deletion overlap it, even through an older or disabled control.
+      if (pendingOpens > 0 || pendingDeletes.has(s.id)) return;
       // A second click deletes: one slip of the mouse loses nothing.
       if (armedDelete !== s.id) {
         disarmDelete();
@@ -694,7 +714,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   }
 
   async function open_(id: string) {
-    if (pendingDeletes.has(id)) return;
+    if (openBlocked(id)) return;
     // Selection owns the next result/error; an older page must not redraw it.
     invalidateList();
     const attempt = ++navigationAttempt;
@@ -705,6 +725,8 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     const context = openingContext;
     const isCurrent = () => context.messages === State.chatHistory && context.session === chatSession;
     pendingOpens++;
+    disarmDelete();
+    syncDeleteButtons();
     onChange();
     State.notify();
     try {
@@ -732,6 +754,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     } finally {
       pendingOpens--;
       if (!pendingOpens) openingContext = null;
+      syncDeleteButtons();
       onChange();
       State.notify();
     }

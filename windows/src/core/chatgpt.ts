@@ -56,8 +56,16 @@ export function modelLabel(model: string): string {
 
 /** chatgpt.rs `Status`: never a token. */
 export interface ChatGptStatus {
+  /** Selected issued client ID; a registration is never identified by email. */
+  accountId: string | null;
+  /** Explicit cleanup was persisted; native code also checks the keystore. */
+  canSwitchAccounts: boolean;
+  savedAccounts: { id: string; email: string | null }[];
+  hasPendingAccount: boolean;
+  /** Non-secret issued client ID, used to reject stale pending actions. */
+  pendingAccountId: string | null;
   connected: boolean;
-  /** Either saved credential remains, even if only the sign-in hint does. */
+  /** A credential remains, or the native keystore could not confirm absence. */
   hasSavedCredentials: boolean;
   email: string | null;
   planEnabled: boolean;
@@ -70,6 +78,7 @@ export interface ChatGptStatus {
 export interface ChatGptDisconnectResult {
   /** Null means there was no refresh token to revoke. */
   revocationConfirmed: boolean | null;
+  /** Both credentials were deleted and the signed-out state was persisted. */
   localCleanupSucceeded: boolean;
 }
 

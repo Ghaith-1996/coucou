@@ -16,7 +16,7 @@
 import { h, svg, clear } from "./dom";
 import { ICONS } from "./icons";
 import { copyButton, renderMarkdown } from "./markdown";
-import { Bridge, onEvent, type ChatContext, type ConversationSummary, type ModelInfo } from "../core/bridge";
+import { Bridge, CONVERSATION_PAGE_SIZE, onEvent, type ChatContext, type ConversationCursor, type ConversationSummary, type ModelInfo } from "../core/bridge";
 import {
   activeModel, pickModel, providerDef, visibleProviders, withModel, type ProviderDef,
 } from "../core/providers";
@@ -70,6 +70,9 @@ const STRINGS = {
   history: N_("Conversations"),
   newChat: N_("New chat"),
   noHistory: N_("No saved conversations yet."),
+  moreHistory: N_("Load more"),
+  historyLoading: N_("Loading…"),
+  retryHistory: N_("Retry"),
   rename: N_("Rename"),
   delete: N_("Delete"),
   confirmDelete: N_("Delete?"),
@@ -80,6 +83,7 @@ const STRINGS = {
   historyFull: N_("The 400-message storage limit was reached."),
   restoredTitle: N_("Reopened as text only"),
   restoredBody: N_("Original attachments are unavailable in this chat. Drop the file again to start a new chat with it."),
+  attachmentBody: N_("Sending with another provider can discard attachments, even on failure or Stop. Switching back won't restore them. Drop the file again for a new chat."),
   stopped: N_("Stopped"),
   welcomeTitle: N_("You're using your ChatGPT plan"),
   welcomeBody: N_("Eligible AI requests in Coucou use the usage included in your ChatGPT plan or credits balance."),
@@ -93,9 +97,13 @@ let nextId = 1;
 /** The ChatGPT account as Rust last said, and its catalog once fetched. */
 let chatgpt: ChatGptStatus | null = null;
 let catalog: ChatGptModel[] | null = null;
+// Native account events supersede reads already in flight in either window.
+let chatgptRevision = 0;
 
 function refreshChatGpt(then?: () => void) {
+  const revision = chatgptRevision;
   void Bridge.chatgptStatus().then((s) => {
+    if (revision !== chatgptRevision) return;
     chatgpt = s ?? null;
     then?.();
     State.notify();
@@ -139,6 +147,7 @@ interface Picker {
   el: HTMLElement;
   open(): void;
   close(): void;
+  accountChanged(): void;
   readonly isOpen: boolean;
 }
 
@@ -152,6 +161,9 @@ function buildPicker(onChange: () => void): Picker {
   const cache = new Map<string, ModelInfo[]>();
   let isOpen = false;
   let request = 0;
+  // Login owns its outcome independently of catalog requests: native status
+  // events arrive on both successful and failed commands, in either order.
+  let connection: { accountId: string | null; sawUnusable: boolean; pending: boolean; error?: string } | null = null;
 
   function drawChips() {
     clear(chips);
@@ -165,6 +177,7 @@ function buildPicker(onChange: () => void): Picker {
       );
       chip.addEventListener("click", () => {
         if (p.id === State.settings.chatProvider) return;
+        connection = null;
         State.settings = { ...State.settings, chatProvider: p.id };
         saveSettings();
         Sound.play("pop");
@@ -239,17 +252,65 @@ function buildPicker(onChange: () => void): Picker {
     list.append(line, button);
   }
 
+  function failureBelongsTo(attempt: NonNullable<typeof connection>): boolean {
+    // A successful reconnect in another window supersedes an older failure.
+    if (attempt.sawUnusable && chatgpt?.connected && chatgpt.planEnabled) return false;
+    return chatgpt?.accountId === attempt.accountId
+      // A first registration can acquire its issued ID before exchange or
+      // credential storage fails. It still belongs to this sign-in prompt.
+      || (attempt.accountId === null && !chatgpt?.connected && !chatgpt?.canSwitchAccounts);
+  }
+
   async function connect(p: ProviderDef) {
-    const ticket = ++request;
+    request++;
+    const attempt: NonNullable<typeof connection> = {
+      accountId: chatgpt?.accountId ?? null,
+      sawUnusable: !chatgpt?.connected || !chatgpt.planEnabled,
+      pending: true,
+    };
+    connection = attempt;
+    const revision = chatgptRevision;
+    const isCurrent = () => connection === attempt && isOpen && State.settings.chatProvider === p.id;
     status(t(STRINGS.connecting));
     try {
-      chatgpt = await Bridge.chatgptConnect();
+      const connected = await Bridge.chatgptConnect();
+      if (!isCurrent()) return;
+      attempt.pending = false;
+      if (revision === chatgptRevision) chatgpt = connected;
+      else if (chatgpt?.accountId !== connected.accountId) {
+        close();
+        return;
+      }
+      attempt.accountId = connected.accountId;
       Sound.play("approve");
-      if (ticket === request) await loadChatGpt(p);
+      await loadChatGpt(p);
     } catch (err) {
-      if (ticket === request) signInPrompt(p, chatgpt, String(err).replace(/^Error:\s*/, ""));
+      if (!isCurrent()) return;
+      attempt.pending = false;
+      attempt.error = String(err).replace(/^Error:\s*/, "");
+      accountChanged();
     }
     State.notify();
+  }
+
+  function accountChanged() {
+    if (!isOpen || State.settings.chatProvider !== CHATGPT) return;
+    request++; // Fence this account's catalog without stranding other providers.
+    const attempt = connection;
+    if (attempt && (!chatgpt?.connected || !chatgpt.planEnabled)) attempt.sawUnusable = true;
+    if (!attempt) {
+      close();
+    } else if (attempt.pending) {
+      // The command result decides whether this event was its own sign-in or
+      // a different account selected concurrently in another window.
+      status(t(STRINGS.connecting));
+    } else if (attempt.error !== undefined && failureBelongsTo(attempt)) {
+      attempt.accountId = chatgpt?.accountId ?? null;
+      signInPrompt(providerDef(CHATGPT), chatgpt, attempt.error);
+    } else if (chatgpt?.accountId === attempt.accountId) {
+      if (attempt.error !== undefined) connection = null;
+      void loadChatGpt(providerDef(CHATGPT));
+    } else close();
   }
 
   function drawChatGpt(p: ProviderDef, s: ChatGptStatus, models: ChatGptModel[]) {
@@ -280,9 +341,13 @@ function buildPicker(onChange: () => void): Picker {
 
   async function loadChatGpt(p: ProviderDef) {
     const ticket = ++request;
+    const revision = chatgptRevision;
+    // A reopened picker must not expose a previous account's enabled choices
+    // while the native status request is still pending.
+    status(t(STRINGS.loading));
     const s = await Bridge.chatgptStatus();
+    if (ticket !== request || revision !== chatgptRevision) return;
     chatgpt = s ?? null;
-    if (ticket !== request) return;
     if (!s?.connected || !s.planEnabled) {
       signInPrompt(p, s ?? null);
       return;
@@ -291,12 +356,12 @@ function buildPicker(onChange: () => void): Picker {
     else status(t(STRINGS.loading));
     try {
       const models = await Bridge.chatgptModels();
-      if (ticket !== request) return;
+      if (ticket !== request || revision !== chatgptRevision) return;
       catalog = models;
       drawChatGpt(p, s, models);
       onChange();
     } catch (err) {
-      if (ticket === request) signInPrompt(p, s, String(err).replace(/^Error:\s*/, ""));
+      if (ticket === request && revision === chatgptRevision) signInPrompt(p, s, String(err).replace(/^Error:\s*/, ""));
     }
   }
 
@@ -345,6 +410,7 @@ function buildPicker(onChange: () => void): Picker {
 
   function close() {
     isOpen = false;
+    connection = null;
     request++;
     el.classList.remove("on");
     onChange();
@@ -354,6 +420,7 @@ function buildPicker(onChange: () => void): Picker {
     el,
     open,
     close,
+    accountChanged,
     get isOpen() {
       return isOpen;
     },
@@ -413,6 +480,7 @@ function saveConversation() {
 }
 
 interface HistoryPanel {
+  readonly isOpening: boolean;
   el: HTMLElement;
   open(): void;
   close(): void;
@@ -425,6 +493,48 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   const el = h("div", { class: "picker history" }, h("div", { class: "history-head" }, h("span", { class: "history-title", text: tl(STRINGS.history) }), fresh), list);
   let isOpen = false;
   let armedDelete: string | null = null;
+  let armedButton: HTMLButtonElement | null = null;
+  const pendingDeletes = new Set<string>();
+  const deleteFailures = new Map<string, string>();
+  const pendingRenames = new Map<string, object>();
+  const renameFailures = new Map<string, { title: string; error: string }>();
+  let summaries: ConversationSummary[] = [];
+  let listRequest = 0;
+  let cursor: ConversationCursor | null = null;
+  let hasMore = false;
+  let listing = false;
+  let listingBefore: ConversationCursor | null = null;
+  let listFailure: { error: string; before: ConversationCursor | null } | null = null;
+  let navigationAttempt = 0;
+  let panelSession = 0;
+  let pendingOpens = 0;
+  // Successful queued opens advance this shared snapshot in selection order.
+  // A reset/file drop replaces it, invalidating the whole older group.
+  let openingContext: { messages: ChatMessage[]; session: number } | null = null;
+
+  function disarmDelete() {
+    armedDelete = null;
+    armedButton?.replaceChildren(svg(ICONS.trash, 11));
+    armedButton = null;
+  }
+
+  function openBlocked(id: string): boolean {
+    // Deleting the visible fallback also reserves navigation: if the next
+    // open fails, it must not leave a deleted conversation active.
+    return pendingDeletes.has(id) || (State.chatId !== null && pendingDeletes.has(State.chatId));
+  }
+
+  function syncDeleteButtons() {
+    if (!isOpen) return;
+    // Update controls in place: rendering here would erase a failed open's
+    // error, or a rename draft, when another queued open settles.
+    for (const line of list.children) {
+      const id = line.getAttribute("data-id");
+      if (!id) continue;
+      const button = line.querySelector<HTMLButtonElement>(".history-delete");
+      if (button) button.disabled = pendingOpens > 0 || pendingDeletes.has(id);
+    }
+  }
 
   fresh.addEventListener("click", () => {
     newConversation();
@@ -432,28 +542,69 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     close();
   });
 
+  async function rename_(id: string, title: string) {
+    if (pendingRenames.has(id) || pendingDeletes.has(id)) return;
+    const attempt = {};
+    const panel = panelSession;
+    const navigation = navigationAttempt;
+    const session = chatSession;
+    pendingRenames.set(id, attempt);
+    renameFailures.delete(id);
+    render();
+    try {
+      await Bridge.chatHistoryRename(id, title);
+      if (pendingRenames.get(id) !== attempt) return;
+      if (State.chatId === id) chatTitle = title;
+      const refresh = invalidateList();
+      summaries = summaries.map((item) => item.id === id ? { ...item, title } : item);
+      if (refresh) void draw();
+    } catch (err) {
+      if (pendingRenames.get(id) !== attempt) return;
+      if (isOpen && panel === panelSession && navigation === navigationAttempt && session === chatSession) {
+        renameFailures.set(id, { title, error: String(err).replace(/^Error:\s*/, "") });
+        Sound.play("error");
+      }
+    } finally {
+      if (pendingRenames.get(id) === attempt) {
+        pendingRenames.delete(id);
+        // A newer open owns its error/loading view, even if this write succeeds.
+        if (isOpen && navigation === navigationAttempt) render();
+      }
+    }
+  }
+
   function row(s: ConversationSummary): HTMLElement {
     const name = h("span", { class: "picker-model-name", text: s.title });
     const when = h("span", { class: "picker-tag", text: whenLabel(s.updatedAt) });
     const rename = h("button", { class: "history-act", title: tl(STRINGS.rename), "aria-label": tl(STRINGS.rename) }, svg(ICONS.pencil, 11));
-    const del = h("button", { class: "history-act", title: tl(STRINGS.delete), "aria-label": tl(STRINGS.delete) }, svg(ICONS.trash, 11));
-    const line = h("div", { class: State.chatId === s.id ? "picker-model on history-row" : "picker-model history-row", role: "button", tabindex: "0" }, name, when, rename, del);
+    const del = h("button", { class: "history-act history-delete", title: tl(STRINGS.delete), "aria-label": tl(STRINGS.delete) }, svg(ICONS.trash, 11));
+    const line = h("div", { class: State.chatId === s.id ? "picker-model on history-row" : "picker-model history-row", "data-id": s.id, role: "button", tabindex: "0" }, name, when, rename, del);
 
+    del.disabled = pendingOpens > 0 || pendingDeletes.has(s.id);
+    rename.disabled = pendingDeletes.has(s.id) || pendingRenames.has(s.id);
     line.addEventListener("click", () => void open_(s.id));
+    line.addEventListener("keydown", (ev) => {
+      if (!isOpen || ev.target !== line || (ev.key !== "Enter" && ev.key !== " ")) return;
+      ev.preventDefault();
+      if (!ev.repeat) void open_(s.id);
+    });
     rename.addEventListener("click", (e) => {
       e.stopPropagation();
-      const input = h("input", { class: "history-rename", value: s.title, maxlength: "120" }) as HTMLInputElement;
+      if (pendingDeletes.has(s.id) || pendingRenames.has(s.id)) return;
+      const input = h("input", { class: "history-rename", value: renameFailures.get(s.id)?.title ?? s.title, maxlength: "120" }) as HTMLInputElement;
       name.replaceWith(input);
       input.focus();
       input.select();
-      const done = async (keep: boolean) => {
+      let finished = false;
+      const done = (keep: boolean) => {
+        if (finished) return;
+        finished = true;
         const title = keep ? cleanTitle(input.value) : null;
-        if (title && title !== s.title) {
-          await Bridge.chatHistoryRename(s.id, title).then(() => {
-            if (State.chatId === s.id) chatTitle = title;
-          }).catch(() => {});
+        if (title && title !== s.title) void rename_(s.id, title);
+        else {
+          renameFailures.delete(s.id);
+          render();
         }
-        void draw();
       };
       input.addEventListener("click", (ev) => ev.stopPropagation());
       input.addEventListener("keydown", (ev) => {
@@ -465,36 +616,141 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     });
     del.addEventListener("click", async (e) => {
       e.stopPropagation();
+      // An open changes both the visible and native transcript. Do not let
+      // a deletion overlap it, even through an older or disabled control.
+      if (pendingOpens > 0 || pendingDeletes.has(s.id)) return;
       // A second click deletes: one slip of the mouse loses nothing.
       if (armedDelete !== s.id) {
+        disarmDelete();
         armedDelete = s.id;
+        armedButton = del;
         del.replaceChildren(h("span", { class: "history-confirm", text: t(STRINGS.confirmDelete) }));
         return;
       }
-      armedDelete = null;
-      await Bridge.chatHistoryDelete(s.id).catch(() => {});
-      if (State.chatId === s.id) newConversation();
-      Sound.play("pop");
-      void draw();
+      const active = State.chatId === s.id;
+      const messages = State.chatHistory;
+      const count = messages.length;
+      const session = chatSession;
+      const navigation = navigationAttempt;
+      pendingDeletes.add(s.id);
+      renameFailures.delete(s.id);
+      deleteFailures.delete(s.id);
+      render();
+      try {
+        await Bridge.chatHistoryDelete(s.id);
+      } catch (err) {
+        pendingDeletes.delete(s.id);
+        deleteFailures.set(s.id, String(err).replace(/^Error:\s*/, ""));
+        render();
+        if (isOpen) Sound.play("error");
+        return;
+      }
+      pendingDeletes.delete(s.id);
+      pendingRenames.delete(s.id);
+      renameFailures.delete(s.id);
+      deleteFailures.delete(s.id);
+      const refresh = invalidateList();
+      // Only the untouched conversation that was confirmed may be cleared.
+      // Navigation, file drops and new messages can all happen during IPC.
+      if (active && State.chatId === s.id && chatSession === session && navigationAttempt === navigation
+        && State.chatHistory === messages && messages.length === count) newConversation();
+      summaries = summaries.filter((item) => item.id !== s.id);
+      render();
+      if (isOpen) Sound.play("pop");
+      if (refresh) void draw();
     });
     return line;
   }
 
-  async function draw() {
-    const items = await Bridge.chatHistoryList();
+  function render() {
+    disarmDelete();
     clear(list);
-    if (!items?.length) {
+    if (!summaries.length && !listing && !listFailure) {
       list.append(h("div", { class: "picker-status", text: t(STRINGS.noHistory) }));
-      return;
     }
-    for (const s of items) list.append(row(s));
+    for (const summary of summaries) {
+      list.append(row(summary));
+      const failedRename = renameFailures.get(summary.id);
+      if (failedRename) list.append(
+        h("div", { class: "picker-status history-error", role: "alert", text: failedRename.error }),
+        h("button", { class: "picker-link history-rename-retry", text: tl(STRINGS.retryHistory), onclick: () => void rename_(summary.id, failedRename.title) }),
+      );
+      const error = deleteFailures.get(summary.id);
+      if (error) list.append(h("div", { class: "picker-status history-error", role: "alert", text: error }));
+    }
+    if (listFailure) {
+      const failed = listFailure;
+      list.append(h("div", { class: "picker-status history-error", role: "alert", text: failed.error }),
+        h("button", { class: "picker-link history-retry", text: tl(STRINGS.retryHistory), onclick: () => void draw(failed.before) }));
+    } else if (hasMore) {
+      const more = h("button", { class: "picker-link history-more", text: tl(listing ? STRINGS.historyLoading : STRINGS.moreHistory), onclick: () => void draw(cursor) });
+      more.disabled = listing;
+      list.append(more);
+    } else if (listing) {
+      list.append(h("div", { class: "picker-status", text: tl(STRINGS.historyLoading) }));
+    }
+  }
+
+  function invalidateList() {
+    const refresh = listing && listingBefore === null;
+    listRequest++;
+    listing = false;
+    return refresh;
+  }
+
+  async function draw(before: ConversationCursor | null = null) {
+    if (!isOpen || listing) return;
+    const request = ++listRequest;
+    listing = true;
+    listingBefore = before;
+    listFailure = null;
+    render();
+    try {
+      const items = await Bridge.chatHistoryList(before);
+      if (request !== listRequest || !isOpen) return;
+      if (before === null) summaries = items;
+      else {
+        const loaded = new Set(summaries.map((s) => s.id));
+        summaries.push(...items.filter((s) => !loaded.has(s.id)));
+      }
+      const last = items[items.length - 1];
+      if (last) cursor = { id: last.id, updatedAt: last.updatedAt };
+      else if (before === null) cursor = null;
+      hasMore = items.length === CONVERSATION_PAGE_SIZE;
+    } catch (err) {
+      if (request !== listRequest || !isOpen) return;
+      listFailure = { error: String(err).replace(/^Error:\s*/, ""), before };
+    } finally {
+      if (request === listRequest && isOpen) {
+        listing = false;
+        render();
+      }
+    }
   }
 
   async function open_(id: string) {
+    if (openBlocked(id)) return;
+    // Selection owns the next result/error; an older page must not redraw it.
+    invalidateList();
+    const attempt = ++navigationAttempt;
+    const panel = panelSession;
+    if (!openingContext || openingContext.messages !== State.chatHistory || openingContext.session !== chatSession) {
+      openingContext = { messages: State.chatHistory, session: chatSession };
+    }
+    const context = openingContext;
+    const isCurrent = () => context.messages === State.chatHistory && context.session === chatSession;
+    pendingOpens++;
+    disarmDelete();
+    syncDeleteButtons();
+    onChange();
+    State.notify();
     try {
       const saved = await Bridge.chatHistoryOpen(id);
+      if (!isCurrent()) return;
       chatSession++;
       State.chatHistory = fromSaved(saved, nextId);
+      context.messages = State.chatHistory;
+      context.session = chatSession;
       nextId += saved.messages.length;
       State.chatId = saved.id;
       reopenedChatId = saved.id;
@@ -504,24 +760,36 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       State.droppedFile = null;
       State.promptContext = null;
       Sound.play("blip");
-      close();
+      if (attempt === navigationAttempt) close();
       onOpened();
     } catch (err) {
+      if (!isCurrent() || attempt !== navigationAttempt || panel !== panelSession || !isOpen) return;
       clear(list);
       list.append(h("div", { class: "picker-status", text: String(err).replace(/^Error:\s*/, "") }));
+    } finally {
+      pendingOpens--;
+      if (!pendingOpens) openingContext = null;
+      syncDeleteButtons();
+      onChange();
+      State.notify();
     }
   }
 
   function open() {
+    panelSession++;
     isOpen = true;
-    armedDelete = null;
+    disarmDelete();
     el.classList.add("on");
     onChange();
     void draw();
   }
 
   function close() {
+    panelSession++;
+    invalidateList();
+    renameFailures.clear();
     isOpen = false;
+    disarmDelete();
     el.classList.remove("on");
     onChange();
   }
@@ -532,6 +800,9 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     close,
     get isOpen() {
       return isOpen;
+    },
+    get isOpening() {
+      return pendingOpens > 0;
     },
   };
 }
@@ -643,6 +914,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   let liveText = "";
   /** A file drop or reset can replace the transcript while IPC is pending. */
   let answerIsCurrent: (() => boolean) | null = null;
+  let answerProvider: string | null = null;
   /** ChatGPT said its usage limit is reached: the notice offers "Manage usage". */
   let usageLimit = false;
   let effortKey = "";
@@ -684,9 +956,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.classList.toggle("open", history.isOpen);
     modelBtn.disabled = sending;
     historyBtn.disabled = sending;
-    if (voice) voice.disabled = sending || startingVoice;
+    if (voice) voice.disabled = sending || startingVoice || history.isOpening;
     // While an answer comes, the send button is Stop.
-    send.disabled = startingVoice || undoPending;
+    send.disabled = startingVoice || undoPending || history.isOpening;
     send.classList.toggle("stop", sending);
     const label = t(sending ? STRINGS.stop : STRINGS.send);
     send.title = label;
@@ -712,8 +984,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (failure) want = `save:${failure.error}`;
     else if (onChatGpt() && usageLimit) want = "limit";
     else if (onChatGpt() && chatgpt?.showWelcome) want = "welcome";
-    if (notice.dataset.kind === want) return;
-    notice.dataset.kind = want;
+    const noticeKey = want === "welcome" ? `${want}:${chatgpt?.accountId ?? ""}` : want;
+    if (notice.dataset.kind === noticeKey) return;
+    notice.dataset.kind = noticeKey;
     clear(notice);
     if (!want) return;
     if (failure) {
@@ -737,10 +1010,11 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         h("div", { class: "chat-notice-actions" }, manage),
       ));
     } else {
+      const accountId = chatgpt?.accountId ?? null;
       const ok = h("button", {
         class: "chatgpt-connect",
         text: tl(STRINGS.gotIt),
-        onclick: () => void Bridge.chatgptWelcomed().then(() => refreshChatGpt(drawNotice)),
+        onclick: () => void Bridge.chatgptWelcomed(accountId).then(() => refreshChatGpt(drawNotice)),
       });
       notice.append(h("div", { class: "chat-notice" },
         h("div", { class: "chat-notice-title", text: t(STRINGS.welcomeTitle) }),
@@ -790,19 +1064,24 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (!live) {
       live = h("div", { class: "reply" });
       log.querySelector(".typing")?.parentElement?.remove();
+      const attachmentNotice = log.querySelector(".chat-attachment");
+      attachmentNotice?.remove();
       log.append(h("div", { class: "chat-row" }, live));
+      if (attachmentNotice) log.append(attachmentNotice);
     }
     renderMarkdown(live, text);
     log.scrollTop = log.scrollHeight;
   });
   void onEvent<null>("chatgpt-usage-limit", () => {
-    if (!answerIsCurrent?.()) return;
+    if (!sending || undoPending || stopRequested || answerProvider !== CHATGPT || !answerIsCurrent?.()) return;
     usageLimit = true;
     drawNotice();
   });
   void onEvent<ChatGptStatus>("chatgpt-status", (s) => {
+    chatgptRevision++;
     chatgpt = s;
     catalog = null; // another account, or none: its catalog is asked again
+    picker.accountChanged();
     State.notify();
   });
 
@@ -811,6 +1090,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (history.isOpen) history.close();
     sending = true;
     stopRequested = false;
+    // A limit belongs to the previous request, not to its next retry's error.
+    usageLimit = false;
+    drawNotice();
     liveText = "";
     clearToolNotes();
     const messages = State.chatHistory;
@@ -822,6 +1104,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     // Who answers, as picked now: recorded with the answer.
     const p = providerDef(State.settings.chatProvider);
+    answerProvider = p.id;
     const model = activeModel(State.settings);
     const answeredBy = {
       provider: p.id,
@@ -872,6 +1155,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (State.stateOverride === "thinking") State.stateOverride = null;
       live = null;
       answerIsCurrent = null;
+      answerProvider = null;
       renderedCount = -1; // the finished answer replaces the streamed one
       drawModelButton();
       State.notify();
@@ -885,14 +1169,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   async function submit() {
     const query = input.value.trim();
-    if (!query || sending || startingVoice) return;
+    if (!query || sending || startingVoice || history.isOpening) return;
     input.value = "";
     await ask(query);
   }
 
   /** The last answer again, with the model and effort picked now. */
   async function regenerate() {
-    if (sending || startingVoice) return;
+    if (sending || startingVoice || history.isOpening) return;
     const messages = State.chatHistory;
     const answer = messages[messages.length - 1];
     const question = messages[messages.length - 2];
@@ -940,7 +1224,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     void submit();
   });
   voice?.addEventListener("click", async () => {
-    if (sending || startingVoice) return;
+    if (sending || startingVoice || history.isOpening) return;
     startingVoice = true;
     if (picker.isOpen) picker.close();
     drawModelButton();
@@ -1033,12 +1317,21 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
       const thinking = State.stateOverride === "thinking";
       const count = State.chatHistory.length + (thinking ? 0.5 : 0);
-      if (count !== renderedCount && !live) {
+      // begin() can discard native attachments before a request fails or is
+      // stopped. The file chip is a retry candidate, not proof of retention.
+      // Warn after a completed turn; undoing the only one makes its file
+      // eligible to attach again. Keep this policy inside the scrollable log
+      // so it cannot push the composer out of the fixed-height chat card.
+      const attached = !!file && State.chatHistory.some((m) => m.role === "assistant" && !m.stopped);
+      if ((count !== renderedCount || !!log.querySelector(".chat-attachment") !== attached) && !live) {
         renderedCount = count;
         clear(log);
         const messages = State.chatHistory;
         messages.forEach((m, i) => log.append(bubble(m, i === messages.length - 1)));
         if (thinking) log.append(typingDots());
+        if (attached) log.append(h("div", { class: "chat-notice chat-attachment", role: "status" },
+          h("div", { class: "chat-notice-body", text: tl(STRINGS.attachmentBody) }),
+        ));
         log.scrollTop = log.scrollHeight;
       }
 
@@ -1049,7 +1342,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       drawNotice();
 
       input.placeholder = t(State.chatHistory.length === 0 ? STRINGS.placeholderFirst : STRINGS.placeholderNext);
-      input.disabled = sending;
+      input.disabled = sending || history.isOpening;
     },
     focus() {
       input.focus();

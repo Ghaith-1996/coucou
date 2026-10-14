@@ -4417,17 +4417,6 @@
    "ru": "Отзыв доступа на сервере не подтверждён. Вы также можете отключить Coucou в настройках ChatGPT.",
    "id": "Pencabutan akses jarak jauh belum dikonfirmasi. Anda juga dapat memutuskan Coucou di pengaturan ChatGPT."
   },
-  "Couldn't remove all saved ChatGPT credentials from this device. Try Disconnect again.": {
-   "zh-Hans": "无法从此设备删除所有已保存的 ChatGPT 登录凭据。请再次尝试断开连接。",
-   "hi": "इस डिवाइस से ChatGPT की सभी सहेजी गई लॉगिन जानकारी हटाई नहीं जा सकी। फिर से डिस्कनेक्ट करने का प्रयास करें।",
-   "es": "No se pudieron eliminar todas las credenciales de ChatGPT guardadas en este dispositivo. Intenta desconectar de nuevo.",
-   "ar": "تعذّر إزالة جميع بيانات اعتماد ChatGPT المحفوظة من هذا الجهاز. حاول الفصل مرة أخرى.",
-   "fr": "Impossible de supprimer tous les identifiants ChatGPT enregistrés sur cet appareil. Réessayez de vous déconnecter.",
-   "bn": "এই ডিভাইস থেকে ChatGPT-এর সব সংরক্ষিত লগইন তথ্য সরানো যায়নি। আবার সংযোগ বিচ্ছিন্ন করার চেষ্টা করুন।",
-   "pt-BR": "Não foi possível remover todas as credenciais do ChatGPT salvas neste dispositivo. Tente desconectar novamente.",
-   "ru": "Не удалось удалить все сохранённые учётные данные ChatGPT с этого устройства. Попробуйте отключиться ещё раз.",
-   "id": "Tidak dapat menghapus semua kredensial ChatGPT yang tersimpan dari perangkat ini. Coba putuskan lagi."
-  },
   "You're using your ChatGPT plan": {
    "zh-Hans": "你正在使用你的 ChatGPT 套餐",
    "hi": "आप अपने ChatGPT प्लान का उपयोग कर रहे हैं",
@@ -4791,16 +4780,16 @@
    "ru": "Недоступно в вашем тарифе ChatGPT: {what}.",
    "id": "Tidak tersedia di paket ChatGPT Anda: {what}."
   },
-  "ChatGPT refused this app's request. Reconnect in Settings.": {
-   "zh-Hans": "ChatGPT 拒绝了此应用的请求。请在设置中重新连接。",
-   "hi": "ChatGPT ने इस ऐप का अनुरोध अस्वीकार कर दिया। सेटिंग्स में फिर से कनेक्ट करें।",
-   "es": "ChatGPT rechazó la solicitud de esta app. Vuelve a conectarte en Ajustes.",
-   "ar": "رفض ChatGPT طلب هذا التطبيق. أعد الاتصال من الإعدادات.",
-   "fr": "ChatGPT a refusé la requête de cette app. Reconnecte-toi dans les Réglages.",
-   "bn": "ChatGPT এই অ্যাপের অনুরোধ প্রত্যাখ্যান করেছে। সেটিংসে আবার সংযোগ করুন।",
-   "pt-BR": "O ChatGPT recusou a solicitação deste app. Reconecte em Configurações.",
-   "ru": "ChatGPT отклонил запрос этого приложения. Переподключитесь в настройках.",
-   "id": "ChatGPT menolak permintaan aplikasi ini. Hubungkan ulang di Pengaturan."
+  "ChatGPT refused this app's request. Check the app's configuration and permissions.": {
+   "zh-Hans": "ChatGPT 拒绝了此应用的请求。请检查应用的配置和权限。",
+   "hi": "ChatGPT ने इस ऐप का अनुरोध अस्वीकार कर दिया। ऐप का कॉन्फ़िगरेशन और अनुमतियाँ जाँचें।",
+   "es": "ChatGPT rechazó la solicitud de esta app. Revisa la configuración y los permisos de la app.",
+   "ar": "رفض ChatGPT طلب هذا التطبيق. تحقق من إعدادات التطبيق وأذوناته.",
+   "fr": "ChatGPT a refusé la requête de cette app. Vérifie sa configuration et ses autorisations.",
+   "bn": "ChatGPT এই অ্যাপের অনুরোধ প্রত্যাখ্যান করেছে। অ্যাপের কনফিগারেশন ও অনুমতিগুলো পরীক্ষা করুন।",
+   "pt-BR": "O ChatGPT recusou a solicitação deste app. Verifique a configuração e as permissões do app.",
+   "ru": "ChatGPT отклонил запрос этого приложения. Проверьте настройки и разрешения приложения.",
+   "id": "ChatGPT menolak permintaan aplikasi ini. Periksa konfigurasi dan izin aplikasi."
   },
   "This model isn't available on your ChatGPT account.": {
    "zh-Hans": "你的 ChatGPT 账户无法使用此模型。",
@@ -5032,6 +5021,160 @@
    "pt-BR": "Olhou as abas do seu navegador",
    "ru": "Посмотрел вкладки вашего браузера",
    "id": "Melihat tab peramban Anda"
+  },
+  "Sending with another provider can discard attachments, even on failure or Stop. Switching back won't restore them. Drop the file again for a new chat.": {
+   "zh-Hans": "向其他服务商发送消息可能丢失附件，即使请求失败或被停止。切换回来也无法恢复。请再次拖入文件以开始新对话。",
+   "hi": "दूसरे प्रदाता को संदेश भेजने से अटैचमेंट हट सकते हैं, भले ही अनुरोध विफल हो या रोक दिया जाए। वापस बदलने से वे बहाल नहीं होंगे। नई चैट के लिए फ़ाइल फिर से ड्रॉप करें।",
+   "es": "Enviar con otro proveedor puede descartar los adjuntos, incluso si falla o se detiene. Volver al anterior no los recupera. Suelta el archivo de nuevo para iniciar un nuevo chat.",
+   "ar": "قد يؤدي الإرسال عبر مزوّد آخر إلى فقدان المرفقات، حتى عند الفشل أو الإيقاف. العودة إلى المزوّد السابق لا تستعيدها. أفلت الملف مجددًا لبدء محادثة جديدة.",
+   "fr": "Envoyer avec un autre fournisseur peut faire perdre les pièces jointes, même en cas d’échec ou d’arrêt. Revenir au précédent ne les restaure pas. Redéposez le fichier pour une nouvelle conversation.",
+   "bn": "অন্য প্রদানকারীর মাধ্যমে পাঠালে সংযুক্তি হারিয়ে যেতে পারে, এমনকি ব্যর্থ হলে বা থামানো হলেও। ফিরে গেলে সেগুলি ফিরবে না। নতুন চ্যাটের জন্য ফাইলটি আবার ড্রপ করুন।",
+   "pt-BR": "Enviar com outro provedor pode descartar os anexos, mesmo em caso de falha ou interrupção. Voltar ao anterior não os restaura. Solte o arquivo novamente para iniciar uma nova conversa.",
+   "ru": "Отправка другому провайдеру может привести к потере вложений, даже при ошибке или остановке. Возврат их не восстановит. Перетащите файл ещё раз для нового чата.",
+   "id": "Mengirim dengan penyedia lain dapat menghilangkan lampiran, meski gagal atau dihentikan. Beralih kembali tidak memulihkannya. Jatuhkan file lagi untuk percakapan baru."
+  },
+  "Use a different ChatGPT account": {
+   "zh-Hans": "使用其他 ChatGPT 账户",
+   "hi": "दूसरे ChatGPT खाते का उपयोग करें",
+   "es": "Usar otra cuenta de ChatGPT",
+   "ar": "استخدام حساب ChatGPT آخر",
+   "fr": "Utiliser un autre compte ChatGPT",
+   "bn": "অন্য ChatGPT অ্যাকাউন্ট ব্যবহার করুন",
+   "pt-BR": "Usar outra conta do ChatGPT",
+   "ru": "Использовать другой аккаунт ChatGPT",
+   "id": "Gunakan akun ChatGPT lain"
+  },
+  "Finish connecting new ChatGPT account": {
+   "zh-Hans": "完成新 ChatGPT 账户的连接",
+   "hi": "नए ChatGPT खाते को कनेक्ट करना पूरा करें",
+   "es": "Terminar de conectar la nueva cuenta de ChatGPT",
+   "ar": "إكمال ربط حساب ChatGPT الجديد",
+   "fr": "Terminer la connexion du nouveau compte ChatGPT",
+   "bn": "নতুন ChatGPT অ্যাকাউন্ট সংযোগ করা সম্পূর্ণ করুন",
+   "pt-BR": "Concluir a conexão da nova conta do ChatGPT",
+   "ru": "Завершить подключение нового аккаунта ChatGPT",
+   "id": "Selesaikan koneksi akun ChatGPT baru"
+  },
+  "Choose a saved ChatGPT account": {
+   "zh-Hans": "选择已保存的 ChatGPT 账户",
+   "hi": "सहेजा गया ChatGPT खाता चुनें",
+   "es": "Elegir una cuenta de ChatGPT guardada",
+   "ar": "اختيار حساب ChatGPT محفوظ",
+   "fr": "Choisir un compte ChatGPT enregistré",
+   "bn": "সংরক্ষিত ChatGPT অ্যাকাউন্ট বেছে নিন",
+   "pt-BR": "Escolher uma conta do ChatGPT salva",
+   "ru": "Выберите сохранённый аккаунт ChatGPT",
+   "id": "Pilih akun ChatGPT yang tersimpan"
+  },
+  "Choose and authorize the new account in your browser. Saved accounts remain available here.": {
+   "zh-Hans": "在浏览器中选择并授权新账户。已保存的账户仍可在此处使用。",
+   "hi": "अपने ब्राउज़र में नया खाता चुनें और अनुमति दें। सहेजे गए खाते यहाँ उपलब्ध रहेंगे।",
+   "es": "Elige y autoriza la nueva cuenta en tu navegador. Las cuentas guardadas seguirán disponibles aquí.",
+   "ar": "اختر الحساب الجديد وامنحه الإذن في متصفحك. ستبقى الحسابات المحفوظة متاحة هنا.",
+   "fr": "Choisissez et autorisez le nouveau compte dans votre navigateur. Les comptes enregistrés restent disponibles ici.",
+   "bn": "ব্রাউজারে নতুন অ্যাকাউন্ট বেছে নিয়ে অনুমতি দিন। সংরক্ষিত অ্যাকাউন্টগুলি এখানে উপলব্ধ থাকবে।",
+   "pt-BR": "Escolha e autorize a nova conta no navegador. As contas salvas continuarão disponíveis aqui.",
+   "ru": "Выберите новый аккаунт и разрешите доступ в браузере. Сохранённые аккаунты останутся доступны здесь.",
+   "id": "Pilih dan izinkan akun baru di browser Anda. Akun yang tersimpan tetap tersedia di sini."
+  },
+  "Couldn't finish disconnecting ChatGPT on this device. Try Disconnect again.": {
+   "zh-Hans": "无法在此设备上完成 ChatGPT 断开连接。请再次尝试断开连接。",
+   "hi": "इस डिवाइस पर ChatGPT को डिस्कनेक्ट करना पूरा नहीं हो सका। फिर से डिस्कनेक्ट करने का प्रयास करें।",
+   "es": "No se pudo terminar de desconectar ChatGPT en este dispositivo. Intenta desconectar de nuevo.",
+   "ar": "تعذّر إكمال فصل ChatGPT على هذا الجهاز. حاول الفصل مرة أخرى.",
+   "fr": "Impossible de terminer la déconnexion de ChatGPT sur cet appareil. Réessayez de vous déconnecter.",
+   "bn": "এই ডিভাইসে ChatGPT-এর সংযোগ বিচ্ছিন্ন করা সম্পূর্ণ করা যায়নি। আবার সংযোগ বিচ্ছিন্ন করার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível concluir a desconexão do ChatGPT neste dispositivo. Tente desconectar novamente.",
+   "ru": "Не удалось завершить отключение ChatGPT на этом устройстве. Попробуйте отключиться ещё раз.",
+   "id": "Tidak dapat menyelesaikan pemutusan ChatGPT di perangkat ini. Coba putuskan lagi."
+  },
+  "Couldn't check saved ChatGPT credentials. Try again.": {
+   "zh-Hans": "无法检查已保存的 ChatGPT 登录凭据。请重试。",
+   "hi": "सहेजे गए ChatGPT लॉगिन विवरण की जाँच नहीं हो सकी। फिर से प्रयास करें।",
+   "es": "No se pudieron comprobar las credenciales de ChatGPT guardadas. Inténtalo de nuevo.",
+   "ar": "تعذّر التحقق من بيانات اعتماد ChatGPT المحفوظة. حاول مرة أخرى.",
+   "fr": "Impossible de vérifier les identifiants ChatGPT enregistrés. Réessayez.",
+   "bn": "সংরক্ষিত ChatGPT লগইন তথ্য পরীক্ষা করা যায়নি। আবার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível verificar as credenciais do ChatGPT salvas. Tente novamente.",
+   "ru": "Не удалось проверить сохранённые учётные данные ChatGPT. Попробуйте ещё раз.",
+   "id": "Tidak dapat memeriksa kredensial ChatGPT yang tersimpan. Coba lagi."
+  },
+  "Disconnect ChatGPT successfully before switching accounts.": {
+   "zh-Hans": "请先成功断开 ChatGPT 连接，再切换账户。",
+   "hi": "खाता बदलने से पहले ChatGPT को सफलतापूर्वक डिस्कनेक्ट करें।",
+   "es": "Desconecta ChatGPT correctamente antes de cambiar de cuenta.",
+   "ar": "أكمل فصل ChatGPT بنجاح قبل تبديل الحسابات.",
+   "fr": "Déconnectez ChatGPT avec succès avant de changer de compte.",
+   "bn": "অ্যাকাউন্ট বদলানোর আগে ChatGPT-এর সংযোগ সফলভাবে বিচ্ছিন্ন করুন।",
+   "pt-BR": "Desconecte o ChatGPT com sucesso antes de trocar de conta.",
+   "ru": "Завершите отключение ChatGPT перед сменой аккаунта.",
+   "id": "Putuskan ChatGPT dengan berhasil sebelum beralih akun."
+  },
+  "The selected ChatGPT account changed. Try again.": {
+   "zh-Hans": "所选的 ChatGPT 账户已更改。请重试。",
+   "hi": "चुना गया ChatGPT खाता बदल गया है। फिर से प्रयास करें।",
+   "es": "La cuenta de ChatGPT seleccionada ha cambiado. Inténtalo de nuevo.",
+   "ar": "تغيّر حساب ChatGPT المحدد. حاول مرة أخرى.",
+   "fr": "Le compte ChatGPT sélectionné a changé. Réessayez.",
+   "bn": "নির্বাচিত ChatGPT অ্যাকাউন্ট বদলে গেছে। আবার চেষ্টা করুন।",
+   "pt-BR": "A conta do ChatGPT selecionada mudou. Tente novamente.",
+   "ru": "Выбранный аккаунт ChatGPT изменился. Попробуйте ещё раз.",
+   "id": "Akun ChatGPT yang dipilih telah berubah. Coba lagi."
+  },
+  "Selected ChatGPT account: {account}": {
+   "zh-Hans": "所选 ChatGPT 账户：{account}",
+   "hi": "चुना गया ChatGPT खाता: {account}",
+   "es": "Cuenta de ChatGPT seleccionada: {account}",
+   "ar": "حساب ChatGPT المحدد: {account}",
+   "fr": "Compte ChatGPT sélectionné : {account}",
+   "bn": "নির্বাচিত ChatGPT অ্যাকাউন্ট: {account}",
+   "pt-BR": "Conta do ChatGPT selecionada: {account}",
+   "ru": "Выбранный аккаунт ChatGPT: {account}",
+   "id": "Akun ChatGPT yang dipilih: {account}"
+  },
+  "Load more": {
+   "zh-Hans": "加载更多",
+   "hi": "और लोड करें",
+   "es": "Cargar más",
+   "ar": "تحميل المزيد",
+   "fr": "Charger plus",
+   "bn": "আরও লোড করুন",
+   "pt-BR": "Carregar mais",
+   "ru": "Загрузить ещё",
+   "id": "Muat lagi"
+  },
+  "Retry the unfinished sign-in, or start a separate registration. The unfinished registration will remain in saved accounts.": {
+   "zh-Hans": "重试未完成的登录，或开始单独注册。未完成的注册将保留在已保存的账户中。",
+   "hi": "अधूरा साइन-इन फिर से आज़माएँ या एक अलग पंजीकरण शुरू करें। अधूरा पंजीकरण सहेजे गए खातों में रहेगा।",
+   "es": "Reintenta el inicio de sesión pendiente o inicia un registro independiente. El registro pendiente permanecerá en las cuentas guardadas.",
+   "ar": "أعِد محاولة تسجيل الدخول غير المكتمل، أو ابدأ تسجيلاً منفصلاً. سيبقى التسجيل غير المكتمل ضمن الحسابات المحفوظة.",
+   "fr": "Réessayez la connexion inachevée ou démarrez une inscription distincte. L’inscription inachevée restera dans les comptes enregistrés.",
+   "bn": "অসম্পূর্ণ সাইন-ইন আবার চেষ্টা করুন, অথবা আলাদা নিবন্ধন শুরু করুন। অসম্পূর্ণ নিবন্ধনটি সংরক্ষিত অ্যাকাউন্টগুলিতে থাকবে।",
+   "pt-BR": "Tente novamente o login incompleto ou inicie um cadastro separado. O cadastro incompleto permanecerá nas contas salvas.",
+   "ru": "Повторите незавершённый вход или начните отдельную регистрацию. Незавершённая регистрация останется в сохранённых аккаунтах.",
+   "id": "Coba lagi proses masuk yang belum selesai, atau mulai pendaftaran terpisah. Pendaftaran yang belum selesai akan tetap ada di akun tersimpan."
+  },
+  "The unfinished ChatGPT sign-in changed. Try again.": {
+   "zh-Hans": "未完成的 ChatGPT 登录已更改。请重试。",
+   "hi": "अधूरा ChatGPT साइन-इन बदल गया है। फिर से कोशिश करें।",
+   "es": "El inicio de sesión pendiente de ChatGPT ha cambiado. Inténtalo de nuevo.",
+   "ar": "تغيّر تسجيل الدخول غير المكتمل إلى ChatGPT. حاول مرة أخرى.",
+   "fr": "La connexion ChatGPT inachevée a changé. Réessayez.",
+   "bn": "অসম্পূর্ণ ChatGPT সাইন-ইন পরিবর্তিত হয়েছে। আবার চেষ্টা করুন।",
+   "pt-BR": "O login incompleto do ChatGPT mudou. Tente novamente.",
+   "ru": "Незавершённый вход в ChatGPT изменился. Повторите попытку.",
+   "id": "Proses masuk ChatGPT yang belum selesai telah berubah. Coba lagi."
+  },
+  "Another ChatGPT operation is in progress. Try again.": {
+   "zh-Hans": "另一项 ChatGPT 操作正在进行中。请重试。",
+   "hi": "ChatGPT की एक अन्य प्रक्रिया चल रही है। फिर से कोशिश करें।",
+   "es": "Hay otra operación de ChatGPT en curso. Inténtalo de nuevo.",
+   "ar": "هناك عملية أخرى في ChatGPT قيد التنفيذ. حاول مرة أخرى.",
+   "fr": "Une autre opération ChatGPT est en cours. Réessayez.",
+   "bn": "ChatGPT-এর আরেকটি কাজ চলছে। আবার চেষ্টা করুন।",
+   "pt-BR": "Outra operação do ChatGPT está em andamento. Tente novamente.",
+   "ru": "Выполняется другая операция ChatGPT. Повторите попытку.",
+   "id": "Operasi ChatGPT lain sedang berlangsung. Coba lagi."
   }
  }
 }

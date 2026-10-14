@@ -566,13 +566,16 @@ async fn chat_send(
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
     let settings = shared.settings.lock().unwrap().clone();
+    let account_before = (settings.chat_provider == chatgpt::PROVIDER).then(chatgpt::status);
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     *stop.0.lock().unwrap() = Some(tx);
     // Stop drops the request mid-way: nothing more is read or recorded.
-    tokio::select! {
+    let result = tokio::select! {
         reply = chat::send(&app, &chat, &settings, query, context) => reply,
         _ = rx => Err(i18n::t("Stopped.")),
-    }
+    };
+    emit_chatgpt_status_change(&app, account_before);
+    result
 }
 
 /// The turn under way, which the chat's Stop button ends.
@@ -582,8 +585,8 @@ struct ChatStop(std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
 // ── Saved conversations (chat_store.rs) ─────────────────────────────────────
 
 #[tauri::command]
-fn chat_history_list() -> Vec<chat_store::Summary> {
-    chat_store::list(&chat_store::dir())
+fn chat_history_list(before: Option<chat_store::ListCursor>) -> Result<Vec<chat_store::Summary>, String> {
+    chat_store::list(&chat_store::dir(), before.as_ref())
 }
 
 #[tauri::command]
@@ -631,8 +634,17 @@ fn chatgpt_status() -> chatgpt::Status {
 
 /// "Continue with ChatGPT": the sign-in in the system browser.
 #[tauri::command]
-async fn chatgpt_connect(app: AppHandle) -> Result<chatgpt::Status, String> {
-    let status = chatgpt::connect(|url| platform::open_url(url)).await?;
+async fn chatgpt_connect(app: AppHandle, new_account: Option<bool>, pending_account_id: Option<String>, start_another: Option<bool>) -> Result<chatgpt::Status, String> {
+    let result = chatgpt::connect(|url| platform::open_url(url), new_account.unwrap_or(false), pending_account_id.as_deref(), start_another.unwrap_or(false)).await;
+    // Failed exchange/storage can still retain a pending or validated account.
+    // Every window must discard its old account/model state in that case too.
+    let _ = app.emit("chatgpt-status", chatgpt::status());
+    result
+}
+
+#[tauri::command]
+async fn chatgpt_select_account(app: AppHandle, client_id: String) -> Result<chatgpt::Status, String> {
+    let status = chatgpt::select_account(&client_id).await?;
     let _ = app.emit("chatgpt-status", status.clone());
     Ok(status)
 }
@@ -645,15 +657,30 @@ async fn chatgpt_disconnect(app: AppHandle) -> chatgpt::DisconnectResult {
     result
 }
 
+/// Refresh can end a session even when credential cleanup fails. Notify every
+/// open window on an actual status change, not after every successful catalog
+/// request (which would invalidate the picker that requested it).
+fn emit_chatgpt_status_change(app: &AppHandle, before: Option<chatgpt::Status>) {
+    if let Some(before) = before {
+        let after = chatgpt::status();
+        if before != after {
+            let _ = app.emit("chatgpt-status", after);
+        }
+    }
+}
+
 /// The account's catalog, Luna and Sol marked when it lacks them.
 #[tauri::command]
-async fn chatgpt_models() -> Result<Vec<chatgpt::CatalogModel>, String> {
-    chatgpt::models().await
+async fn chatgpt_models(app: AppHandle) -> Result<Vec<chatgpt::CatalogModel>, String> {
+    let before = Some(chatgpt::status());
+    let result = chatgpt::models().await;
+    emit_chatgpt_status_change(&app, before);
+    result
 }
 
 #[tauri::command]
-fn chatgpt_welcomed(app: AppHandle) -> Result<(), String> {
-    chatgpt::mark_welcomed()?;
+async fn chatgpt_welcomed(app: AppHandle, client_id: Option<String>) -> Result<(), String> {
+    chatgpt::mark_welcomed(client_id.as_deref()).await?;
     let _ = app.emit("chatgpt-status", chatgpt::status());
     Ok(())
 }
@@ -661,9 +688,12 @@ fn chatgpt_welcomed(app: AppHandle) -> Result<(), String> {
 /// The models a provider offers, for the picker in the chat view. Only asked
 /// once the user picked that provider, and only with its key or address.
 #[tauri::command]
-async fn chat_models(shared: State<'_, Shared>, provider: String) -> Result<Vec<ModelInfo>, String> {
+async fn chat_models(app: AppHandle, shared: State<'_, Shared>, provider: String) -> Result<Vec<ModelInfo>, String> {
     let settings = shared.settings.lock().unwrap().clone();
-    chat::models(&settings, &provider).await
+    let before = (provider == chatgpt::PROVIDER).then(chatgpt::status);
+    let result = chat::models(&settings, &provider).await;
+    emit_chatgpt_status_change(&app, before);
+    result
 }
 
 /// Settings → Local models → Connect: does the server answer, and with which models?
@@ -917,6 +947,7 @@ pub fn run() {
             chat_undo_last,
             chatgpt_status,
             chatgpt_connect,
+            chatgpt_select_account,
             chatgpt_disconnect,
             chatgpt_models,
             chatgpt_welcomed,

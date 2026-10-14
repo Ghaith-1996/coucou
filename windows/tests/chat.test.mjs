@@ -122,3 +122,30 @@ test("a local answer streams into one reply, then the finished text replaces it"
   assert.deepEqual(State.chatHistory.map((m) => m.role), ["user", "assistant"]);
   assert.ok(!$(".model-btn").disabled);
 });
+
+for (const partial of ["", "Partial answer"]) {
+  test(`a completed native reply is kept after Stop${partial ? " with a streamed partial" : " without a delta"}`, async () => {
+    const pending = Promise.withResolvers();
+    answers.chat_send = () => pending.promise;
+    $(".chat-input").value = "question";
+    $(".send-btn").fire("click");
+    await flush();
+    if (partial) emit("chat-delta", partial);
+    $(".send-btn").fire("click");
+    await flush();
+    assert.equal(sent("chat_stop").length, 1);
+    pending.resolve({ text: "The complete answer" });
+    await flush();
+    view.sync();
+    assert.deepEqual(State.chatHistory.map(({ role, content }) => ({ role, content })), [
+      { role: "user", content: "question" },
+      { role: "assistant", content: "The complete answer" },
+    ]);
+    assert.notEqual(State.chatHistory.at(-1).stopped, true);
+    const saved = sent("chat_history_save").at(-1).conversation;
+    assert.equal(saved.messages.at(-1).content, "The complete answer");
+    assert.notEqual(saved.messages.at(-1).stopped, true);
+    assert.equal(view.el.find(".reply").length, 1);
+    assert.ok(!$(".model-btn").disabled);
+  });
+}

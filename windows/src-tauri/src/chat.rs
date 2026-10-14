@@ -220,6 +220,11 @@ pub fn model_for(settings: &Settings, provider: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Match the picker's fallback for missing or stale per-model saved efforts.
+fn chatgpt_effort_for(settings: &Settings, model: &str) -> &'static str {
+    chatgpt::effort_for(settings.chat_efforts.get(model).map(String::as_str), model)
+}
+
 /// A file rides along only if it is one of Coucou's own copies of a dropped
 /// file (files.rs puts them in the inbox). The page names the path, so without
 /// this any file the user can read could be sent to a chat provider.
@@ -260,11 +265,7 @@ pub async fn send(
     }
     if provider == chatgpt::PROVIDER {
         use tauri::Emitter;
-        // The effort picked for this model, checked against what it takes.
-        let effort = settings.chat_efforts.get(&model).map(String::as_str).unwrap_or(chatgpt::DEFAULT_EFFORT);
-        if !chatgpt::effort_ok(&model, effort) {
-            return Err(crate::i18n::tf("{model} doesn't take this reasoning effort.", &[("model", &model)]));
-        }
+        let effort = chatgpt_effort_for(settings, &model);
         let island = crate::island::WINDOW_LABEL;
         // What the chat may do on this PC (assistant/tools.rs), each action
         // confirmed by the user on a card.
@@ -487,6 +488,47 @@ mod tests {
         assert_eq!(model_for(&s, "openai"), "gpt-x");
         assert_eq!(model_for(&s, "ollama"), "llama3.2");
         assert_eq!(model_for(&s, "anthropic"), "claude-haiku-4-5");
+    }
+
+    #[test]
+    fn chatgpt_send_normalizes_saved_efforts_like_the_island() {
+        let fixture: Value = serde_json::from_str(include_str!("../../tests/fixtures/chatgpt-efforts.json")).unwrap();
+        for (model, supported) in fixture["models"].as_object().unwrap() {
+            for saved in fixture["savedEfforts"].as_array().unwrap() {
+                let mut settings = Settings::default();
+                settings.chat_provider = chatgpt::PROVIDER.into();
+                settings.chat_models.insert(chatgpt::PROVIDER.into(), model.clone());
+                if let Some(effort) = saved.as_str() {
+                    settings.chat_efforts.insert(model.clone(), effort.into());
+                }
+                let original = settings.chat_efforts.clone();
+                let selected = model_for(&settings, &settings.chat_provider);
+                let expected = if supported.as_array().unwrap().contains(saved) { saved } else { &fixture["default"] };
+                assert_eq!(chatgpt_effort_for(&settings, &selected), expected.as_str().unwrap(), "{model}: {saved}");
+                assert_eq!(settings.chat_efforts, original, "normalizing does not rewrite settings");
+            }
+        }
+    }
+
+    #[test]
+    fn chatgpt_send_uses_the_selected_models_saved_effort() {
+        let mut settings = Settings::default();
+        settings.chat_provider = chatgpt::PROVIDER.into();
+        settings.chat_efforts.insert(chatgpt::LUNA.into(), "none".into());
+        settings.chat_efforts.insert(chatgpt::SOL.into(), "none".into());
+        settings.chat_efforts.insert("gpt-some-other-model".into(), "high".into());
+        for (saved_model, model, effort) in [
+            ("", chatgpt::SOL, "medium"),
+            (chatgpt::LUNA, chatgpt::LUNA, "none"),
+            (" gpt-6.1-sol ", chatgpt::SOL, "medium"),
+            ("gpt-some-other-model", "gpt-some-other-model", "high"),
+            (chatgpt::LUNA, chatgpt::LUNA, "none"),
+        ] {
+            settings.chat_models.insert(chatgpt::PROVIDER.into(), saved_model.into());
+            let selected = model_for(&settings, &settings.chat_provider);
+            assert_eq!(selected, model);
+            assert_eq!(chatgpt_effort_for(&settings, &selected), effort);
+        }
     }
 
     #[test]

@@ -3,7 +3,9 @@
 //
 // There is no notch on a PC, so the island is a black shape drawn at the top
 // centre of the main display inside a borderless, transparent, always-on-top
-// window that never takes focus.
+// window that never takes focus. The user may drag it anywhere on a display
+// (`island_spot` in the settings); dragged back near the top centre, it docks
+// there again.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -13,6 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use crate::platform::{self, cursor_physical, left_button_down};
+use crate::settings::IslandSpot;
 
 /// Logical size of the full window — the largest island view, like the macOS panel.
 pub const PANEL_W: f64 = 720.0;
@@ -58,9 +61,17 @@ pub struct PollGate {
     active: Mutex<bool>,
     cv: Condvar,
     pub collapsed: AtomicBool,
+    /// The Hide button's native state survives a webview reload. A floating
+    /// island can be hidden without ever becoming a collapsed wake strip.
+    pub user_hidden: AtomicBool,
     pub rect: Mutex<IslandRect>,
     /// Mirrors the window flag so we only call into the OS when it changes.
     ignoring: AtomicBool,
+    /// The user is dragging the island. Windows finishes from its button poll;
+    /// Linux finishes from the captured page gesture, never the cursor poll.
+    pub moving: AtomicBool,
+    #[cfg(target_os = "linux")]
+    page_move: Mutex<Option<PageMove>>,
 }
 
 impl PollGate {
@@ -69,9 +80,25 @@ impl PollGate {
             active: Mutex::new(false),
             cv: Condvar::new(),
             collapsed: AtomicBool::new(true),
+            user_hidden: AtomicBool::new(false),
             rect: Mutex::new(IslandRect::default()),
             ignoring: AtomicBool::new(false),
+            moving: AtomicBool::new(false),
+            #[cfg(target_os = "linux")]
+            page_move: Mutex::new(None),
         }
+    }
+
+    /// Both the cursor poll and GTK pointer watcher follow the same native
+    /// visibility policy. Page shape updates must never wake a hidden window.
+    fn island_polling_active(&self) -> bool {
+        !self.user_hidden.load(Ordering::Relaxed) && !self.collapsed.load(Ordering::Relaxed)
+    }
+
+    pub fn sync_island_polling(&self) {
+        let active = self.island_polling_active();
+        self.set_active(active);
+        platform::set_pointer_watch(active);
     }
 
     pub fn set_rect(&self, rect: IslandRect) {
@@ -98,6 +125,43 @@ impl PollGate {
 
     pub(crate) fn is_active(&self) -> bool {
         *self.active.lock().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod visibility_tests {
+    use super::*;
+
+    #[test]
+    fn native_hide_parks_floating_islands_without_collapsing_their_geometry() {
+        let gate = PollGate::new();
+        gate.collapsed.store(false, Ordering::Relaxed);
+        assert!(gate.island_polling_active());
+        gate.user_hidden.store(true, Ordering::Relaxed);
+        assert!(!gate.island_polling_active());
+        assert!(!gate.collapsed.load(Ordering::Relaxed));
+        gate.user_hidden.store(false, Ordering::Relaxed);
+        assert!(gate.island_polling_active());
+    }
+
+    #[test]
+    fn shape_updates_and_reload_cannot_restart_polling_while_user_hidden() {
+        let gate = PollGate::new();
+        gate.user_hidden.store(true, Ordering::Relaxed);
+        for collapsed in [true, false, true, false] {
+            gate.collapsed.store(collapsed, Ordering::Relaxed);
+            assert!(!gate.island_polling_active());
+        }
+    }
+
+    #[test]
+    fn reopening_a_wake_strip_waits_for_expansion_before_polling() {
+        let gate = PollGate::new();
+        gate.user_hidden.store(true, Ordering::Relaxed);
+        gate.user_hidden.store(false, Ordering::Relaxed);
+        assert!(!gate.island_polling_active());
+        gate.collapsed.store(false, Ordering::Relaxed);
+        assert!(gate.island_polling_active());
     }
 }
 
@@ -246,6 +310,50 @@ mod display_tests {
         DisplayId { name: name.into(), x, y, w, h }
     }
 
+    const MON: (i32, i32) = (0, 0);
+    const FHD: (u32, u32) = (1920, 1080);
+    const PANEL: (u32, u32) = (720, 320);
+
+    #[test]
+    fn without_a_spot_the_island_sits_at_the_top_centre() {
+        assert_eq!(panel_origin(MON, FHD, 1.0, PANEL, None), (600, 0));
+        assert_eq!(panel_origin((-1920, 200), FHD, 1.0, PANEL, None), (-1320, 200));
+    }
+
+    #[test]
+    fn a_spot_is_kept_whole_on_its_display() {
+        let spot = |x, y| Some(IslandSpot { x, y });
+        assert_eq!(panel_origin(MON, FHD, 1.0, PANEL, spot(100.0, 300.0)), (100, 300));
+        // Scaled: logical spot → physical.
+        assert_eq!(panel_origin(MON, (3840, 2160), 2.0, (1440, 640), spot(100.0, 300.0)), (200, 600));
+        // Off any edge: pulled back so the open island still fits.
+        assert_eq!(panel_origin(MON, FHD, 1.0, PANEL, spot(-50.0, 5000.0)), (0, 760));
+        assert_eq!(panel_origin(MON, FHD, 1.0, PANEL, spot(5000.0, -3.0)), (1200, 0));
+        // A display left of the primary one.
+        assert_eq!(panel_origin((-1920, 0), FHD, 1.0, PANEL, spot(10.0, 10.0)), (-1910, 10));
+    }
+
+    #[test]
+    fn a_drop_is_saved_where_it_shows_and_docks_near_the_top_centre() {
+        assert_eq!(spot_after_move(MON, FHD, 1.0, PANEL, (100, 400)), Some(IslandSpot { x: 100.0, y: 400.0 }));
+        assert_eq!(spot_after_move(MON, FHD, 1.0, PANEL, (1500, 900)), Some(IslandSpot { x: 1200.0, y: 760.0 }));
+        assert_eq!(spot_after_move(MON, FHD, 1.0, PANEL, (620, 20)), None, "near the top centre");
+        assert_eq!(spot_after_move(MON, FHD, 1.0, PANEL, (600, -40)), None, "pushed above the top");
+        assert!(spot_after_move(MON, FHD, 1.0, PANEL, (100, 10)).is_some(), "at the top, but in a corner");
+        assert_eq!(spot_after_move((1920, 0), (3840, 2160), 2.0, (1440, 640), (1920 + 400, 600)), Some(IslandSpot { x: 200.0, y: 300.0 }));
+    }
+
+    #[test]
+    fn layer_drops_use_logical_margins_on_the_selected_output() {
+        assert_eq!(layer_drop_origin((1920, -200), (3840, 2160), 2.0, (100.0, 300.0)), (2120, 400));
+        // A captured pointer may leave the output; that is not a new global
+        // position (in particular on a neighbouring output with another scale).
+        assert_eq!(layer_drop_origin((1920, -200), (3840, 2160), 2.0, (5000.0, -100.0)), (4320, -200));
+        assert_eq!(layer_drop_origin((1920, -200), (3840, 2160), 2.0, (f64::MAX, -f64::MAX)), (4320, -200));
+        let at = layer_drop_origin((1920, -200), (3840, 2160), 2.0, (600.0, 10.0));
+        assert_eq!(spot_after_move((1920, -200), (3840, 2160), 2.0, (1440, 640), at), None);
+    }
+
     #[test]
     fn a_display_is_found_again_after_changes() {
         let dell = d("DELL U2720Q", 1920, 0, 2560, 1440);
@@ -280,6 +388,59 @@ mod display_tests {
     }
 }
 
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_linux_drag_never_enters_an_untracked_native_move() {
+        let gate = PollGate::new();
+        start_move(&gate, false,
+            || panic!("Linux has no global button state"),
+            || panic!("Linux uses the captured page lifecycle"));
+        assert!(!gate.moving.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn page_drag_coordinates_are_bounded_before_integer_conversion() {
+        assert!(valid_move_point(-20_000.0, 50_000.0));
+        for bad in [f64::NAN, f64::INFINITY, -f64::INFINITY, f64::MAX, -f64::MAX, 1_000_001.0] {
+            assert!(!valid_move_point(bad, 0.0));
+            assert!(!valid_move_point(0.0, bad));
+        }
+    }
+
+    #[test]
+    fn a_windows_drag_requires_the_physical_left_button() {
+        let gate = PollGate::new();
+        start_move(&gate, true, || false, || panic!("a released button must not start a drag"));
+        assert!(!gate.moving.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_windows_drag_arms_the_release_poll_before_entering_the_native_move_loop() {
+        let gate = PollGate::new();
+        let started = Cell::new(false);
+        start_move(&gate, true, || true, || {
+            assert!(gate.moving.load(Ordering::SeqCst));
+            started.set(true);
+            true
+        });
+        assert!(started.get());
+        assert!(gate.moving.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_failed_native_drag_clears_the_release_poll() {
+        for cursor_poll in [false, true] {
+            let gate = PollGate::new();
+            start_move(&gate, cursor_poll, || true, || false);
+            assert!(!gate.moving.load(Ordering::SeqCst));
+        }
+    }
+}
+
 pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
     match target_monitor(app, pref) {
         Some(m) => {
@@ -298,8 +459,60 @@ pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
     }
 }
 
-/// Places and sizes the window. `collapsed` picks the wake strip instead of the panel.
-pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
+/// Dropped this close to the top centre (logical px), the island docks there.
+const DOCK_SNAP_X: f64 = 80.0;
+const DOCK_SNAP_Y: f64 = 48.0;
+
+/// Where the panel's top-left corner goes on a display, in physical pixels:
+/// the top centre, or the user's spot kept whole on the display (so the
+/// island can open downwards without leaving it).
+pub fn panel_origin(mon: (i32, i32), mon_size: (u32, u32), scale: f64, panel: (u32, u32), spot: Option<IslandSpot>) -> (i32, i32) {
+    let centred = mon.0 + (mon_size.0 as i32 - panel.0 as i32) / 2;
+    let Some(spot) = spot else { return (centred, mon.1) };
+    let clamp = |v: i32, lo: i32, room: i32| if room <= 0 { lo } else { v.clamp(lo, lo + room) };
+    (
+        clamp(mon.0 + (spot.x * scale).round() as i32, mon.0, mon_size.0 as i32 - panel.0 as i32),
+        clamp(mon.1 + (spot.y * scale).round() as i32, mon.1, mon_size.1 as i32 - panel.1 as i32),
+    )
+}
+
+/// Where a drag left the panel (`at`, physical), as a spot on that display.
+/// None near the top centre: it docks there again.
+pub fn spot_after_move(mon: (i32, i32), mon_size: (u32, u32), scale: f64, panel: (u32, u32), at: (i32, i32)) -> Option<IslandSpot> {
+    let x = (at.0 - mon.0) as f64 / scale;
+    let y = (at.1 - mon.1) as f64 / scale;
+    let spot = IslandSpot { x: x.round(), y: y.round() };
+    // The same clamping as placing it, so what is saved is where it shows.
+    let (px, py) = panel_origin(mon, mon_size, scale, panel, Some(spot));
+    let spot = IslandSpot { x: ((px - mon.0) as f64 / scale).round(), y: ((py - mon.1) as f64 / scale).round() };
+    let dock_x = (mon_size.0 as f64 - panel.0 as f64) / 2.0 / scale;
+    if spot.y < DOCK_SNAP_Y && (spot.x - dock_x).abs() < DOCK_SNAP_X {
+        return None;
+    }
+    Some(spot)
+}
+
+/// Layer coordinates are local to one output, not global desktop coordinates.
+/// Keep an out-of-surface release on that output, including mixed-DPI layouts.
+#[cfg(any(target_os = "linux", test))]
+fn layer_drop_origin(mon: (i32, i32), size: (u32, u32), scale: f64, at: (f64, f64)) -> (i32, i32) {
+    let panel = ((PANEL_W * scale).round() as u32, (PANEL_H * scale).round() as u32);
+    // Clamp while still floating point: a huge finite IPC coordinate must not
+    // saturate to i32::MAX and overflow when the monitor origin is added.
+    let x = at.0.clamp(0.0, size.0.saturating_sub(panel.0) as f64 / scale);
+    let y = at.1.clamp(0.0, size.1.saturating_sub(panel.1) as f64 / scale);
+    panel_origin(mon, size, scale, panel, Some(IslandSpot { x, y }))
+}
+
+/// Places and sizes the window. `collapsed` picks the wake strip instead of
+/// the panel; `spot` is where the user dragged the island (None: top centre).
+pub fn apply_geometry(app: &AppHandle, pref: &str, spot: Option<IslandSpot>, collapsed: bool) {
+    // A captured Linux drag temporarily owns size/position. Background shape,
+    // display and expansion updates must not fold its stationary overlay away.
+    #[cfg(target_os = "linux")]
+    if app.try_state::<crate::Shared>().is_some_and(|s| s.gate.moving.load(Ordering::SeqCst)) {
+        return;
+    }
     let Some(win) = window(app) else { return };
     let Some(m) = target_monitor(app, pref) else { return };
 
@@ -307,11 +520,16 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let mp = *m.position();
     let ms = *m.size();
 
-    let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
-    let pw = (lw * scale).round().max(1.0) as u32;
-    let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
-    let y = mp.y;
+    let panel = ((PANEL_W * scale).round().max(1.0) as u32, (PANEL_H * scale).round().max(1.0) as u32);
+    let (px, py) = panel_origin((mp.x, mp.y), (ms.width, ms.height), scale, panel, spot);
+    let (pw, ph, x, y) = if collapsed {
+        let sw = (STRIP_W * scale).round().max(1.0) as u32;
+        let sh = (STRIP_H * scale).round().max(1.0) as u32;
+        // The strip sits where the island's top edge is.
+        (sw, sh, px + (panel.0 as i32 - sw as i32) / 2, py)
+    } else {
+        (panel.0, panel.1, px, py)
+    };
 
     // GTK never sizes a non-resizable window below its natural size (200 px
     // here), so on Linux the 6 px wake strip would stay a 200 px block. tao
@@ -321,12 +539,202 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     #[cfg(target_os = "linux")]
     let _ = win.set_resizable(true);
     let _ = win.set_size(PhysicalSize::new(pw, ph));
+    #[cfg(windows)]
     let _ = win.set_position(PhysicalPosition::new(x, y));
-    let (lx, ly) = logical_origin(&m);
-    platform::pin_to_monitor(&win, lx, ly);
+    #[cfg(target_os = "linux")]
+    platform::place_island(&win, (x, y), logical_origin(&m),
+        ((x - mp.x) as f64 / scale, (y - mp.y) as f64 / scale));
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+}
+
+/// Windows native move: the cursor poll detects release. Linux instead uses
+/// a captured page gesture with explicit begin/move/end commands below.
+pub fn start_move(
+    gate: &PollGate,
+    cursor_poll: bool,
+    left_button_down: impl FnOnce() -> bool,
+    start_dragging: impl FnOnce() -> bool,
+) {
+    if !cursor_poll || !left_button_down() {
+        return;
+    }
+    gate.moving.store(true, Ordering::SeqCst);
+    if !start_dragging() {
+        gate.moving.store(false, Ordering::SeqCst);
+    }
+}
+
+#[derive(Serialize)]
+pub struct MoveInfo {
+    mode: &'static str,
+    x: f64,
+    y: f64,
+    scale: f64,
+}
+
+#[cfg(target_os = "linux")]
+struct PageMove {
+    layer: bool,
+    monitor: Monitor,
+}
+
+/// Linux keeps the implicit pointer grab in the page. On Wayland the surface
+/// stays still over one output while the page paints the island under the
+/// pointer. This is the same coordinate strategy as desktop Mochi.
+pub fn begin_page_move(app: &AppHandle) -> Option<MoveInfo> {
+    #[cfg(windows)]
+    { let _ = app; None }
+    #[cfg(target_os = "linux")]
+    {
+        let shared = app.try_state::<crate::Shared>()?;
+        let win = window(app)?;
+        if shared.gate.moving.load(Ordering::SeqCst) || shared.gate.collapsed.load(Ordering::Relaxed) {
+            return None;
+        }
+        let mode = platform::island_move_mode();
+        let layer = match mode {
+            platform::DesktopMode::Layer => true,
+            platform::DesktopMode::Window => false,
+            _ => {
+                crate::log::line("island drag needs layer-shell or X11 for saved placement");
+                return None;
+            }
+        };
+        let settings = shared.settings.lock().unwrap().clone();
+        let m = target_monitor(app, &settings.screen)?;
+        let scale = m.scale_factor();
+        let at = if layer {
+            panel_origin((m.position().x, m.position().y), (m.size().width, m.size().height),
+                scale, ((PANEL_W * scale).round() as u32, (PANEL_H * scale).round() as u32), settings.island_spot)
+        } else {
+            let p = win.outer_position().ok()?;
+            (p.x, p.y)
+        };
+        let (x, y) = if layer {
+            ((at.0 - m.position().x) as f64 / scale, (at.1 - m.position().y) as f64 / scale)
+        } else { (at.0 as f64, at.1 as f64) };
+        *shared.gate.page_move.lock().unwrap() = Some(PageMove { layer, monitor: m });
+        shared.gate.moving.store(true, Ordering::SeqCst);
+        platform::set_input_region(&win, None);
+        if layer { platform::set_layer_overlay(&win, true); }
+        Some(MoveInfo { mode: if layer { "layer" } else { "window" }, x, y, scale })
+    }
+}
+
+/// Far beyond any useful desktop, but safely inside i32 monitor arithmetic.
+/// IPC numbers are not trusted merely because they are finite.
+#[cfg(any(target_os = "linux", test))]
+fn valid_move_point(x: f64, y: f64) -> bool {
+    const LIMIT: f64 = 1_000_000.0;
+    x.is_finite() && y.is_finite() && x.abs() <= LIMIT && y.abs() <= LIMIT
+}
+
+pub fn update_page_move(app: &AppHandle, x: f64, y: f64) -> Result<(), String> {
+    #[cfg(windows)]
+    { let _ = (app, x, y); Ok(()) }
+    #[cfg(target_os = "linux")]
+    {
+        if !valid_move_point(x, y) { return Err("invalid island position".into()); }
+        let Some(shared) = app.try_state::<crate::Shared>() else { return Ok(()) };
+        let state = shared.gate.page_move.lock().unwrap();
+        if state.as_ref().is_some_and(|m| !m.layer) {
+            let win = window(app).ok_or("island window closed")?;
+            win.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32)).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+/// None cancels without saving. Every exit folds the overlay back and restores
+/// the island's click-through region, even if the selected monitor disappeared.
+pub fn end_page_move(app: &AppHandle, at: Option<(f64, f64)>) {
+    #[cfg(windows)]
+    let _ = (app, at);
+    #[cfg(target_os = "linux")]
+    {
+        let Some(shared) = app.try_state::<crate::Shared>() else { return };
+        let Some(drag) = shared.gate.page_move.lock().unwrap().take() else { return };
+        shared.gate.moving.store(false, Ordering::SeqCst);
+        if let Some(win) = window(app) {
+            if drag.layer { platform::set_layer_overlay(&win, false); }
+            // Restore the size even if monitor discovery fails during unplug.
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let (w, h) = if shared.gate.collapsed.load(Ordering::Relaxed) { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
+            let _ = win.set_size(PhysicalSize::new((w * scale).round() as u32, (h * scale).round() as u32));
+        }
+        if let Some((x, y)) = at.filter(|(x, y)| valid_move_point(*x, *y)) {
+            let scale = drag.monitor.scale_factor();
+            let at = if drag.layer {
+                layer_drop_origin((drag.monitor.position().x, drag.monitor.position().y),
+                    (drag.monitor.size().width, drag.monitor.size().height), scale, (x, y))
+            } else { (x.round() as i32, y.round() as i32) };
+            if drag.layer {
+                // GDK scales each monitor's origin by its own scale. Those
+                // physical rectangles can overlap on mixed-DPI desktops; the
+                // layer's explicit output is authoritative, not a hit-test.
+                if let Ok(monitors) = app.available_monitors() {
+                    if let Some(m) = monitors.iter().find(|m| m.position() == drag.monitor.position()
+                        && m.size() == drag.monitor.size() && m.name() == drag.monitor.name()
+                        && m.scale_factor() == scale) {
+                        finish_move_on_monitor(app, m, at);
+                    }
+                }
+            } else {
+                finish_move_at(app, at, scale);
+            }
+        }
+        let settings = shared.settings.lock().unwrap().clone();
+        apply_geometry(app, &settings.screen, settings.island_spot, shared.gate.collapsed.load(Ordering::Relaxed));
+        refresh_click_through(app, &shared.gate);
+    }
+}
+
+/// The user let go of the island after dragging it: remember where (and on
+/// which display), or dock it at the top again, then place it properly.
+pub fn finish_move(app: &AppHandle) {
+    let Some(win) = window(app) else { return };
+    let Ok(at) = win.outer_position() else { return };
+    finish_move_at(app, (at.x, at.y), win.scale_factor().unwrap_or(1.0));
+}
+
+/// Explicit coordinates also work for layer surfaces, whose outer_position is
+/// not a desktop position on Wayland.
+fn finish_move_at(app: &AppHandle, at: (i32, i32), scale_now: f64) {
+    let Some(shared) = app.try_state::<crate::Shared>() else { return };
+    let Ok(monitors) = app.available_monitors() else { return };
+    let pref = shared.settings.lock().unwrap().screen.clone();
+    // The display under the island's top centre, where the user sees it.
+    let (cx, cy) = (at.0 as f64 + PANEL_W * scale_now / 2.0, at.1 as f64 + 16.0 * scale_now);
+    let Some(m) = monitors.iter().find(|m| monitor_contains(m, cx, cy)).cloned().or_else(|| target_monitor(app, &pref))
+    else {
+        return;
+    };
+    finish_move_on_monitor(app, &m, at);
+}
+
+fn finish_move_on_monitor(app: &AppHandle, m: &Monitor, at: (i32, i32)) {
+    let Some(shared) = app.try_state::<crate::Shared>() else { return };
+    let pref = shared.settings.lock().unwrap().screen.clone();
+    let scale = m.scale_factor();
+    let panel = ((PANEL_W * scale).round() as u32, (PANEL_H * scale).round() as u32);
+    let spot = spot_after_move((m.position().x, m.position().y), (m.size().width, m.size().height), scale, panel, at);
+    let same_display = target_monitor(app, &pref).is_some_and(|t| t.position() == m.position() && t.size() == m.size());
+    let updated = {
+        let mut current = shared.settings.lock().unwrap();
+        if !same_display {
+            current.screen = describe(&m).key();
+        }
+        current.island_spot = spot;
+        if let Err(err) = crate::settings::save(&current) {
+            crate::log::line(format!("could not save settings: {err}"));
+        }
+        current.clone()
+    };
+    let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
+    apply_geometry(app, &updated.screen, updated.island_spot, collapsed);
+    let _ = app.emit("settings-changed", updated);
 }
 
 /// Position, size and scale of the monitor the island lives on. Any change here
@@ -376,6 +784,15 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                             let _ = app.emit_to(WINDOW_LABEL, "screen-changed", ());
                         }
                     }
+                }
+
+                // A drag of the island ends when the button comes up. Checked
+                // before anything else: the cursor doesn't move relative to a
+                // window that moves with it.
+                if platform::CURSOR_POLL && gate.moving.load(Ordering::SeqCst) && !left_button_down() {
+                    gate.moving.store(false, Ordering::SeqCst);
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || finish_move(&handle));
                 }
 
                 let Some(win) = window(&app) else { continue };
@@ -449,6 +866,10 @@ pub fn refresh_click_through(app: &AppHandle, gate: &PollGate) {
         return;
     }
     let Some(win) = window(app) else { return };
+    if gate.moving.load(Ordering::SeqCst) {
+        platform::set_input_region(&win, None);
+        return;
+    }
     let region = if gate.collapsed.load(Ordering::Relaxed) {
         // The wake strip itself, never "the whole window": if the window ever
         // fails to shrink to the strip, the rest of it must not swallow clicks

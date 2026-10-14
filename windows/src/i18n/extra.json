@@ -4054,6 +4054,28 @@
    "ru": "Не удалось скачать: {error}",
    "id": "Tidak dapat mengunduh: {error}"
   },
+  "Hide island": {
+   "zh-Hans": "隐藏岛",
+   "hi": "आइलैंड छिपाएँ",
+   "es": "Ocultar la isla",
+   "ar": "إخفاء الشريط",
+   "fr": "Cacher l'île",
+   "bn": "আইল্যান্ড লুকান",
+   "pt-BR": "Ocultar a ilha",
+   "ru": "Скрыть остров",
+   "id": "Sembunyikan pulau"
+  },
+  "Put the island back at the top": {
+   "zh-Hans": "把岛放回顶部",
+   "hi": "आइलैंड को वापस ऊपर रखें",
+   "es": "Volver a poner la isla arriba",
+   "ar": "إعادة الشريط إلى الأعلى",
+   "fr": "Remettre l'île en haut",
+   "bn": "আইল্যান্ড আবার উপরে রাখুন",
+   "pt-BR": "Colocar a ilha de volta no topo",
+   "ru": "Вернуть остров наверх",
+   "id": "Kembalikan pulau ke atas"
+  },
   "Already {count} pills: remove one first.": {
    "zh-Hans": "已有 {count} 个胶囊：请先移除一个。",
    "hi": "पहले से {count} पिल हैं: पहले एक हटाएँ।",

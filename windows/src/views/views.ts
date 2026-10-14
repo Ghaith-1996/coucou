@@ -46,6 +46,8 @@ export interface ViewActions {
   /** Hands the pending request back to the terminal. */
   answerInTerminal(): void;
   toggleSound(): void;
+  /** The Hide button: the island leaves the screen until called back. */
+  hideIsland(): void;
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
@@ -114,6 +116,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
   const gearBtn = h("button", { title: tl("Settings"), onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: tl("Mute"), onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
+  const hideBtn = h("button", { title: tl("Hide island"), onclick: () => actions.hideIsland() }, svg(ICONS.minus, 14));
   // Plan usage pills (off by default): before the gear, Claude first, as on the Mac.
   const claudePill = buildPlanPill(false);
   const codexPill = buildPlanPill(true);
@@ -129,7 +132,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabHome, tabChat, tabDrop),
-    h("div", { class: "header-actions" }, planPills, gearBtn, soundBtn),
+    h("div", { class: "header-actions" }, planPills, gearBtn, soundBtn, hideBtn),
   );
   const headerActions = el.lastElementChild as HTMLElement;
 
@@ -145,6 +148,8 @@ export function buildHeader(actions: ViewActions): ViewHost {
       gearBtn.append(svg(v === "settings" ? ICONS.gearFill : ICONS.gear, 14));
       clear(soundBtn);
       soundBtn.append(svg(State.settings.soundEnabled ? ICONS.speakerOn : ICONS.speakerOff, 14));
+      // A waiting card stays on screen until it is answered or folded.
+      hideBtn.style.display = State.pendingApproval ? "none" : "";
       syncPlanPills();
       el.style.opacity = v === "confused" ? "0" : "1";
     },

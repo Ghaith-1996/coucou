@@ -4,7 +4,7 @@
 import { Tracked, Spring, clamp } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
-  EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
+  EXPANDED_CORNER, EXPANDED_W, NOTCH_H, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
   islandSize,
   QUESTION_PICKER_H,
@@ -29,6 +29,7 @@ import { IslandStateMachine } from "./fsm";
 import { refreshHookPills } from "./integrations";
 import { DesktopLink } from "./desktop";
 import type { ViewCommand } from "./shortcuts";
+import { IslandMove, type MovePointer } from "./move";
 import { DRAG_THRESHOLD } from "../mochi/desktop-logic";
 
 const BOT_OVERHANG = 40;
@@ -108,6 +109,9 @@ export class Island {
 
   /** Where a press on Mochi started: moving past DRAG_THRESHOLD drags him out. */
   private botPress: { x: number; y: number } | null = null;
+  /** Where a press on the island itself started: past DRAG_THRESHOLD it moves the island. */
+  private islandPress: { x: number; y: number } | null = null;
+  private pageMove: IslandMove | null = null;
 
   /** The next reveal from hidden makes no peek (music starting, as on macOS). */
   private silentReveal = false;
@@ -222,6 +226,7 @@ export class Island {
         void Bridge.approvalDecline(req.requestId);
         this.closeApproval();
       },
+      hideIsland: () => this.hideIsland(),
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
         Sound.setEnabled(State.settings.soundEnabled);
@@ -344,8 +349,17 @@ export class Island {
     };
   }
 
+  /** Restore native state before boot-time events can reveal or expand us. */
+  restoreVisibility(hidden: boolean, collapsed: boolean) {
+    State.userHidden = hidden;
+    this.collapsed = collapsed;
+  }
+
   launch() {
-    this.fsm.launch();
+    // Reloading a hidden page must not replay the greeting; neither may the
+    // greeting replace an alert that arrived while boot registered listeners.
+    if (!State.userHidden && this.fsm.state === "hidden") this.fsm.launch();
+    else if (this.fsm.state !== "coucou") this.desktop.launch();
   }
 
   // ── Mode / view ─────────────────────────────────────────────────────────────
@@ -427,20 +441,55 @@ export class Island {
 
   /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
   alert(view: IslandViewName) {
+    // An alert (an agent asking permission, the tray, a shortcut) brings a
+    // hidden island back: nothing waits unseen behind the Hide button.
+    this.showIsland();
     this.fsm.pinned = State.isPinned;
     this.fsm.forceHome();
     this.expand(view);
   }
 
   reveal() {
+    if (State.userHidden) return;
     this.fsm.reveal();
   }
 
   /** Music started playing: the compact island, without the peek sound (musicReveal). */
   revealSilently() {
+    if (State.userHidden) return;
     this.silentReveal = true;
     this.fsm.reveal();
     this.silentReveal = false;
+  }
+
+  /**
+   * The Hide button: the island leaves the screen until the tray, its
+   * shortcut or an alert brings it back. Never over a waiting card, which
+   * must stay where it can be answered.
+   */
+  hideIsland() {
+    if (State.userHidden || State.pendingApproval) return;
+    this.pageMove?.cancel();
+    State.userHidden = true;
+    this.fsm.pinned = false;
+    this.fsm.forceHidden();
+    void Bridge.setIslandHidden(true);
+    State.notify();
+  }
+
+  /** Explicit reopen: native state wins if a reload left the page out of step. */
+  showIsland() {
+    void Bridge.setIslandHidden(false);
+    if (!State.userHidden) return;
+    State.userHidden = false;
+    State.notify();
+  }
+
+  /** The island was dragged elsewhere or docked again: reshape for it. */
+  placementChanged() {
+    this.updateWindowCollapsed();
+    this.animateGeometry(false);
+    State.notify();
   }
 
   /** Right-click on Mochi: wardrobe open ↔ back to the usual view. */
@@ -672,6 +721,9 @@ export class Island {
     if (State.mode === "expanded" && State.view === "question" && State.pendingApproval?.questions) {
       h = QUESTION_PICKER_H;
     }
+    // Away from the top edge there is nothing to retract into: the hidden
+    // island stays a small pill, there to be found, hovered and dragged.
+    if (State.mode === "hidden" && State.islandFloating) h = NOTCH_H;
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -696,7 +748,8 @@ export class Island {
     const r = this.radius.value;
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
-    this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
+    // A notch hangs from the top edge; a dragged-away island is round all over.
+    this.islandEl.style.borderRadius = State.islandFloating ? `${r}px` : `0 0 ${r}px ${r}px`;
     this.islandEl.style.transform = `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
@@ -723,11 +776,12 @@ export class Island {
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────
 
   private updateWindowCollapsed() {
+    if (this.pageMove?.active) return;
     if (this.collapseTimer != null) {
       window.clearTimeout(this.collapseTimer);
       this.collapseTimer = null;
     }
-    if (State.mode === "hidden") {
+    if (State.mode === "hidden" && !State.islandFloating) {
       // Let the island finish retracting, then drop the window to the wake strip:
       // from there the OS delivers no cursor events, so nothing polls at all.
       this.collapseTimer = window.setTimeout(() => {
@@ -760,6 +814,9 @@ export class Island {
       // A press on Mochi may become a drag out to the desktop.
       if (e.button === 0 && this.isBotHit(e.clientX, e.clientY)) {
         this.botPress = { x: e.clientX, y: e.clientY };
+      } else if (!this.pageMove && e.button === 0 && this.isMoveHandle(e.target)) {
+        // Anywhere else that isn't a control, it may become a drag of the island.
+        this.islandPress = { x: e.clientX, y: e.clientY };
       }
       // Right-click on Mochi opens the wardrobe, and closes it again.
       if (e.button === 2 && this.isBotHit(e.clientX, e.clientY)) {
@@ -785,8 +842,19 @@ export class Island {
 
     // Dragging Mochi out of the island puts him on the desktop.
     window.addEventListener("mousemove", (e) => {
+      if (this.pageMove?.active) return;
       if (this.desktop.carrying) {
         this.desktop.carry(e.clientX, e.clientY);
+        return;
+      }
+      const moving = this.islandPress;
+      if (moving) {
+        if (!(e.buttons & 1)) {
+          this.islandPress = null;
+        } else if (Math.hypot(e.clientX - moving.x, e.clientY - moving.y) > DRAG_THRESHOLD) {
+          this.islandPress = null;
+          void Bridge.islandDragStart();
+        }
         return;
       }
       const press = this.botPress;
@@ -803,6 +871,7 @@ export class Island {
     });
     window.addEventListener("mouseup", (e) => {
       this.botPress = null;
+      this.islandPress = null;
       if (this.desktop.carrying) this.desktop.carryEnd(e.clientX, e.clientY);
     });
 
@@ -831,10 +900,81 @@ export class Island {
    * reported as a cursor far away, which is what the poll would have said.
    */
   followPageCursor() {
-    window.addEventListener("mousemove", (e) => this.onCursor(e.clientX, e.clientY));
+    if (this.pageMove) return;
+    this.wirePageMove();
+    window.addEventListener("mousemove", (e) => {
+      if (!this.pageMove?.active) this.onCursor(e.clientX, e.clientY);
+    });
     window.addEventListener("mouseout", (e) => {
       if (e.relatedTarget == null) this.onCursor(-10_000, -10_000);
     });
+  }
+
+  /** Linux never hands this gesture to a native move loop: pointer capture
+   * keeps release/cancel events ours even outside the island's input region. */
+  private wirePageMove() {
+    const overlay = () => window.innerWidth > PANEL_W + 20 || window.innerHeight > PANEL_H + 20;
+    const sample = (e: PointerEvent): MovePointer => ({
+      clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY, overlay: overlay(),
+    });
+    let press: { id: number; at: MovePointer } | null = null;
+    const move = this.pageMove = new IslandMove({
+      begin: Bridge.islandDragBegin,
+      move: Bridge.islandDragMove,
+      end: Bridge.islandDragEnd,
+      paint: (at, info) => {
+        if (!at || !info) {
+          const id = press?.id;
+          press = null;
+          if (id != null && this.islandEl.hasPointerCapture(id)) this.islandEl.releasePointerCapture(id);
+          this.root.style.width = this.root.style.height = this.root.style.transform = "";
+          this.updateWindowCollapsed();
+          return;
+        }
+        // Keep the normal 720x320 panel layout inside the temporary output-wide
+        // surface. Before its configure arrives, offsets are still panel-local.
+        this.root.style.width = `${PANEL_W}px`;
+        this.root.style.height = `${PANEL_H}px`;
+        this.root.style.transform = `translate(${at.x - (overlay() ? 0 : info.x)}px, ${at.y - (overlay() ? 0 : info.y)}px)`;
+      },
+    });
+    this.islandEl.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !e.isPrimary || move.active || this.isBotHit(e.clientX, e.clientY) || !this.isMoveHandle(e.target)) return;
+      try { this.islandEl.setPointerCapture(e.pointerId); } catch { return; }
+      press = { id: e.pointerId, at: sample(e) };
+    });
+    window.addEventListener("pointermove", (e) => {
+      if (press?.id !== e.pointerId) return;
+      const at = sample(e);
+      if (!(e.buttons & 1)) {
+        move.finish(at);
+        press = null;
+        return;
+      }
+      if (move.active) { move.update(at); return; }
+      if (Math.hypot(at.clientX - press.at.clientX, at.clientY - press.at.clientY) <= DRAG_THRESHOLD) return;
+      if (this.collapseTimer != null) window.clearTimeout(this.collapseTimer);
+      this.collapseTimer = null;
+      this.fsm.mouseEntered();
+      move.start(press.at, at);
+    });
+    window.addEventListener("pointerup", (e) => {
+      if (press?.id !== e.pointerId) return;
+      move.finish(sample(e));
+      press = null; // The implicit lostpointercapture after a normal drop is harmless.
+    });
+    const cancel = () => {
+      const id = press?.id;
+      press = null;
+      if (id != null && this.islandEl.hasPointerCapture(id)) this.islandEl.releasePointerCapture(id);
+      move.cancel();
+    };
+    this.islandEl.addEventListener("lostpointercapture", cancel);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancel);
+    window.addEventListener("pagehide", cancel);
+    window.addEventListener("keydown", e => { if (e.key === "Escape") cancel(); });
+    window.addEventListener("resize", () => move.paint());
   }
 
   /**
@@ -847,8 +987,24 @@ export class Island {
     this.pointerInside = inside;
   }
 
+  /**
+   * Where a press may move the island: the compact or hidden pill, or the
+   * open island's header — never a button, a field or a link.
+   */
+  private isMoveHandle(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    if (target.closest("button, input, textarea, select, a, [contenteditable], [role=button], .plan-pills")) return false;
+    return State.mode !== "expanded" || target.closest("#header") != null;
+  }
+
   /** Cursor in window-logical coordinates. */
   onCursor(x: number, y: number) {
+    if (this.pageMove?.active) return;
+    // Put away by the Hide button: nothing under the pointer is the island.
+    if (State.userHidden) {
+      x = -10_000;
+      y = -10_000;
+    }
     // WebKitGTK can deliver a mousemove after the pointer has left the layer
     // surface; trusting it re-enters the island and the auto-close never runs.
     if (this.pointerInside === false) {

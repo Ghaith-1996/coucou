@@ -25,6 +25,11 @@ pub struct Settings {
     pub main_pill: String,
     /// "primary" = the main display, "cursor" = whichever display the mouse is on.
     pub screen: String,
+    /// Where the user dragged the island to on that display: its window's
+    /// top-left corner, in logical pixels from the display's top-left. None =
+    /// at the top centre, like a notch. Owned by Rust (island.rs): only a drag
+    /// or "Put the island back at the top" changes it.
+    pub island_spot: Option<IslandSpot>,
     pub autostart: bool,
     pub hooks_installed: bool,
     /// Claude model used by the chat. Changeable in the settings window.
@@ -102,6 +107,12 @@ pub struct Settings {
     pub voice_model: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct IslandSpot {
+    pub x: f64,
+    pub y: f64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DesktopMochiPref {
@@ -139,6 +150,7 @@ impl Default for Settings {
             ],
             main_pill: "integration_claude".into(),
             screen: "primary".into(),
+            island_spot: None,
             autostart: false,
             hooks_installed: false,
             model: default_model(),
@@ -427,6 +439,7 @@ mod tests {
   "activeIntegrations": ["integration_notion"],
   "mainPill": "agent_cursor",
   "screen": "cursor",
+  "islandSpot": { "x": 400.0, "y": 250.5 },
   "autostart": true,
   "hooksInstalled": true,
   "model": "some-model",
@@ -717,6 +730,7 @@ mod tests {
             ("activeIntegrations", json!("integration_n8n")),
             ("mainPill", json!(["agent_cursor"])),
             ("screen", Value::Null),
+            ("islandSpot", json!({ "x": "left" })),
             ("shortcuts", json!("Ctrl+Alt+A")),
         ] {
             let loaded = parse(&custom_with(key, Some(wrong)))
@@ -935,6 +949,7 @@ mod tests {
                 "activeIntegrations",
                 "mainPill",
                 "screen",
+                "islandSpot",
                 "autostart",
                 "hooksInstalled",
                 "model",

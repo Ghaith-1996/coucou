@@ -110,6 +110,8 @@ export interface Settings {
   mainPill: string;
   /** "primary", "cursor", or `at:<x>,<y>` for one display (logical origin). */
   screen: string;
+  /** Where the user dragged the island on its display; null = top centre. Owned by Rust. */
+  islandSpot?: { x: number; y: number } | null;
   autostart: boolean;
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
@@ -175,6 +177,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ],
   mainPill: DEFAULT_MAIN_PILL,
   screen: "primary",
+  islandSpot: null,
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
@@ -215,6 +218,14 @@ class AppState {
 
   isPinned = false;
   paused = false;
+  /** The Hide button put the island away: nothing shows until the tray, its
+   *  shortcut or an alert (an agent asking permission) brings it back. */
+  userHidden = false;
+
+  /** Dragged off the top centre: a free-standing pill, not a notch. */
+  get islandFloating(): boolean {
+    return this.settings.islandSpot != null;
+  }
 
   uploadProgress = 0;
   uploadDuration = 2.4;

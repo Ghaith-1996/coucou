@@ -360,7 +360,7 @@ fn gtk_window_ptr(win: &gtk::ApplicationWindow) -> *mut gtk::ffi::GtkWindow {
 /// WebKitGTK has no competing drop target to remove.
 pub fn unblock_webview_drops(_app: &AppHandle) {}
 
-/// Turns the island into an overlay surface on the top edge that never takes
+/// Turns the island into an overlay surface that never takes
 /// the keyboard. Must run before the window is first shown: a layer surface
 /// cannot be made out of a window the compositor already knows.
 ///
@@ -409,8 +409,9 @@ pub fn make_non_activating(win: &WebviewWindow) {
         layer::gtk_layer_init_for_window(ptr);
         layer::gtk_layer_set_namespace(ptr, c"coucou".as_ptr());
         layer::gtk_layer_set_layer(ptr, layer::LAYER_OVERLAY);
-        // Top edge only: the compositor centres the surface horizontally.
+        // Geometry supplies both margins, including the centred docked position.
         layer::gtk_layer_set_anchor(ptr, layer::EDGE_TOP, 1);
+        layer::gtk_layer_set_anchor(ptr, layer::EDGE_LEFT, 1);
         // -1: sit right against the screen edge, over any top panel, the way
         // the Mac island sits in the notch.
         layer::gtk_layer_set_exclusive_zone(ptr, -1);
@@ -454,7 +455,7 @@ thread_local! {
 /// the page uses. While the island is hidden the timer is removed altogether
 /// (set_pointer_watch), so a hidden island costs nothing.
 static POINTER_WIN: std::sync::OnceLock<WebviewWindow> = std::sync::OnceLock::new();
-static WATCH_WANTED: AtomicBool = AtomicBool::new(true);
+static WATCH_WANTED: AtomicBool = AtomicBool::new(false);
 static WATCH_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn watch_pointer_leave(win: &WebviewWindow) {
@@ -462,7 +463,8 @@ fn watch_pointer_leave(win: &WebviewWindow) {
     start_pointer_watch();
 }
 
-/// Starts or parks the pointer watch. Called with the island's collapsed state;
+/// Starts or parks the pointer watch. Active only while the island is both
+/// natively visible and not collapsed (including after page reloads);
 /// safe from any thread (the timer itself lives on the GTK main loop).
 pub fn set_pointer_watch(active: bool) {
     WATCH_WANTED.store(active, Ordering::Relaxed);
@@ -481,7 +483,9 @@ fn start_pointer_watch() {
         WATCH_RUNNING.store(false, Ordering::Relaxed);
         return;
     };
-    let inside = std::cell::Cell::new(false);
+    // On restart, even an initial "outside" must reach the page: Hide may
+    // have parked us while it still considered the pointer inside the island.
+    let inside = std::cell::Cell::new(None);
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         if !WATCH_WANTED.load(Ordering::Relaxed) {
             WATCH_RUNNING.store(false, Ordering::Relaxed);
@@ -496,7 +500,7 @@ fn start_pointer_watch() {
                 Some(under?.toplevel() == ours.toplevel())
             })
             .unwrap_or(false);
-        if inside.replace(now_inside) != now_inside {
+        if pointer_sample_changed(&inside, now_inside) {
             // The page gates its own (late, sometimes stale) mouse events on
             // this state, so a mousemove queued before the pointer left cannot
             // pull the island back to "inside".
@@ -507,6 +511,27 @@ fn start_pointer_watch() {
         }
         gtk::glib::ControlFlow::Continue
     });
+}
+
+fn pointer_sample_changed(previous: &std::cell::Cell<Option<bool>>, inside: bool) -> bool {
+    previous.replace(Some(inside)) != Some(inside)
+}
+
+#[cfg(test)]
+mod pointer_watch_tests {
+    use super::pointer_sample_changed;
+    use std::cell::Cell;
+
+    #[test]
+    fn restarting_publishes_initial_outside_as_well_as_inside_then_only_edges() {
+        for initial in [false, true] {
+            let previous = Cell::new(None);
+            assert!(pointer_sample_changed(&previous, initial));
+            assert!(!pointer_sample_changed(&previous, initial));
+            assert!(pointer_sample_changed(&previous, !initial));
+            assert!(!pointer_sample_changed(&previous, !initial));
+        }
+    }
 }
 
 /// Puts the layer surface on the display whose logical origin is (`x`, `y`).
@@ -531,6 +556,29 @@ pub fn pin_to_monitor(win: &WebviewWindow, x: i32, y: i32) {
     let Some(monitor) = monitor else { return };
     let mon_ptr: *mut gtk::gdk::ffi::GdkMonitor = monitor.to_glib_none().0;
     unsafe { layer::gtk_layer_set_monitor(gtk_window_ptr(&gw), mon_ptr) };
+}
+
+/// The actual island surface, rather than whether layer-shell could be used.
+pub fn island_move_mode() -> super::DesktopMode {
+    if LAYER_SURFACE.load(Ordering::Relaxed) {
+        super::DesktopMode::Layer
+    } else if desktop_mode() == super::DesktopMode::Window {
+        super::DesktopMode::Window
+    } else {
+        // Native Wayland toplevels cannot restore an absolute saved position.
+        super::DesktopMode::Off
+    }
+}
+
+/// Physical desktop coordinates for X11; monitor-relative logical margins for
+/// layer-shell. A layer surface ignores GtkWindow::move / Tauri set_position.
+pub fn place_island(win: &WebviewWindow, at: (i32, i32), monitor: (i32, i32), offset: (f64, f64)) {
+    if LAYER_SURFACE.load(Ordering::Relaxed) {
+        pin_to_monitor(win, monitor.0, monitor.1);
+        set_layer_margins(win, offset.0, offset.1);
+    } else {
+        let _ = win.set_position(tauri::PhysicalPosition::new(at.0, at.1));
+    }
 }
 
 /// Temporarily allow keyboard focus so a text field inside the island can be

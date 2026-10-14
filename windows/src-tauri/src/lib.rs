@@ -69,10 +69,15 @@ pub struct BootInfo {
     /// False where the OS has no global cursor (Wayland): the page then reports
     /// the cursor from its own mouse events.
     cursor_poll: bool,
+    /// Native visibility and window shape survive a page reload.
+    island_hidden: bool,
+    island_collapsed: bool,
 }
 
 #[tauri::command]
 fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
+    // Reloading the page must not leave a former captured drag's overlay up.
+    island::end_page_move(&app, None);
     let mut settings = shared.settings.lock().unwrap().clone();
     // The real state of ~/.claude/settings.json wins over whatever we stored.
     let hooks_status = hooks::status();
@@ -85,6 +90,8 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
         cursor_poll: platform::CURSOR_POLL,
+        island_hidden: shared.gate.user_hidden.load(Ordering::Relaxed),
+        island_collapsed: shared.gate.collapsed.load(Ordering::Relaxed),
     }
 }
 
@@ -98,6 +105,8 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         // Where Mochi sits on the desktop is desktop.rs's to say, not a webview's.
         let mut settings = settings.clone();
         settings.desktop_mochi = current.desktop_mochi.clone();
+        // Where the island was dragged to is island.rs's (a drag, or the tray).
+        settings.island_spot = current.island_spot;
         // Same for the phone link: only its own commands turn it on or off.
         settings.phone_link = current.phone_link;
         settings.phone_chat = current.phone_chat;
@@ -126,8 +135,9 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         }
     }
     if screen_changed {
+        island::end_page_move(&app, None);
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-        island::apply_geometry(&app, &settings.screen, collapsed);
+        island::apply_geometry(&app, &settings.screen, settings.island_spot, collapsed);
     }
     integrations::settings_saved(&app, &settings.active_integrations);
     spotify::sync(&app, &settings.active_integrations);
@@ -163,13 +173,13 @@ fn language_changed(app: &AppHandle) {
 /// cursor poll; anything else → full panel and 60 Hz polling.
 #[tauri::command]
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
-    let pref = shared.settings.lock().unwrap().screen.clone();
+    if collapsed { island::end_page_move(&app, None); }
+    let (pref, spot) = place_pref(&shared);
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    island::apply_geometry(&app, &pref, spot, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
-    shared.gate.set_active(!collapsed);
-    platform::set_pointer_watch(!collapsed);
+    shared.gate.sync_island_polling();
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
@@ -193,9 +203,87 @@ fn focus_window(app: AppHandle, focused: bool) {
 
 #[tauri::command]
 fn reposition(app: AppHandle, shared: State<Shared>) {
-    let pref = shared.settings.lock().unwrap().screen.clone();
+    let (pref, spot) = place_pref(&shared);
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    island::apply_geometry(&app, &pref, spot, collapsed);
+}
+
+/// The display the island lives on, and where on it the user put it.
+fn place_pref(shared: &Shared) -> (String, Option<settings::IslandSpot>) {
+    let settings = shared.settings.lock().unwrap();
+    (settings.screen.clone(), settings.island_spot)
+}
+
+/// A press on the island became a drag: the OS moves the window with the
+/// pointer. On Windows the cursor poll saves where it ends (island::finish_move).
+#[tauri::command]
+fn island_drag_start(app: AppHandle, shared: State<Shared>) {
+    let Some(win) = island::window(&app) else { return };
+    island::start_move(
+        &shared.gate,
+        platform::CURSOR_POLL,
+        platform::left_button_down,
+        || win.start_dragging().is_ok(),
+    );
+}
+
+/// Linux pointer capture owns the gesture and supplies its explicit drop.
+#[tauri::command]
+fn island_drag_begin(app: AppHandle) -> Option<island::MoveInfo> {
+    island::begin_page_move(&app)
+}
+
+#[tauri::command]
+fn island_drag_move(app: AppHandle, x: f64, y: f64) -> Result<(), String> {
+    island::update_page_move(&app, x, y)
+}
+
+#[tauri::command]
+fn island_drag_end(app: AppHandle, at: Option<(f64, f64)>) {
+    island::end_page_move(&app, at);
+}
+
+/// Back to the top centre of its display (the tray's "Put the island back at the top").
+pub fn island_dock(app: &AppHandle) {
+    island::end_page_move(app, None);
+    let Some(shared) = app.try_state::<Shared>() else { return };
+    let updated = {
+        let mut current = shared.settings.lock().unwrap();
+        current.island_spot = None;
+        if let Err(err) = settings::save(&current) {
+            log::line(format!("could not save settings: {err}"));
+        }
+        current.clone()
+    };
+    let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
+    island::apply_geometry(app, &updated.screen, None, collapsed);
+    let _ = app.emit("settings-changed", updated);
+}
+
+/// The island's Hide button (true), or what brings it back (false): the
+/// tray, its shortcut, or an alert such as an agent's permission request.
+/// Hidden, the window is gone from the screen and the cursor poll parked.
+#[tauri::command]
+fn set_island_hidden(app: AppHandle, shared: State<Shared>, hidden: bool) {
+    let Some(win) = island::window(&app) else { return };
+    // Explicit reopen requests can arrive from a freshly reloaded page. Native
+    // state is authoritative; already-visible alerts must not remap/reposition.
+    if shared.gate.user_hidden.load(Ordering::Relaxed) == hidden { return; }
+    if hidden {
+        shared.gate.user_hidden.store(true, Ordering::Relaxed);
+        island::end_page_move(&app, None);
+        shared.gate.sync_island_polling();
+        let _ = win.hide();
+    } else {
+        // Keep the hidden flag on failure so the next explicit reopen retries.
+        if win.show().is_err() { return; }
+        shared.gate.user_hidden.store(false, Ordering::Relaxed);
+        let (pref, spot) = place_pref(&shared);
+        let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
+        island::apply_geometry(&app, &pref, spot, collapsed);
+        island::refresh_click_through(&app, &shared.gate);
+        shared.gate.sync_island_polling();
+    }
 }
 
 /// The displays the island can be pinned to, for Settings.
@@ -694,6 +782,11 @@ pub fn run() {
             save_settings,
             set_system_languages,
             set_collapsed,
+            island_drag_start,
+            island_drag_begin,
+            island_drag_move,
+            island_drag_end,
+            set_island_hidden,
             set_island_rect,
             focus_window,
             reposition,
@@ -825,7 +918,7 @@ pub fn run() {
                 platform::make_non_activating(&win);
                 #[cfg(windows)]
                 webview_drop::install(&handle);
-                island::apply_geometry(&handle, &loaded.screen, false);
+                island::apply_geometry(&handle, &loaded.screen, loaded.island_spot, false);
                 let _ = win.show();
             }
             gate.collapsed.store(false, Ordering::Relaxed);
@@ -834,7 +927,7 @@ pub fn run() {
             if !platform::CURSOR_POLL {
                 island::refresh_click_through(&handle, &gate);
             }
-            gate.set_active(true);
+            gate.sync_island_polling();
             island::spawn_cursor_poll(handle.clone(), gate.clone());
 
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));

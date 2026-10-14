@@ -31,6 +31,7 @@ async function main() {
   const boot = await Bridge.boot();
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
+    island.restoreVisibility(boot.islandHidden, boot.islandCollapsed);
   }
   // A language change redraws the island in place: the texts given as tl(…)
   // relabel themselves (views/dom.ts) and the views redraw the rest on this
@@ -75,7 +76,15 @@ async function main() {
       case "pause":
         setPaused(!State.paused);
         if (State.paused) island.fsm.forceHidden();
-        else island.reveal();
+        else {
+          island.showIsland();
+          island.reveal();
+        }
+        break;
+      case "dock":
+        // Rust has put it back at the top: shown, if it was hidden.
+        island.showIsland();
+        island.reveal();
         break;
     }
   });
@@ -90,7 +99,10 @@ async function main() {
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
     const previousMain = State.mainPillId;
+    const wasFloating = State.islandFloating;
     State.settings = { ...State.settings, ...s };
+    // Dragged away from the top, or docked there again.
+    if (State.islandFloating !== wasFloating) island.placementChanged();
     applyLanguage();
     island.applySettings();
     State.loadIntegrationTasks();

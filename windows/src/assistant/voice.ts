@@ -10,12 +10,19 @@
 //     card, closing the island or hiding it cancels the capture. The card
 //     keeps the island pinned meanwhile, so the auto-close never cuts a
 //     capture short (the island's 15 s default is under the 30 s limit).
+//
+// A transcript that is a pill command (intents.ts, the Mac's parser) is shown
+// as that change on the card, next to "Use in chat"; doing it is a `pill-set`
+// action Rust's policy decides, applied the way Settings applies it.
 
 import { Bridge, onEvent } from "../core/bridge";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
+import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
 import { State } from "../core/state";
-import { VOICE_EVENT, parseVoiceEvent, succeededReceipt, type VoiceEvent } from "./contracts";
+import { CONTRACT_VERSION, VOICE_EVENT, parseVoiceEvent, succeededReceipt, type VoiceEvent } from "./contracts";
+import { parseTranscript } from "./intents";
+import { planPills, sameList, type Declared, type PillPlan } from "./pill-command";
 
 /** What voice needs from the island. */
 export interface VoiceHost {
@@ -26,6 +33,8 @@ export interface VoiceHost {
   setPinned(on: boolean): void;
   /** Opens the chat with `text` in its field, unsent. True when it is there. */
   showChatDraft(text: string): boolean;
+  /** Shows these pills and saves them, as Settings does. True when they are what it shows. */
+  applyPills(next: Declared): boolean;
 }
 
 /** How long an error stays on the card before it goes by itself. */
@@ -57,6 +66,18 @@ let starting: {
 export const Voice = {
   /** The latest event of the current capture; null when there is none. */
   event: null as VoiceEvent | null,
+  /** Derive the preview from current settings, including initially blocked plans.
+   * Render/keyboard listeners see the same up-to-date plan regardless of their
+   * subscription order; reading it never executes an action or renews the TTL.
+   */
+  get command(): PillPlan | null {
+    const event = this.event;
+    if (event?.state !== "preview" || event.simulated) return null;
+    return planPills(
+      parseTranscript(event.transcript ?? "", availablePills(HOST_OS)),
+      sanitizeDeclared(State.settings, HOST_OS), HOST_OS,
+    );
+  },
 
   get active(): boolean {
     const s = this.event?.state;
@@ -114,7 +135,7 @@ export async function voiceShortcut() {
   captureId = id;
   // Keep the newest real state, especially an immediate error or idle. Only
   // synthesize listening when Rust has not sent an event for this capture.
-  accept(pending.events.get(id) ?? { v: 1, captureId: id, state: "listening", level: 0, elapsedMs: 0 });
+  accept(pending.events.get(id) ?? { v: CONTRACT_VERSION, captureId: id, state: "listening", level: 0, elapsedMs: 0 });
   if (pending.stop && Voice.event?.state === "listening") void Bridge.voiceStop(id);
 }
 
@@ -156,6 +177,49 @@ export async function voiceUse() {
   } catch {
     if (requestGeneration !== generation) return;
     // Expired or refused: nothing was done.
+    end();
+    Sound.play("error");
+  }
+}
+
+/** Do it: the pill command on the card becomes a `pill-set` Rust decides. */
+export async function voiceDo() {
+  const current = Voice.event;
+  if (current?.state !== "preview" || current.simulated || !host) return;
+  // The preview may have been open while Settings changed. Apply the spoken
+  // intent to today's declaration, never the whole set saved in the preview.
+  const before = sanitizeDeclared(State.settings, HOST_OS);
+  const command = planPills(parseTranscript(current.transcript ?? "", availablePills(HOST_OS)), before, HOST_OS);
+  if (!command?.ok) {
+    State.notify();
+    return;
+  }
+  const requestGeneration = generation;
+  try {
+    const actionId = await Bridge.voiceAct(current.captureId, "pill-set", command.next);
+    if (generation !== requestGeneration) {
+      void Bridge.actionReceipt({ actionId, outcome: "cancelled", errorCode: "cancelled" });
+      return;
+    }
+    const now = sanitizeDeclared(State.settings, HOST_OS);
+    if (now.mainPill !== before.mainPill || !sameList(now.activeIntegrations, before.activeIntegrations)) {
+      // Rust approved these exact arguments. A newer declaration means they
+      // are stale again; leave that change intact and report no effect.
+      end(false);
+      void Bridge.actionReceipt({ actionId, outcome: "cancelled", errorCode: "cancelled" });
+      return;
+    }
+    end(false);
+    const shown = host.applyPills(command.next);
+    host.alert("overview");
+    Sound.play(shown ? "approve" : "error");
+    void Bridge.actionReceipt(
+      shown
+        ? succeededReceipt(actionId, "settings:pills-shown")
+        : { actionId, outcome: "failed", errorCode: "unverified" },
+    );
+  } catch {
+    if (generation !== requestGeneration) return;
     end();
     Sound.play("error");
   }

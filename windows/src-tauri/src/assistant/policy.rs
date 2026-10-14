@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use super::contracts::*;
 
+/// Pills the island shows besides the main one (MAX_DECLARED in pills.ts).
+pub const MAX_ACTIVE_PILLS: usize = 4;
+
 /// Longest text a draft or an insertion may carry.
 pub const MAX_TEXT_CHARS: usize = 4000;
 pub const MAX_QUESTION_CHARS: usize = 1000;
@@ -53,6 +56,9 @@ pub fn decide(action: &AssistantAction, now_ms: u64) -> Verdict {
     let decision = match action.kind {
         // Stays inside Coucou and is never sent: the user still has to press Send.
         ActionKind::ChatDraft => Decision::Allow,
+        // Coucou's own pills, exactly what Settings → Active pills does, from
+        // a click on the card that shows the change. Undone the same way.
+        ActionKind::PillSet => Decision::Allow,
         // Anything that reaches outside Coucou is confirmed first.
         ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::AskRegion => Decision::Ask,
     };
@@ -67,6 +73,14 @@ pub fn validate(kind: ActionKind, args: &serde_json::Value) -> Option<ValidArgs>
         ActionKind::ChatDraft => {
             let a: ChatDraftArgs = serde_json::from_value(args).ok()?;
             text_ok(&a.text, MAX_TEXT_CHARS).then_some(ValidArgs::ChatDraft(a))?
+        }
+        ActionKind::PillSet => {
+            let a: PillSetArgs = serde_json::from_value(args).ok()?;
+            let mut seen = std::collections::HashSet::new();
+            (pill_id_ok(&a.main_pill)
+                && a.active_integrations.len() <= MAX_ACTIVE_PILLS
+                && a.active_integrations.iter().all(|id| pill_id_ok(id) && *id != a.main_pill && seen.insert(id)))
+            .then_some(ValidArgs::PillSet(a))?
         }
         ActionKind::InsertText => {
             let a: InsertTextArgs = serde_json::from_value(args).ok()?;
@@ -96,6 +110,12 @@ fn text_ok(text: &str, max_chars: usize) -> bool {
     !text.trim().is_empty()
         && text.chars().count() <= max_chars
         && text.chars().all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+}
+
+/// A pill id as the catalog writes them: `integration_github`, `agent_claude-desktop`.
+fn pill_id_ok(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
 }
 
 /// An id from the user's list: lowercase letters, digits, `.`, `_`, `-`.

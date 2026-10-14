@@ -4043,17 +4043,6 @@
    "ru": "Без модели голосовая карточка показывает имитацию расшифровки.",
    "id": "Tanpa model, kartu suara menampilkan transkrip simulasi."
   },
-  "Download the model ({size})": {
-   "zh-Hans": "下载模型（{size}）",
-   "hi": "मॉडल डाउनलोड करें ({size})",
-   "es": "Descargar el modelo ({size})",
-   "ar": "تنزيل النموذج ({size})",
-   "fr": "Télécharger le modèle ({size})",
-   "bn": "মডেল ডাউনলোড করুন ({size})",
-   "pt-BR": "Baixar o modelo ({size})",
-   "ru": "Скачать модель ({size})",
-   "id": "Unduh model ({size})"
-  },
   "Could not download: {error}": {
    "zh-Hans": "无法下载：{error}",
    "hi": "डाउनलोड नहीं हो सका: {error}",
@@ -4086,6 +4075,160 @@
    "pt-BR": "Colocar a ilha de volta no topo",
    "ru": "Вернуть остров наверх",
    "id": "Kembalikan pulau ke atas"
+  },
+  "Already {count} pills: remove one first.": {
+   "zh-Hans": "已有 {count} 个胶囊：请先移除一个。",
+   "hi": "पहले से {count} पिल हैं: पहले एक हटाएँ।",
+   "es": "Ya hay {count} píldoras: quita una primero.",
+   "ar": "توجد {count} حبات بالفعل: أزل واحدة أولًا.",
+   "fr": "Déjà {count} pilules : retirez-en une d'abord.",
+   "bn": "ইতিমধ্যে {count}টি পিল আছে: আগে একটি সরান।",
+   "pt-BR": "Já há {count} pílulas: remova uma primeiro.",
+   "ru": "Уже {count} пилюли: сначала уберите одну.",
+   "id": "Sudah ada {count} pil: hapus satu dulu."
+  },
+  "{name} is already in the island.": {
+   "zh-Hans": "{name} 已在岛中。",
+   "hi": "{name} पहले से आइलैंड में है।",
+   "es": "{name} ya está en la isla.",
+   "ar": "{name} موجود بالفعل في الشريط.",
+   "fr": "{name} est déjà dans l'île.",
+   "bn": "{name} ইতিমধ্যে আইল্যান্ডে আছে।",
+   "pt-BR": "{name} já está na ilha.",
+   "ru": "{name} уже на острове.",
+   "id": "{name} sudah ada di pulau."
+  },
+  "{name} isn't in the island.": {
+   "zh-Hans": "{name} 不在岛中。",
+   "hi": "{name} आइलैंड में नहीं है।",
+   "es": "{name} no está en la isla.",
+   "ar": "{name} غير موجود في الشريط.",
+   "fr": "{name} n'est pas dans l'île.",
+   "bn": "{name} আইল্যান্ডে নেই।",
+   "pt-BR": "{name} não está na ilha.",
+   "ru": "{name} нет на острове.",
+   "id": "{name} tidak ada di pulau."
+  },
+  "{name} can't be the main pill.": {
+   "zh-Hans": "{name} 不能作为主胶囊。",
+   "hi": "{name} मुख्य पिल नहीं बन सकता।",
+   "es": "{name} no puede ser la píldora principal.",
+   "ar": "لا يمكن أن يكون {name} الحبة الرئيسية.",
+   "fr": "{name} ne peut pas être la pilule principale.",
+   "bn": "{name} প্রধান পিল হতে পারে না।",
+   "pt-BR": "{name} não pode ser a pílula principal.",
+   "ru": "{name} не может быть главной пилюлей.",
+   "id": "{name} tidak bisa menjadi pil utama."
+  },
+  "Add {names}": {
+   "zh-Hans": "添加 {names}",
+   "hi": "{names} जोड़ें",
+   "es": "Añadir {names}",
+   "ar": "إضافة {names}",
+   "fr": "Ajouter {names}",
+   "bn": "{names} যোগ করুন",
+   "pt-BR": "Adicionar {names}",
+   "ru": "Добавить {names}",
+   "id": "Tambahkan {names}"
+  },
+  "Remove {names}": {
+   "zh-Hans": "移除 {names}",
+   "hi": "{names} हटाएँ",
+   "es": "Quitar {names}",
+   "ar": "إزالة {names}",
+   "fr": "Retirer {names}",
+   "bn": "{names} সরান",
+   "pt-BR": "Remover {names}",
+   "ru": "Убрать {names}",
+   "id": "Hapus {names}"
+  },
+  "Make {name} the main pill": {
+   "zh-Hans": "将 {name} 设为主胶囊",
+   "hi": "{name} को मुख्य पिल बनाएँ",
+   "es": "Hacer de {name} la píldora principal",
+   "ar": "اجعل {name} الحبة الرئيسية",
+   "fr": "Faire de {name} la pilule principale",
+   "bn": "{name}-কে প্রধান পিল করুন",
+   "pt-BR": "Tornar {name} a pílula principal",
+   "ru": "Сделать {name} главной пилюлей",
+   "id": "Jadikan {name} pil utama"
+  },
+  "Replace {old} with {new}": {
+   "zh-Hans": "用 {new} 替换 {old}",
+   "hi": "{old} की जगह {new} रखें",
+   "es": "Reemplazar {old} por {new}",
+   "ar": "استبدال {old} بـ {new}",
+   "fr": "Remplacer {old} par {new}",
+   "bn": "{old}-এর জায়গায় {new} দিন",
+   "pt-BR": "Substituir {old} por {new}",
+   "ru": "Заменить {old} на {new}",
+   "id": "Ganti {old} dengan {new}"
+  },
+  "Keep only {names}": {
+   "zh-Hans": "只保留 {names}",
+   "hi": "केवल {names} रखें",
+   "es": "Dejar solo {names}",
+   "ar": "الإبقاء على {names} فقط",
+   "fr": "Garder seulement {names}",
+   "bn": "শুধু {names} রাখুন",
+   "pt-BR": "Manter só {names}",
+   "ru": "Оставить только {names}",
+   "id": "Simpan hanya {names}"
+  },
+  "Download ({size})": {
+   "zh-Hans": "下载（{size}）",
+   "hi": "डाउनलोड करें ({size})",
+   "es": "Descargar ({size})",
+   "ar": "تنزيل ({size})",
+   "fr": "Télécharger ({size})",
+   "bn": "ডাউনলোড করুন ({size})",
+   "pt-BR": "Baixar ({size})",
+   "ru": "Скачать ({size})",
+   "id": "Unduh ({size})"
+  },
+  "Use this model": {
+   "zh-Hans": "使用此模型",
+   "hi": "यह मॉडल इस्तेमाल करें",
+   "es": "Usar este modelo",
+   "ar": "استخدام هذا النموذج",
+   "fr": "Utiliser ce modèle",
+   "bn": "এই মডেল ব্যবহার করুন",
+   "pt-BR": "Usar este modelo",
+   "ru": "Использовать эту модель",
+   "id": "Gunakan model ini"
+  },
+  "Fastest. Fine for short commands, makes more mistakes.": {
+   "zh-Hans": "最快。适合简短指令，但错误较多。",
+   "hi": "सबसे तेज़। छोटे कमांड के लिए ठीक, पर गलतियाँ ज़्यादा।",
+   "es": "El más rápido. Sirve para órdenes cortas, pero se equivoca más.",
+   "ar": "الأسرع. مناسب للأوامر القصيرة، لكنه يخطئ أكثر.",
+   "fr": "Le plus rapide. Bien pour les commandes courtes, mais fait plus d'erreurs.",
+   "bn": "সবচেয়ে দ্রুত। ছোট কমান্ডের জন্য ঠিক আছে, তবে ভুল বেশি করে।",
+   "pt-BR": "O mais rápido. Bom para comandos curtos, mas erra mais.",
+   "ru": "Самая быстрая. Подходит для коротких команд, но ошибается чаще.",
+   "id": "Paling cepat. Cukup untuk perintah pendek, tapi lebih sering salah."
+  },
+  "The most accurate, and the slowest.": {
+   "zh-Hans": "最准确，也最慢。",
+   "hi": "सबसे सटीक, और सबसे धीमा।",
+   "es": "El más preciso, y el más lento.",
+   "ar": "الأدق، والأبطأ.",
+   "fr": "Le plus précis, et le plus lent.",
+   "bn": "সবচেয়ে নির্ভুল, এবং সবচেয়ে ধীর।",
+   "pt-BR": "O mais preciso, e o mais lento.",
+   "ru": "Самая точная и самая медленная.",
+   "id": "Paling akurat, dan paling lambat."
+  },
+  "Much more accurate, but much slower without a graphics card.": {
+   "zh-Hans": "准确得多，但没有显卡时会慢很多。",
+   "hi": "कहीं ज़्यादा सटीक, पर ग्राफ़िक्स कार्ड के बिना बहुत धीमा।",
+   "es": "Mucho más preciso, pero mucho más lento sin tarjeta gráfica.",
+   "ar": "أدق بكثير، لكنه أبطأ بكثير من دون بطاقة رسومات.",
+   "fr": "Bien plus précis, mais beaucoup plus lent sans carte graphique.",
+   "bn": "অনেক বেশি নির্ভুল, তবে গ্রাফিক্স কার্ড ছাড়া অনেক ধীর।",
+   "pt-BR": "Muito mais preciso, mas bem mais lento sem placa de vídeo.",
+   "ru": "Гораздо точнее, но без видеокарты намного медленнее.",
+   "id": "Jauh lebih akurat, tapi jauh lebih lambat tanpa kartu grafis."
   }
  }
 }

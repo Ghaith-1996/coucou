@@ -43,11 +43,11 @@ pub const LEVEL_EVERY: Duration = Duration::from_millis(100);
 pub const PREVIEW_TTL: Duration = Duration::from_secs(120);
 /// An RMS below this over every 50 ms window is silence.
 pub const SILENCE_RMS: f32 = 0.004;
-/// How long the chat draft action stays valid once the user pressed Use.
+/// How long an action stays valid once the user pressed its button.
 pub const DRAFT_TTL_MS: u64 = 30_000;
 
-/// The app's transcriber: whisper.cpp once its model is installed, the
-/// simulated one until then (and again if the model is deleted).
+/// The app's transcriber: whisper.cpp with the picked model once it is
+/// installed, the simulated one until then (and again if it is deleted).
 pub struct Auto {
     #[cfg(windows)]
     local: whisper::Local,
@@ -57,7 +57,7 @@ impl Default for Auto {
     fn default() -> Self {
         Self {
             #[cfg(windows)]
-            local: whisper::Local::new(model::path()),
+            local: whisper::Local::default(),
         }
     }
 }
@@ -66,8 +66,8 @@ impl Transcriber for Auto {
     fn transcribe(&self, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
         #[cfg(windows)]
         {
-            if model::installed() {
-                return self.local.transcribe(samples, sample_rate);
+            if let Some(chosen) = model::active() {
+                return self.local.transcribe_with(&model::path(chosen), samples, sample_rate);
             }
             // Deleted while loaded: let the memory go too.
             self.local.unload();
@@ -223,6 +223,26 @@ impl Voice {
     /// policy like any other. The island fills its chat field with the text
     /// and reports back (`receipt`).
     pub fn use_transcript(&self, capture_id: &str) -> Result<ChatDraft, ErrorCode> {
+        let text = self.take_preview(capture_id)?.text;
+        let action = self.decided(capture_id, ActionKind::ChatDraft, serde_json::json!({ "text": text }), "chat draft")?;
+        Ok(ChatDraft { action_id: action.id, text })
+    }
+
+    /// A command the transcript asked for, proposed by the island as an
+    /// action for the policy to decide. Only `pill-set` comes this way: a chat
+    /// draft is built here from the transcript itself (`use_transcript`).
+    /// Either way the transcript is used once, and then it is gone.
+    pub fn act(&self, capture_id: &str, kind: ActionKind, args: serde_json::Value) -> Result<String, ErrorCode> {
+        if kind != ActionKind::PillSet {
+            return Err(ErrorCode::Unavailable);
+        }
+        self.take_preview(capture_id)?;
+        Ok(self.decided(capture_id, kind, args, "pill set")?.id)
+    }
+
+    /// The transcript waiting on the island for this capture, taken off it:
+    /// the card goes back to idle whatever comes next.
+    fn take_preview(&self, capture_id: &str) -> Result<Transcript, ErrorCode> {
         let mut phase = self.0.phase.lock().unwrap();
         let Phase::Preview { id, transcript, since } = &*phase else {
             return Err(ErrorCode::Expired);
@@ -231,7 +251,7 @@ impl Voice {
             return Err(ErrorCode::Expired);
         }
         let stale = since.elapsed() > PREVIEW_TTL;
-        let text = transcript.text.clone();
+        let transcript = transcript.clone();
         *phase = Phase::Idle;
         drop(phase);
         self.emit(VoiceEvent::new(capture_id, VoiceState::Idle));
@@ -239,24 +259,30 @@ impl Voice {
             (self.0.log)("voice: transcript expired before use".into());
             return Err(ErrorCode::Expired);
         }
+        Ok(transcript)
+    }
+
+    /// An action of this capture, decided by the policy; only an allowed one
+    /// comes back. `what` names it in the log (never its content).
+    fn decided(&self, capture_id: &str, kind: ActionKind, args: serde_json::Value, what: &str) -> Result<AssistantAction, ErrorCode> {
         let now = policy::now_ms();
         let action = AssistantAction {
             v: CONTRACT_VERSION,
             domain: Domain::DesktopAssistant,
             id: policy::new_id("act"),
-            kind: ActionKind::ChatDraft,
-            args: serde_json::json!({ "text": text }),
+            kind,
+            args,
             intent_id: capture_id.to_string(),
             expires_at_ms: now + DRAFT_TTL_MS,
         };
         let verdict = policy::decide(&action, now);
         if verdict.decision != Decision::Allow {
             let code = verdict.error.unwrap_or(ErrorCode::InvalidArgs);
-            (self.0.log)(format!("voice: chat draft refused ({})", code_name(code)));
+            (self.0.log)(format!("voice: {what} refused ({})", code_name(code)));
             return Err(code);
         }
-        (self.0.log)(format!("voice: chat draft {} allowed", action.id));
-        Ok(ChatDraft { action_id: action.id, text })
+        (self.0.log)(format!("voice: {what} {} allowed", action.id));
+        Ok(action)
     }
 
     /// What the island says came of an action. Logged without any text, and

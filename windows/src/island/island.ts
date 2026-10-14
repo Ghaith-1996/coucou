@@ -23,6 +23,8 @@ import { closePlanCard, openPlanColor, planCardOpen } from "../views/usage";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { applyChatDraft } from "../views/chat";
+import { sanitizeDeclared } from "../core/pills";
+import { sameList, type Declared } from "../assistant/pill-command";
 import { IslandStateMachine } from "./fsm";
 import { refreshHookPills } from "./integrations";
 import { DesktopLink } from "./desktop";
@@ -554,6 +556,19 @@ export class Island {
     const there = applyChatDraft(text);
     this.setView("prompt");
     return there;
+  }
+
+  /** The assistant's pill command: shown and saved as Settings → Active
+   *  pills would. True when the island now shows exactly `next`. */
+  applyPills(next: Declared): boolean {
+    const previousMain = State.mainPillId;
+    State.settings.mainPill = next.mainPill;
+    State.settings.activeIntegrations = [...next.activeIntegrations];
+    State.loadIntegrationTasks();
+    if (State.mainPillId !== previousMain) State.setFocus(State.mainPillId);
+    void Bridge.saveSettings(State.settings);
+    const now = sanitizeDeclared(State.settings);
+    return now.mainPill === next.mainPill && sameList(now.activeIntegrations, next.activeIntegrations);
   }
 
   /** The island takes the keyboard, so its own shortcuts work (Mac: makeKey).

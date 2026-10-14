@@ -7,7 +7,7 @@ import { btn, card, stack, type ViewHost } from "../views/views";
 import { State } from "../core/state";
 import { washRGBA, type Wash } from "../core/layout";
 import { N_, t, tl } from "../i18n/i18n";
-import { Voice, voiceCancel, voiceStop, voiceUse } from "./voice";
+import { Voice, voiceCancel, voiceDo, voiceStop, voiceUse } from "./voice";
 import type { VoiceError } from "./contracts";
 
 const ERRORS: Record<VoiceError, string> = {
@@ -37,6 +37,10 @@ export function buildVoice(): ViewHost {
   const buttons = {
     stop: btn(tl("Stop"), "primary", voiceStop),
     use: btn(tl("Use in chat"), "primary", () => void voiceUse(), "↵"),
+    // Next to a pill command, the chat is the other choice.
+    useToo: btn(tl("Use in chat"), "secondary", () => void voiceUse()),
+    // The pill command itself; its label is the change ("Add GitHub").
+    act: btn("", "primary", () => void voiceDo(), "↵"),
     cancel: btn(tl("Cancel"), "secondary", voiceCancel, "Esc"),
     close: btn(tl("Close"), "secondary", voiceCancel, "Esc"),
   };
@@ -47,7 +51,7 @@ export function buildVoice(): ViewHost {
     if (State.view !== "voice" || State.mode !== "expanded" || !Voice.event) return;
     if (e.key === "Enter" && Voice.event.state === "preview") {
       e.preventDefault();
-      void voiceUse();
+      void (Voice.command?.ok ? voiceDo() : voiceUse());
     } else if (e.key === "Escape") {
       e.preventDefault();
       voiceCancel();
@@ -77,10 +81,14 @@ export function buildVoice(): ViewHost {
           title.textContent = t("Transcribing…");
           detail.textContent = clock(event?.elapsedMs ?? 0);
           break;
-        case "preview":
+        case "preview": {
           title.textContent = event?.transcript ?? "";
-          detail.textContent = event?.simulated ? t("Simulated transcript — real speech recognition comes next.") : "";
+          const command = Voice.command;
+          detail.textContent = event?.simulated
+            ? t("Simulated transcript — real speech recognition comes next.")
+            : command && !command.ok ? command.reason : "";
           break;
+        }
         case "error":
           title.textContent = t(ERRORS[event?.error ?? "provider"]);
           detail.textContent = "";
@@ -90,8 +98,13 @@ export function buildVoice(): ViewHost {
           detail.textContent = "";
       }
 
+      const command = state === "preview" && Voice.command?.ok ? Voice.command : null;
+      if (command) buttons.act.querySelector("span")!.textContent = command.label;
       const want =
-        state === "listening" ? "stop,cancel" : state === "processing" ? "cancel" : state === "preview" ? "use,cancel" : "close";
+        state === "listening" ? "stop,cancel"
+        : state === "processing" ? "cancel"
+        : state === "preview" ? (command ? "act,useToo,cancel" : "use,cancel")
+        : "close";
       if (want !== shownButtons) {
         shownButtons = want;
         actions.replaceChildren(...want.split(",").map((k) => buttons[k as keyof typeof buttons]));

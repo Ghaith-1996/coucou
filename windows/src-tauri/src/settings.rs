@@ -102,6 +102,9 @@ pub struct Settings {
     pub phone_relay: bool,
     /// The relay's address (`wss://…`), empty until the user enters it. Not a secret. Owned by Rust.
     pub phone_relay_url: String,
+    /// The speech model the voice capture uses (assistant/voice/model.rs ids).
+    /// Owned by Rust: only Settings → Voice changes it, and only to an installed one.
+    pub voice_model: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -174,6 +177,7 @@ impl Default for Settings {
             phone_services: Vec::new(),
             phone_relay: false,
             phone_relay_url: String::new(),
+            voice_model: crate::assistant::voice::model::DEFAULT_MODEL.into(),
         }
     }
 }
@@ -461,7 +465,8 @@ mod tests {
   "phoneUsage": true,
   "phoneServices": ["integration_stripe"],
   "phoneRelay": true,
-  "phoneRelayUrl": "wss://relay.example.workers.dev"
+  "phoneRelayUrl": "wss://relay.example.workers.dev",
+  "voiceModel": "large-v3-turbo-q5_0"
 }"##;
 
     fn custom() -> Value {
@@ -971,6 +976,7 @@ mod tests {
                 "phoneServices",
                 "phoneRelay",
                 "phoneRelayUrl",
+                "voiceModel",
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);

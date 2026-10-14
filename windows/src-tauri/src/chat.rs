@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use crate::settings::Settings;
-use crate::{claude, local_chat, openai_compat, secrets};
+use crate::{chatgpt, claude, local_chat, openai_compat, secrets};
 
 pub const ANTHROPIC: &str = "anthropic";
 
@@ -76,6 +76,33 @@ impl Chat {
         let mut c = self.inner.lock().unwrap();
         let epoch = c.epoch + 1;
         *c = Conversation { epoch, ..Default::default() };
+    }
+
+    /// A saved conversation reopened: its complete turns become the history,
+    /// in plain form (the next provider converts them as on any switch).
+    pub fn restore(&self, turns: &[(String, String)]) {
+        let mut c = self.inner.lock().unwrap();
+        let epoch = c.epoch + 1;
+        let plain = turns
+            .iter()
+            .flat_map(|(q, a)| [json!({ "role": "user", "content": q }), json!({ "role": "assistant", "content": a })])
+            .collect();
+        *c = Conversation { epoch, plain, ..Default::default() };
+    }
+
+    /// Regenerate: the last question and its answer leave the history, so the
+    /// question can be asked again. False when there is no complete turn.
+    pub fn undo_last(&self) -> bool {
+        let mut c = self.inner.lock().unwrap();
+        if c.plain.len() < 2 {
+            return false;
+        }
+        let plain_len = c.plain.len();
+        c.plain.truncate(plain_len - 2);
+        let native_len = c.native.len();
+        c.native.truncate(native_len.saturating_sub(2));
+        c.epoch += 1;
+        true
     }
 
     /// Starts a turn with `provider`, converting the history if another
@@ -163,6 +190,10 @@ pub fn model_for(settings: &Settings, provider: &str) -> String {
         let m = settings.model.trim();
         return if m.is_empty() { claude::DEFAULT_MODEL.to_string() } else { m.to_string() };
     }
+    if provider == chatgpt::PROVIDER {
+        let m = settings.chat_models.get(provider).map(|m| m.trim()).unwrap_or("");
+        return if m.is_empty() { chatgpt::SOL.to_string() } else { m.to_string() };
+    }
     settings
         .chat_models
         .get(provider)
@@ -210,6 +241,29 @@ pub async fn send(
     if provider == ANTHROPIC || provider.is_empty() {
         return claude::send(chat, &model, query, context).await;
     }
+    if provider == chatgpt::PROVIDER {
+        use tauri::Emitter;
+        // The effort picked for this model, checked against what it takes.
+        let effort = settings.chat_efforts.get(&model).map(String::as_str).unwrap_or(chatgpt::DEFAULT_EFFORT);
+        if !chatgpt::effort_ok(&model, effort) {
+            return Err(crate::i18n::tf("{model} doesn't take this reasoning effort.", &[("model", &model)]));
+        }
+        let island = crate::island::WINDOW_LABEL;
+        return chatgpt::send(
+            chat,
+            &model,
+            effort,
+            query,
+            context,
+            |text| {
+                let _ = app.emit_to(island, "chat-delta", text);
+            },
+            || {
+                let _ = app.emit_to(island, "chatgpt-usage-limit", ());
+            },
+        )
+        .await;
+    }
     if let Some(p) = openai_compat::provider(provider) {
         return openai_compat::send(chat, p, &model, query, context).await;
     }
@@ -250,6 +304,9 @@ pub async fn models(settings: &Settings, provider: &str) -> Result<Vec<ModelInfo
     if provider == ANTHROPIC {
         let key = secrets::get(claude::KEY).ok_or_else(no_key)?;
         return claude::models(&key).await;
+    }
+    if provider == chatgpt::PROVIDER {
+        return chatgpt::models().await.map(|m| chatgpt::as_model_infos(&m));
     }
     if let Some(p) = openai_compat::provider(provider) {
         let key = secrets::get(p.key).ok_or_else(no_key)?;
@@ -328,6 +385,21 @@ mod tests {
         let _other = chat.begin("google");
         chat.commit(&t, json!({"role":"user","content":"q"}), json!({"role":"assistant","content":"a"}), "q", "a");
         assert!(chat.begin("google").first);
+    }
+
+    #[test]
+    fn a_reopened_conversation_and_a_regenerated_turn_keep_the_history_right() {
+        let chat = Chat::default();
+        chat.restore(&[("hi".into(), "hello".into()), ("more".into(), "sure".into())]);
+        let t = chat.begin("chatgpt");
+        assert!(!t.first);
+        assert_eq!(turn_texts(&t.history).len(), 4);
+        assert!(chat.undo_last());
+        let t = chat.begin("chatgpt");
+        assert_eq!(turn_texts(&t.history), vec![("user".into(), json!("hi")), ("assistant".into(), json!("hello"))]);
+        assert!(chat.undo_last());
+        assert!(!chat.undo_last(), "nothing left");
+        assert!(chat.begin("chatgpt").first);
     }
 
     #[test]

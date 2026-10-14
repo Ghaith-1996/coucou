@@ -1,18 +1,30 @@
 // Chat view — DOM port of PromptView / ChatBubble / TypingDotsView /
 // ModelPickerView from IslandViewContent.swift.
 //
-// Answers are rendered as Markdown (markdown.ts). A local model streams its
-// answer: Rust sends `chat-delta` events with the text visible so far. The
-// model name above the text field opens the picker: provider chips, then the
-// models of the chosen provider, asked for only once it is picked.
+// Answers are rendered as Markdown (markdown.ts). A streaming provider (a
+// local model, ChatGPT) sends `chat-delta` events with the text visible so
+// far. The model name above the text field opens the picker: provider chips,
+// then the models of the chosen provider, asked for only once it is picked.
+//
+// ChatGPT (core/chatgpt.ts, chatgpt.rs) signs in with the user's account
+// instead of a key: the picker says so and offers "Continue with ChatGPT".
+// Its reasoning effort sits next to the model name, remembered per model;
+// each answer says which model and effort wrote it. Stop ends any answer
+// under way. Conversations are saved (chat_store.rs) and reopened from the
+// clock button; the last answer can be regenerated and every answer copied.
 
 import { h, svg, clear } from "./dom";
 import { ICONS } from "./icons";
-import { renderMarkdown } from "./markdown";
-import { Bridge, onEvent, type ChatContext, type ModelInfo } from "../core/bridge";
+import { copyButton, renderMarkdown } from "./markdown";
+import { Bridge, onEvent, type ChatContext, type ConversationSummary, type ModelInfo } from "../core/bridge";
 import {
   activeModel, pickModel, providerDef, visibleProviders, withModel, type ProviderDef,
 } from "../core/providers";
+import {
+  CHATGPT, EFFORT_LABELS, effortFor, effortsFor, modelLabel, withEffort,
+  type ChatGptModel, type ChatGptStatus,
+} from "../core/chatgpt";
+import { cleanTitle, fromSaved, newChatId, titleFor, toSaved, whenLabel } from "../core/conversations";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
@@ -24,27 +36,57 @@ const STRINGS = {
   placeholderFirst: N_("Ask me anything…"),
   placeholderNext: N_("Continue…"),
   send: N_("Send"),
+  stop: N_("Stop"),
   voice: N_("Start voice capture"),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
   noKey: N_("No API key — add it in Settings."),
   openSettings: N_("Open Settings"),
+  connect: N_("Continue with ChatGPT"),
+  connecting: N_("Finish signing in in your browser…"),
+  signInFirst: N_("Sign in with your ChatGPT account to chat on your plan."),
+  reconnect: N_("Reconnect"),
+  planOff: N_("Plan usage wasn't allowed at sign-in."),
+  unavailable: N_("Unavailable"),
+  usingPlan: N_("Using ChatGPT plan"),
+  manageUsage: N_("Manage usage"),
+  effort: N_("Reasoning effort"),
+  history: N_("Conversations"),
+  newChat: N_("New chat"),
+  noHistory: N_("No saved conversations yet."),
+  rename: N_("Rename"),
+  delete: N_("Delete"),
+  confirmDelete: N_("Delete?"),
+  regenerate: N_("Regenerate"),
+  stopped: N_("Stopped"),
+  welcomeTitle: N_("You're using your ChatGPT plan"),
+  welcomeBody: N_("Eligible AI requests in Coucou use the usage included in your ChatGPT plan or credits balance."),
+  gotIt: N_("Got it"),
+  limitTitle: N_("Usage limit reached"),
+  limitBody: N_("Review your plan or this app's limit in ChatGPT settings."),
 };
 
 let nextId = 1;
 
-function bubble(message: ChatMessage): HTMLElement {
-  if (message.role === "user") {
-    return h(
-      "div",
-      { class: "chat-row user" },
-      h("div", { class: "bubble", text: message.content }),
-    );
-  }
-  const reply = h("div", { class: "reply" });
-  renderMarkdown(reply, message.content);
-  return h("div", { class: "chat-row" }, reply);
+/** The ChatGPT account as Rust last said, and its catalog once fetched. */
+let chatgpt: ChatGptStatus | null = null;
+let catalog: ChatGptModel[] | null = null;
+
+function refreshChatGpt(then?: () => void) {
+  void Bridge.chatgptStatus().then((s) => {
+    chatgpt = s ?? null;
+    then?.();
+    State.notify();
+  });
+}
+
+/** How an answer is signed: "GPT-6.1 Sol · Max", "claude-opus-5". */
+function signature(m: ChatMessage): string {
+  if (!m.model) return "";
+  const name = catalog?.find((c) => c.id === m.model)?.label ?? modelLabel(m.model);
+  const effort = m.effort && m.effort in EFFORT_LABELS ? ` · ${t(EFFORT_LABELS[m.effort as keyof typeof EFFORT_LABELS])}` : "";
+  return `${name}${effort}`;
 }
 
 function typingDots(): HTMLElement {
@@ -64,6 +106,10 @@ function contextChip(label: string): HTMLElement {
 
 function saveSettings() {
   void Bridge.saveSettings(State.settings);
+}
+
+function openUrl(url: string) {
+  void Bridge.openUrl(url);
 }
 
 // ── Model picker ──────────────────────────────────────────────────────────────
@@ -146,8 +192,99 @@ function buildPicker(onChange: () => void): Picker {
     list.querySelector(".picker-model.on")?.scrollIntoView({ block: "nearest" });
   }
 
+  // ── ChatGPT: an account, not a key ──────────────────────────────────────────
+
+  /** "Using ChatGPT plan · Manage usage", and who is signed in. */
+  function planLine(s: ChatGptStatus): HTMLElement {
+    return h(
+      "div",
+      { class: "picker-status plan" },
+      h("span", { text: s.email ? `${t(STRINGS.usingPlan)} · ${s.email}` : t(STRINGS.usingPlan) }),
+      h("button", { class: "picker-link", text: tl(STRINGS.manageUsage), onclick: () => openUrl(s.manageUsageUrl) }),
+    );
+  }
+
+  function signInPrompt(p: ProviderDef, s: ChatGptStatus | null, error?: string) {
+    clear(list);
+    const again = s?.needsReconnect || (s?.connected && !s.planEnabled);
+    const line = h("div", { class: "picker-status" }, h("span", {
+      text: error ?? (s?.connected && !s.planEnabled ? t(STRINGS.planOff) : t(STRINGS.signInFirst)),
+    }));
+    const button = h("button", {
+      class: "chatgpt-connect",
+      text: tl(again ? STRINGS.reconnect : STRINGS.connect),
+      onclick: () => void connect(p),
+    });
+    list.append(line, button);
+  }
+
+  async function connect(p: ProviderDef) {
+    const ticket = ++request;
+    status(t(STRINGS.connecting));
+    try {
+      chatgpt = await Bridge.chatgptConnect();
+      Sound.play("approve");
+      if (ticket === request) await loadChatGpt(p);
+    } catch (err) {
+      if (ticket === request) signInPrompt(p, chatgpt, String(err).replace(/^Error:\s*/, ""));
+    }
+    State.notify();
+  }
+
+  function drawChatGpt(p: ProviderDef, s: ChatGptStatus, models: ChatGptModel[]) {
+    clear(list);
+    list.append(planLine(s));
+    const current = activeModel(State.settings);
+    for (const m of models) {
+      const on = m.id === current;
+      const row = h(
+        "button",
+        { class: on ? "picker-model on" : "picker-model", style: `--accent:${p.accent}`, title: m.id },
+        h("span", { class: "picker-model-name", text: m.label }),
+        m.available ? null : h("span", { class: "picker-tag", text: t(STRINGS.unavailable) }),
+        on ? svg(ICONS.check, 11, { stroke: 2.2 }) : null,
+      ) as HTMLButtonElement;
+      // Never swapped for another one: a model the account lacks can't be picked.
+      row.disabled = !m.available;
+      row.addEventListener("click", () => {
+        if (!m.available) return;
+        State.settings = withModel(State.settings, p.id, m.id);
+        saveSettings();
+        Sound.play("blip");
+        close();
+      });
+      list.append(row);
+    }
+  }
+
+  async function loadChatGpt(p: ProviderDef) {
+    const ticket = ++request;
+    const s = await Bridge.chatgptStatus();
+    chatgpt = s ?? null;
+    if (ticket !== request) return;
+    if (!s?.connected || !s.planEnabled) {
+      signInPrompt(p, s ?? null);
+      return;
+    }
+    if (catalog) drawChatGpt(p, s, catalog);
+    else status(t(STRINGS.loading));
+    try {
+      const models = await Bridge.chatgptModels();
+      if (ticket !== request) return;
+      catalog = models;
+      drawChatGpt(p, s, models);
+      onChange();
+    } catch (err) {
+      if (ticket === request) signInPrompt(p, s, String(err).replace(/^Error:\s*/, ""));
+    }
+  }
+
   async function loadModels() {
     const p = providerDef(State.settings.chatProvider);
+    if (p.signIn) {
+      await loadChatGpt(p);
+      return;
+    }
     const ticket = ++request;
     const cached = p.urlField ? undefined : cache.get(p.id);
     if (cached) {
@@ -202,6 +339,149 @@ function buildPicker(onChange: () => void): Picker {
   };
 }
 
+// ── Conversation history ──────────────────────────────────────────────────────
+
+/** When the conversation on screen was first saved. */
+let chatCreatedAt = 0;
+
+/** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
+export function newConversation() {
+  State.chatHistory = [];
+  State.chatId = null;
+  State.droppedFile = null;
+  State.promptContext = null;
+  void Bridge.chatReset();
+}
+
+/** Saves the conversation on screen (after an answer, a Stop or a rename). */
+function saveConversation() {
+  const messages = State.chatHistory;
+  if (messages.length === 0) return;
+  if (!State.chatId) {
+    State.chatId = newChatId();
+    chatCreatedAt = Date.now();
+  }
+  void Bridge.chatHistorySave(toSaved(State.chatId, titleFor(messages), chatCreatedAt || Date.now(), messages)).catch(() => {});
+}
+
+interface HistoryPanel {
+  el: HTMLElement;
+  open(): void;
+  close(): void;
+  readonly isOpen: boolean;
+}
+
+function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel {
+  const list = h("div", { class: "picker-list" });
+  const fresh = h("button", { class: "chatgpt-connect history-new", text: tl(STRINGS.newChat) });
+  const el = h("div", { class: "picker history" }, h("div", { class: "history-head" }, h("span", { class: "history-title", text: tl(STRINGS.history) }), fresh), list);
+  let isOpen = false;
+  let armedDelete: string | null = null;
+
+  fresh.addEventListener("click", () => {
+    newConversation();
+    Sound.play("blip");
+    close();
+  });
+
+  function row(s: ConversationSummary): HTMLElement {
+    const name = h("span", { class: "picker-model-name", text: s.title });
+    const when = h("span", { class: "picker-tag", text: whenLabel(s.updatedAt) });
+    const rename = h("button", { class: "history-act", title: tl(STRINGS.rename), "aria-label": tl(STRINGS.rename) }, svg(ICONS.pencil, 11));
+    const del = h("button", { class: "history-act", title: tl(STRINGS.delete), "aria-label": tl(STRINGS.delete) }, svg(ICONS.trash, 11));
+    const line = h("div", { class: State.chatId === s.id ? "picker-model on history-row" : "picker-model history-row", role: "button", tabindex: "0" }, name, when, rename, del);
+
+    line.addEventListener("click", () => void open_(s.id));
+    rename.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const input = h("input", { class: "history-rename", value: s.title, maxlength: "120" }) as HTMLInputElement;
+      name.replaceWith(input);
+      input.focus();
+      input.select();
+      const done = async (keep: boolean) => {
+        const title = keep ? cleanTitle(input.value) : null;
+        if (title && title !== s.title) {
+          await Bridge.chatHistoryRename(s.id, title).catch(() => {});
+        }
+        void draw();
+      };
+      input.addEventListener("click", (ev) => ev.stopPropagation());
+      input.addEventListener("keydown", (ev) => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") void done(true);
+        else if (ev.key === "Escape") void done(false);
+      });
+      input.addEventListener("blur", () => void done(true));
+    });
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      // A second click deletes: one slip of the mouse loses nothing.
+      if (armedDelete !== s.id) {
+        armedDelete = s.id;
+        del.replaceChildren(h("span", { class: "history-confirm", text: t(STRINGS.confirmDelete) }));
+        return;
+      }
+      armedDelete = null;
+      await Bridge.chatHistoryDelete(s.id).catch(() => {});
+      if (State.chatId === s.id) newConversation();
+      Sound.play("pop");
+      void draw();
+    });
+    return line;
+  }
+
+  async function draw() {
+    const items = await Bridge.chatHistoryList();
+    clear(list);
+    if (!items?.length) {
+      list.append(h("div", { class: "picker-status", text: t(STRINGS.noHistory) }));
+      return;
+    }
+    for (const s of items) list.append(row(s));
+  }
+
+  async function open_(id: string) {
+    try {
+      const saved = await Bridge.chatHistoryOpen(id);
+      State.chatHistory = fromSaved(saved, nextId);
+      nextId += saved.messages.length;
+      State.chatId = saved.id;
+      chatCreatedAt = saved.createdAt;
+      State.droppedFile = null;
+      State.promptContext = null;
+      Sound.play("blip");
+      close();
+      onOpened();
+    } catch (err) {
+      clear(list);
+      list.append(h("div", { class: "picker-status", text: String(err).replace(/^Error:\s*/, "") }));
+    }
+  }
+
+  function open() {
+    isOpen = true;
+    armedDelete = null;
+    el.classList.add("on");
+    onChange();
+    void draw();
+  }
+
+  function close() {
+    isOpen = false;
+    el.classList.remove("on");
+    onChange();
+  }
+
+  return {
+    el,
+    open,
+    close,
+    get isOpen() {
+      return isOpen;
+    },
+  };
+}
+
 // ── Drafts ────────────────────────────────────────────────────────────────────
 
 /** The chat's text field, once the view is built. */
@@ -233,7 +513,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     spellcheck: "false",
   }) as HTMLInputElement;
   chatInput = input;
-  const send = h("button", { class: "send-btn", title: tl(STRINGS.send) }, svg(ICONS.arrowUp, 11));
+  const send = h("button", { class: "send-btn", title: tl(STRINGS.send), "aria-label": tl(STRINGS.send) }, svg(ICONS.arrowUp, 11));
   const voice = HOST_OS === "windows" ? h("button", {
     type: "button",
     class: "voice-btn",
@@ -251,43 +531,166 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     modelName,
     svg(ICONS.chevronUpDown, 9, { stroke: 2 }),
   );
-  const modelRow = h("div", { class: "model-row" }, modelBtn);
+  // ChatGPT's reasoning effort, for the model picked: a native menu, so the
+  // keyboard and screen readers know it.
+  const effort = h("select", { class: "effort-select", title: tl(STRINGS.effort), "aria-label": tl(STRINGS.effort) }) as HTMLSelectElement;
+  const historyBtn = h("button", { class: "history-btn", title: tl(STRINGS.history), "aria-label": tl(STRINGS.history) }, svg(ICONS.clock, 11, { stroke: 1.8 }));
+  const modelRow = h("div", { class: "model-row" }, historyBtn, h("span", { class: "model-spacer" }), effort, modelBtn);
 
+  const notice = h("div", { class: "chat-notice-slot" });
   const body = h("div", { class: "chat-body" });
   const picker = buildPicker(() => {
-    body.classList.toggle("picking", picker.isOpen);
+    body.classList.toggle("picking", picker.isOpen || history.isOpen);
     drawModelButton();
   });
-  body.append(chipRow, log, picker.el, modelRow, bar);
+  const history = buildHistory(
+    () => {
+      body.classList.toggle("picking", picker.isOpen || history.isOpen);
+      drawModelButton();
+    },
+    () => {
+      renderedCount = -1;
+      State.notify();
+      onHeightChange();
+      input.focus();
+    },
+  );
+  body.append(chipRow, notice, log, picker.el, history.el, modelRow, bar);
 
   const el = h("div", { class: "view" }, h("div", { class: "card wash chat-card" }, body));
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
 
   let sending = false;
+  let stopRequested = false;
   // Reserve the composer before the native microphone startup can yield.
   let startingVoice = false;
   let renderedCount = -1;
-  // A local model answers token by token: where its text so far is shown.
+  // A streaming provider answers token by token: where its text so far is shown.
   let live: HTMLElement | null = null;
+  let liveText = "";
+  /** ChatGPT said its usage limit is reached: the notice offers "Manage usage". */
+  let usageLimit = false;
+  let effortKey = "";
+
+  function onChatGpt(): boolean {
+    return providerDef(State.settings.chatProvider).id === CHATGPT;
+  }
+
+  function drawEffort() {
+    const show = onChatGpt();
+    effort.hidden = !show;
+    if (!show) return;
+    const model = activeModel(State.settings);
+    const current = effortFor(State.settings, model);
+    const key = `${model}|${current}|${effortsFor(model).join(",")}`;
+    if (key !== effortKey) {
+      effortKey = key;
+      effort.replaceChildren(...effortsFor(model).map((e) => h("option", { value: e, text: t(EFFORT_LABELS[e]) })));
+      effort.value = current;
+    }
+    effort.disabled = sending;
+  }
+
+  effort.addEventListener("change", () => {
+    const next = withEffort(State.settings, activeModel(State.settings), effort.value);
+    if (!next) return;
+    State.settings = next;
+    saveSettings();
+    Sound.play("blip");
+    drawEffort();
+  });
 
   function drawModelButton() {
     const p = providerDef(State.settings.chatProvider);
+    const model = activeModel(State.settings);
     modelDot.style.background = p.accent;
-    modelName.textContent = activeModel(State.settings) || t(STRINGS.noModel);
+    modelName.textContent = (p.signIn ? catalog?.find((c) => c.id === model)?.label ?? modelLabel(model) : model) || t(STRINGS.noModel);
     modelBtn.classList.toggle("open", picker.isOpen);
+    historyBtn.classList.toggle("open", history.isOpen);
     modelBtn.disabled = sending;
+    historyBtn.disabled = sending;
     if (voice) voice.disabled = sending || startingVoice;
-    send.disabled = sending || startingVoice;
+    // While an answer comes, the send button is Stop.
+    send.disabled = startingVoice;
+    send.classList.toggle("stop", sending);
+    const label = t(sending ? STRINGS.stop : STRINGS.send);
+    send.title = label;
+    send.setAttribute("aria-label", label);
+    send.replaceChildren(svg(sending ? ICONS.stopSquare : ICONS.arrowUp, sending ? 9 : 11));
+    drawEffort();
+  }
+
+  /** The welcome or the usage limit, above the conversation, when ChatGPT is on. */
+  function drawNotice() {
+    let want = "";
+    if (onChatGpt() && usageLimit) want = "limit";
+    else if (onChatGpt() && chatgpt?.showWelcome) want = "welcome";
+    if (notice.dataset.kind === want) return;
+    notice.dataset.kind = want;
+    clear(notice);
+    if (!want) return;
+    const manage = h("button", {
+      class: "picker-link",
+      text: tl(STRINGS.manageUsage),
+      onclick: () => openUrl(chatgpt?.manageUsageUrl ?? "https://chatgpt.com/#settings"),
+    });
+    if (want === "limit") {
+      notice.append(h("div", { class: "chat-notice warn" },
+        h("div", { class: "chat-notice-title", text: t(STRINGS.limitTitle) }),
+        h("div", { class: "chat-notice-body", text: t(STRINGS.limitBody) }),
+        h("div", { class: "chat-notice-actions" }, manage),
+      ));
+    } else {
+      const ok = h("button", {
+        class: "chatgpt-connect",
+        text: tl(STRINGS.gotIt),
+        onclick: () => void Bridge.chatgptWelcomed().then(() => refreshChatGpt(drawNotice)),
+      });
+      notice.append(h("div", { class: "chat-notice" },
+        h("div", { class: "chat-notice-title", text: t(STRINGS.welcomeTitle) }),
+        h("div", { class: "chat-notice-body", text: t(STRINGS.welcomeBody) }),
+        h("div", { class: "chat-notice-actions" }, ok, manage),
+      ));
+    }
+    onHeightChange();
+  }
+
+  /** One message: a user bubble, or an answer with its signature, Copy and (last) Regenerate. */
+  function bubble(message: ChatMessage, last: boolean): HTMLElement {
+    if (message.role === "user") {
+      return h("div", { class: "chat-row user" }, h("div", { class: "bubble", text: message.content }));
+    }
+    const reply = h("div", { class: "reply" });
+    renderMarkdown(reply, message.content);
+    const meta = h("div", { class: "reply-meta" });
+    const sig = signature(message);
+    if (sig) meta.append(h("span", { class: "reply-sig", text: sig }));
+    if (message.stopped) meta.append(h("span", { class: "reply-stopped", text: t(STRINGS.stopped) }));
+    meta.append(copyButton(message.content));
+    if (last && !sending) {
+      const again = h("button", { class: "md-copy", title: tl(STRINGS.regenerate), "aria-label": tl(STRINGS.regenerate) }, svg(ICONS.arrowClockwise, 11, { stroke: 2 }));
+      again.addEventListener("click", () => void regenerate());
+      meta.append(again);
+    }
+    return h("div", { class: "chat-row" }, h("div", { class: "reply-wrap" }, reply, meta));
   }
 
   modelBtn.addEventListener("click", () => {
     if (sending) return;
+    if (history.isOpen) history.close();
     if (picker.isOpen) picker.close();
     else picker.open();
+  });
+  historyBtn.addEventListener("click", () => {
+    if (sending) return;
+    if (picker.isOpen) picker.close();
+    if (history.isOpen) history.close();
+    else history.open();
   });
 
   void onEvent<string>("chat-delta", (text) => {
     if (!sending || !text) return; // nothing visible yet: the dots stay
+    liveText = text;
     if (!live) {
       live = h("div", { class: "reply" });
       log.querySelector(".typing")?.parentElement?.remove();
@@ -296,15 +699,33 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     renderMarkdown(live, text);
     log.scrollTop = log.scrollHeight;
   });
+  void onEvent<null>("chatgpt-usage-limit", () => {
+    usageLimit = true;
+    drawNotice();
+  });
+  void onEvent<ChatGptStatus>("chatgpt-status", (s) => {
+    chatgpt = s;
+    catalog = null; // another account, or none: its catalog is asked again
+    State.notify();
+  });
 
-  async function submit() {
-    const query = input.value.trim();
-    if (!query || sending || startingVoice) return;
+  async function ask(query: string) {
     if (picker.isOpen) picker.close();
-    input.value = "";
+    if (history.isOpen) history.close();
     sending = true;
+    stopRequested = false;
+    liveText = "";
     drawModelButton();
     Sound.play("send");
+
+    // Who answers, as picked now: recorded with the answer.
+    const p = providerDef(State.settings.chatProvider);
+    const model = activeModel(State.settings);
+    const answeredBy = {
+      provider: p.id,
+      model,
+      ...(p.id === CHATGPT ? { effort: effortFor(State.settings, model) } : {}),
+    };
 
     State.chatHistory.push({ id: nextId++, role: "user", content: query });
     State.stateOverride = "thinking";
@@ -317,16 +738,28 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     try {
       const reply = await Bridge.chatSend(query, context);
-      State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
+      State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text, ...answeredBy });
       State.stateOverride = null;
+      usageLimit = false;
       Sound.play("finish");
+      saveConversation();
     } catch (err) {
       State.stateOverride = null;
-      State.noteMessage = String(err).replace(/^Error:\s*/, "");
-      State.view = "note";
-      Sound.play("error");
+      if (stopRequested) {
+        // What arrived before Stop stays on screen, marked; the model never sees it again.
+        if (liveText) State.chatHistory.push({ id: nextId++, role: "assistant", content: liveText, stopped: true, ...answeredBy });
+        saveConversation();
+      } else if (usageLimit && p.id === CHATGPT) {
+        drawNotice();
+        Sound.play("error");
+      } else {
+        State.noteMessage = String(err).replace(/^Error:\s*/, "");
+        State.view = "note";
+        Sound.play("error");
+      }
     } finally {
       sending = false;
+      stopRequested = false;
       live = null;
       renderedCount = -1; // the finished answer replaces the streamed one
       drawModelButton();
@@ -336,7 +769,34 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     }
   }
 
-  send.addEventListener("click", () => void submit());
+  async function submit() {
+    const query = input.value.trim();
+    if (!query || sending || startingVoice) return;
+    input.value = "";
+    await ask(query);
+  }
+
+  /** The last answer again, with the model and effort picked now. */
+  async function regenerate() {
+    if (sending) return;
+    const messages = State.chatHistory;
+    const answer = messages[messages.length - 1];
+    const question = messages[messages.length - 2];
+    if (answer?.role !== "assistant" || question?.role !== "user") return;
+    // A stopped answer never entered the model's history.
+    if (!answer.stopped) await Bridge.chatUndoLast();
+    State.chatHistory = messages.slice(0, -2);
+    await ask(question.content);
+  }
+
+  send.addEventListener("click", () => {
+    if (sending) {
+      stopRequested = true;
+      void Bridge.chatStop();
+      return;
+    }
+    void submit();
+  });
   voice?.addEventListener("click", async () => {
     if (sending || startingVoice) return;
     startingVoice = true;
@@ -357,12 +817,19 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (key === "Enter") {
       e.preventDefault();
       void submit();
-    } else if (key === "Escape" && picker.isOpen) {
+    } else if (key === "Escape" && (picker.isOpen || history.isOpen)) {
       e.preventDefault();
-      picker.close();
+      if (picker.isOpen) picker.close();
+      if (history.isOpen) history.close();
+    } else if (key === "Escape" && sending) {
+      e.preventDefault();
+      stopRequested = true;
+      void Bridge.chatStop();
     }
     e.stopPropagation(); // Escape closes the island, not the chat
   });
+
+  refreshChatGpt();
 
   return {
     el,
@@ -380,14 +847,17 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (count !== renderedCount && !live) {
         renderedCount = count;
         clear(log);
-        for (const m of State.chatHistory) log.append(bubble(m));
+        const messages = State.chatHistory;
+        messages.forEach((m, i) => log.append(bubble(m, i === messages.length - 1)));
         if (thinking) log.append(typingDots());
         log.scrollTop = log.scrollHeight;
       }
 
-      // Leaving the chat folds the picker away.
+      // Leaving the chat folds the picker and the history away.
       if (State.view !== "prompt" && picker.isOpen) picker.close();
+      if (State.view !== "prompt" && history.isOpen) history.close();
       drawModelButton();
+      drawNotice();
 
       input.placeholder = t(State.chatHistory.length === 0 ? STRINGS.placeholderFirst : STRINGS.placeholderNext);
       input.disabled = sending;

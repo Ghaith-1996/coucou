@@ -7,6 +7,8 @@ mod agents;
 #[allow(dead_code)]
 mod assistant;
 mod chat;
+mod chat_store;
+mod chatgpt;
 mod claude;
 mod codex_plan;
 mod config_file;
@@ -558,11 +560,101 @@ async fn chat_send(
     app: AppHandle,
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
+    stop: State<'_, ChatStop>,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
     let settings = shared.settings.lock().unwrap().clone();
-    chat::send(&app, &chat, &settings, query, context).await
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    *stop.0.lock().unwrap() = Some(tx);
+    // Stop drops the request mid-way: nothing more is read or recorded.
+    tokio::select! {
+        reply = chat::send(&app, &chat, &settings, query, context) => reply,
+        _ = rx => Err(i18n::t("Stopped.")),
+    }
+}
+
+/// The turn under way, which the chat's Stop button ends.
+#[derive(Default)]
+struct ChatStop(std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+
+// ── Saved conversations (chat_store.rs) ─────────────────────────────────────
+
+#[tauri::command]
+fn chat_history_list() -> Vec<chat_store::Summary> {
+    chat_store::list(&chat_store::dir())
+}
+
+#[tauri::command]
+fn chat_history_save(conversation: chat_store::Conversation) -> Result<(), String> {
+    chat_store::save(&chat_store::dir(), &conversation)
+}
+
+/// Reopens a conversation: its messages for the island, its turns for the model.
+#[tauri::command]
+fn chat_history_open(chat: State<Chat>, id: String) -> Result<chat_store::Conversation, String> {
+    let conversation = chat_store::load(&chat_store::dir(), &id)?;
+    chat.restore(&chat_store::context_turns(&conversation));
+    Ok(conversation)
+}
+
+#[tauri::command]
+fn chat_history_rename(id: String, title: String) -> Result<(), String> {
+    chat_store::rename(&chat_store::dir(), &id, &title)
+}
+
+#[tauri::command]
+fn chat_history_delete(id: String) -> Result<(), String> {
+    chat_store::delete(&chat_store::dir(), &id)
+}
+
+/// Regenerate: the last turn leaves the model's history before it is asked again.
+#[tauri::command]
+fn chat_undo_last(chat: State<Chat>) -> bool {
+    chat.undo_last()
+}
+
+#[tauri::command]
+fn chat_stop(stop: State<ChatStop>) {
+    if let Some(tx) = stop.0.lock().unwrap().take() {
+        let _ = tx.send(());
+    }
+}
+
+// ── ChatGPT (chatgpt.rs): the island and Settings see a status, never a token ─
+
+#[tauri::command]
+fn chatgpt_status() -> chatgpt::Status {
+    chatgpt::status()
+}
+
+/// "Continue with ChatGPT": the sign-in in the system browser.
+#[tauri::command]
+async fn chatgpt_connect(app: AppHandle) -> Result<chatgpt::Status, String> {
+    let status = chatgpt::connect(|url| platform::open_url(url)).await?;
+    let _ = app.emit("chatgpt-status", status.clone());
+    Ok(status)
+}
+
+/// True when OpenAI confirmed the revocation.
+#[tauri::command]
+async fn chatgpt_disconnect(app: AppHandle) -> bool {
+    let confirmed = chatgpt::disconnect().await;
+    let _ = app.emit("chatgpt-status", chatgpt::status());
+    confirmed
+}
+
+/// The account's catalog, Luna and Sol marked when it lacks them.
+#[tauri::command]
+async fn chatgpt_models() -> Result<Vec<chatgpt::CatalogModel>, String> {
+    chatgpt::models().await
+}
+
+#[tauri::command]
+fn chatgpt_welcomed(app: AppHandle) -> Result<(), String> {
+    chatgpt::mark_welcomed()?;
+    let _ = app.emit("chatgpt-status", chatgpt::status());
+    Ok(())
 }
 
 /// The models a provider offers, for the picker in the chat view. Only asked
@@ -775,6 +867,7 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(ChatStop::default())
         .manage(shortcuts::Registry::default())
         .manage(recap::load())
         .invoke_handler(tauri::generate_handler![
@@ -813,6 +906,18 @@ pub fn run() {
             approval_decline,
             log_line,
             chat_send,
+            chat_stop,
+            chat_history_list,
+            chat_history_save,
+            chat_history_open,
+            chat_history_rename,
+            chat_history_delete,
+            chat_undo_last,
+            chatgpt_status,
+            chatgpt_connect,
+            chatgpt_disconnect,
+            chatgpt_models,
+            chatgpt_welcomed,
             chat_models,
             local_connect,
             local_set_key,

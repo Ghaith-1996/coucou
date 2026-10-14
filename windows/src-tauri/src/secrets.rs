@@ -69,6 +69,10 @@ pub const INTERNAL_KEYS: &[&str] = &[
     "phone-relay-room",
     "phone-relay-key",
     "phone-relay-access",
+    // ChatGPT sign-in (chatgpt.rs): the rotating refresh token, and the last
+    // ID token, only ever sent back to OpenAI as a sign-in hint.
+    "chatgpt-refresh-token",
+    "chatgpt-id-token",
 ];
 
 /// Whether the keystore would accept this key through `get_internal` / `set_internal`.

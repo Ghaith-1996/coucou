@@ -10,6 +10,25 @@ import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
 import type { ActionReceipt, AppGrant } from "../assistant/contracts";
+import type { ChatGptModel, ChatGptStatus } from "./chatgpt";
+import type { ChatMessage } from "./state";
+
+/** chat_store.rs `Summary`. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: number;
+  count: number;
+}
+
+/** chat_store.rs `Conversation`. */
+export interface SavedConversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: Omit<ChatMessage, "id">[];
+}
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -342,6 +361,24 @@ export const Bridge = {
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
   chatReset: () => call<void>("chat_reset"),
+  /** Stops the answer under way, whoever is answering. */
+  chatStop: () => call<void>("chat_stop"),
+  /** Regenerate: the last question and answer leave the model's history. */
+  chatUndoLast: () => call<boolean>("chat_undo_last"),
+  /** Saved conversations (chat_store.rs). */
+  chatHistoryList: () => call<ConversationSummary[]>("chat_history_list"),
+  chatHistorySave: (conversation: SavedConversation) => callOrThrow<void>("chat_history_save", { conversation }),
+  /** Reopens one: its messages, and its turns become the model's history. */
+  chatHistoryOpen: (id: string) => callOrThrow<SavedConversation>("chat_history_open", { id }),
+  chatHistoryRename: (id: string, title: string) => callOrThrow<void>("chat_history_rename", { id, title }),
+  chatHistoryDelete: (id: string) => callOrThrow<void>("chat_history_delete", { id }),
+  /** ChatGPT sign-in (chatgpt.rs): only a status ever comes back, never a token. */
+  chatgptStatus: () => call<ChatGptStatus>("chatgpt_status"),
+  chatgptConnect: () => callOrThrow<ChatGptStatus>("chatgpt_connect"),
+  /** True when OpenAI confirmed the revocation. */
+  chatgptDisconnect: () => call<boolean>("chatgpt_disconnect"),
+  chatgptModels: () => callOrThrow<ChatGptModel[]>("chatgpt_models"),
+  chatgptWelcomed: () => call<void>("chatgpt_welcomed"),
   /**
    * The models a provider offers, for the picker in the chat view. Rust asks
    * the provider only when it has a key (or a server address).

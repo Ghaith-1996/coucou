@@ -1,5 +1,6 @@
 // Markdown in the chat's answers, as on the Mac (ChatMarkdown.swift and
-// ChatMarkdownView.swift): headings, paragraphs, fenced code with a copy button,
+// ChatMarkdownView.swift): headings, paragraphs, fenced code with a copy button
+// and light syntax colouring (keywords, strings, numbers, comments),
 // bullet and numbered lists, quotes and rules, with bold, italic, `code` and
 // links inside the text.
 //
@@ -211,8 +212,61 @@ async function writeClipboard(text: string) {
   }
 }
 
-/** Puts the code on the clipboard; the check mark shows for a moment. */
-function copyButton(text: string): HTMLElement {
+// ── Syntax colouring ──────────────────────────────────────────────────────────
+//
+// A deliberately small tokenizer, the same for every language: comments,
+// strings, numbers and common keywords. Spans with textContent, never HTML.
+
+export type TokenKind = "c" | "s" | "n" | "k" | "t";
+
+const KEYWORDS = new Set((
+  "as async await break case catch class const continue def default del do elif else enum except export extends false " +
+  "final finally fn for from func function go if impl import in interface is lambda let loop match mod module mut new nil " +
+  "none null of or and not package pass private protected pub public raise return self static struct super switch this " +
+  "throw trait true try type typeof undefined unsafe use val var void where while with yield True False None"
+).split(" "));
+const HASH_COMMENTS = new Set(["py", "python", "sh", "bash", "zsh", "shell", "ruby", "rb", "yaml", "yml", "toml", "ps1", "powershell", "r", "perl", "dockerfile", "makefile"]);
+const DASH_COMMENTS = new Set(["sql", "lua", "haskell", "hs"]);
+
+/** The code as coloured tokens; joined, they are exactly the code. */
+export function highlightTokens(code: string, lang: string): { kind: TokenKind; text: string }[] {
+  const l = lang.toLowerCase();
+  const comment = [String.raw`/\*[\s\S]*?(?:\*/|$)`, String.raw`//[^\n]*`];
+  if (HASH_COMMENTS.has(l)) comment.push(String.raw`#[^\n]*`);
+  if (DASH_COMMENTS.has(l)) comment.push(String.raw`--[^\n]*`);
+  const strings = String.raw`"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|` + "`(?:[^`\\\\]|\\\\.)*`?";
+  const re = new RegExp(
+    `(${comment.join("|")})|(${strings})|` + String.raw`(\b\d[\d_]*(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)`,
+    "g",
+  );
+  const out: { kind: TokenKind; text: string }[] = [];
+  let at = 0;
+  const push = (kind: TokenKind, text: string) => {
+    if (!text) return;
+    const last = out[out.length - 1];
+    if (last && last.kind === kind) last.text += text;
+    else out.push({ kind, text });
+  };
+  for (const m of code.matchAll(re)) {
+    push("t", code.slice(at, m.index));
+    const kind: TokenKind = m[1] ? "c" : m[2] ? "s" : m[3] ? "n" : KEYWORDS.has(m[4]) ? "k" : "t";
+    push(kind, m[0]);
+    at = m.index! + m[0].length;
+  }
+  push("t", code.slice(at));
+  return out;
+}
+
+function highlighted(code: string, lang: string): HTMLElement {
+  const pre = h("pre");
+  for (const tok of highlightTokens(code, lang)) {
+    pre.append(tok.kind === "t" ? document.createTextNode(tok.text) : h("span", { class: `hl-${tok.kind}`, text: tok.text }));
+  }
+  return pre;
+}
+
+/** Puts the text on the clipboard; the check mark shows for a moment. */
+export function copyButton(text: string): HTMLElement {
   const btn = h("button", { class: "md-copy", title: t(STRINGS.copy), "aria-label": t(STRINGS.copy) }, svg(ICONS.copy, 11));
   btn.addEventListener("click", async (e) => {
     e.stopPropagation();
@@ -242,7 +296,7 @@ function render(block: Block): HTMLElement {
       return el;
     }
     case "code":
-      return h("div", { class: "md-pre" }, h("pre", { text: block.code }), copyButton(block.code));
+      return h("div", { class: "md-pre" }, highlighted(block.code, block.lang), copyButton(block.code));
     case "item": {
       const text = h("span", { class: "md-p" });
       inline(block.text, text);

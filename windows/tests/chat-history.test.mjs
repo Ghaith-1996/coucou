@@ -10,6 +10,7 @@ import { calls, emit, internals, sent } from "./tauri.mjs";
 installFakeDom();
 const { buildPrompt } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
+const { Sound } = await import("../src/core/sound.ts");
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const CURRENT = "c-0000000000000001";
@@ -226,6 +227,211 @@ for (const deleted of [CURRENT, OTHER]) {
     }
   });
 }
+
+// Native deletion is authoritative: neither errors nor older completions may
+// discard a transcript that the user can still read and continue.
+function deleteButton(id) {
+  const row = view.el.find(".history-row")[[...records.keys()].indexOf(id)];
+  return row.find(".history-act").find((button) => button.getAttribute("aria-label") === "Delete");
+}
+
+async function confirmDelete(id) {
+  await history();
+  const button = deleteButton(id);
+  button.fire("click");
+  button.fire("click");
+  await flush();
+  return button;
+}
+
+for (const deleted of [CURRENT, OTHER]) {
+  test(`failed deletion of ${deleted === CURRENT ? "the active" : "another"} conversation preserves the chat and allows retry`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    seed(OTHER, "Paris trip");
+    await open(CURRENT);
+    answers.chat_history_save = () => Promise.reject(new Error("Unsaved messages"));
+    await send("A question still only on screen");
+    State.droppedFile = { name: "itinerary.txt", path: "/inbox/itinerary.txt" };
+    State.promptContext = { kind: "file", ...State.droppedFile };
+    State.notify();
+    const messages = State.chatHistory;
+    const context = State.promptContext;
+    const file = State.droppedFile;
+    const transcript = $(".chat-log").textContent;
+    const warning = $(".chat-notice.warn").textContent;
+    const sounds = t.mock.method(Sound, "play", () => {});
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(); await flush(); });
+    answers.chat_history_delete = () => pending.promise;
+    await confirmDelete(deleted);
+    assert.equal(State.chatHistory, messages, "a pending delete must not discard messages");
+    assert.equal(State.promptContext, context);
+    pending.reject(new Error("Disk is read-only"));
+    await flush();
+    assert.equal(State.chatId, CURRENT);
+    assert.equal(State.chatHistory, messages);
+    assert.equal(State.promptContext, context);
+    assert.equal(State.droppedFile, file);
+    assert.equal($(".chat-log").textContent, transcript);
+    assert.equal($(".chat-notice.warn").textContent, warning);
+    assert.ok($(".chat-restored"));
+    assert.equal(State.view, "prompt");
+    assert.equal(sent("chat_reset").length, 0);
+    assert.equal(records.size, 2);
+    assert.match($(".history").textContent, /Disk is read-only/);
+    assert.deepEqual(sounds.mock.calls.map(({ arguments: args }) => args[0]), ["error"]);
+
+    // Continuing after the failed deletion must retain the saved title too.
+    delete answers.chat_history_save;
+    await send("Keep planning");
+    assert.equal(records.get(CURRENT).title, "Lisbon trip");
+    delete answers.chat_history_delete;
+    await history();
+    const retry = deleteButton(deleted);
+    retry.fire("click");
+    assert.equal(sent("chat_history_delete").length, 1, "retry asks for confirmation again");
+    retry.fire("click");
+    await flush();
+    assert.equal(sent("chat_history_delete").length, 2);
+    assert.equal(records.has(deleted), false);
+    assert.doesNotMatch($(".history").textContent, /Disk is read-only/);
+    assert.equal(State.chatId, deleted === CURRENT ? null : CURRENT);
+    assert.equal(sent("chat_reset").length, deleted === CURRENT ? 1 : 0);
+  });
+}
+
+test("a failed history refresh keeps the failed deletion visible and retryable", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  await open(CURRENT);
+  answers.chat_history_delete = () => Promise.reject(new Error("Deletion unavailable"));
+  await confirmDelete(CURRENT);
+  assert.match($(".history").textContent, /Deletion unavailable/);
+  $(".history-btn").fire("click");
+  t.mock.method(console, "error", () => {});
+  answers.chat_history_list = () => Promise.reject(new Error("Listing unavailable"));
+  await history();
+  assert.equal(view.el.find(".history-row").length, 1);
+  assert.match($(".history").textContent, /Deletion unavailable/);
+  delete answers.chat_history_delete;
+  await confirmDelete(CURRENT);
+  assert.equal(records.has(CURRENT), false);
+  assert.equal(State.chatId, null);
+  assert.doesNotMatch($(".history").textContent, /Deletion unavailable/);
+});
+
+test("repeated confirmation clicks cannot submit a second pending deletion", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  await open(CURRENT);
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve(); await flush(); });
+  answers.chat_history_delete = async ({ id }) => { await pending.promise; records.delete(id); };
+  const button = await confirmDelete(CURRENT);
+  button.fire("click");
+  button.fire("click");
+  await flush();
+  assert.equal(sent("chat_history_delete").length, 1);
+  assert.equal(deleteButton(CURRENT).disabled, true);
+  // Reopening the panel rebuilds its rows but does not release the operation.
+  $(".history-btn").fire("click");
+  await history();
+  const rebuilt = deleteButton(CURRENT);
+  assert.equal(rebuilt.disabled, true);
+  rebuilt.fire("click");
+  rebuilt.fire("click");
+  await flush();
+  assert.equal(sent("chat_history_delete").length, 1);
+  pending.resolve();
+  await flush();
+  assert.equal(records.has(CURRENT), false);
+  assert.equal(sent("chat_reset").length, 1);
+});
+
+for (const destination of ["another chat", "a new chat", "a replaced transcript", "a continued transcript"]) {
+  test(`a delayed successful deletion cannot clear ${destination}`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    seed(OTHER, "Paris trip");
+    await open(CURRENT);
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(); await flush(); });
+    answers.chat_history_delete = async ({ id }) => { await pending.promise; records.delete(id); };
+    await confirmDelete(CURRENT);
+    if (destination === "another chat") await open(OTHER);
+    else if (destination === "a new chat") {
+      $(".history-new").fire("click");
+      await send("A new beginning");
+    } else if (destination === "a continued transcript") await send("A newer question");
+    else {
+      State.chatHistory = [{ id: 999, role: "user", content: "A newer transcript" }];
+      State.droppedFile = { name: "new.txt", path: "/inbox/new.txt" };
+      State.promptContext = { kind: "file", ...State.droppedFile };
+      State.notify();
+    }
+    const id = State.chatId;
+    const messages = State.chatHistory;
+    const context = State.promptContext;
+    const resets = sent("chat_reset").length;
+    pending.resolve();
+    await flush();
+    assert.equal(records.has(CURRENT), false);
+    assert.equal(State.chatId, id);
+    assert.equal(State.chatHistory, messages);
+    assert.equal(State.promptContext, context);
+    assert.equal(sent("chat_reset").length, resets);
+  });
+}
+
+test("a successful deletion cannot reset native context while a newer chat is opening", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  seed(OTHER, "Paris trip");
+  await open(CURRENT);
+  const deletion = Promise.withResolvers();
+  const opening = Promise.withResolvers();
+  t.after(async () => { deletion.resolve(); opening.resolve(); await flush(); });
+  answers.chat_history_delete = async ({ id }) => { await deletion.promise; records.delete(id); };
+  await confirmDelete(CURRENT);
+  answers.chat_history_open = async ({ id }) => { await opening.promise; return structuredClone(records.get(id)); };
+  await open(OTHER);
+  const messages = State.chatHistory;
+  deletion.resolve();
+  await flush();
+  assert.equal(sent("chat_reset").length, 0, "the newer native open owns the context even before its reply arrives");
+  assert.equal(State.chatHistory, messages);
+  opening.resolve();
+  await flush();
+  assert.equal(State.chatId, OTHER);
+  await send("Keep planning Paris");
+  assert.equal(records.get(OTHER).title, "Paris trip");
+});
+
+test("a delayed deletion failure cannot replace a newer view or its error", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  await open(CURRENT);
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve(); await flush(); });
+  answers.chat_history_delete = () => pending.promise;
+  await confirmDelete(CURRENT);
+  State.view = "note";
+  State.noteMessage = "A newer error";
+  State.notify();
+  const messages = State.chatHistory;
+  pending.reject(new Error("Old deletion failed"));
+  await flush();
+  assert.equal(State.view, "note");
+  assert.equal(State.noteMessage, "A newer error");
+  assert.equal(State.chatHistory, messages);
+  assert.equal(State.chatId, CURRENT);
+  assert.equal(sent("chat_reset").length, 0);
+  State.view = "prompt";
+  State.notify();
+  await history();
+  assert.match($(".history").textContent, /Old deletion failed/);
+});
 
 for (const outcome of ["resolves", "rejects"]) {
   test(`New chat redraws before native reset ${outcome}`, async (t) => {

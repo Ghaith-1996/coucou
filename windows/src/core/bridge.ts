@@ -374,11 +374,12 @@ export const Bridge = {
   chatHistoryDelete: (id: string) => callOrThrow<void>("chat_history_delete", { id }),
   /** ChatGPT sign-in (chatgpt.rs): only a status ever comes back, never a token. */
   chatgptStatus: () => call<ChatGptStatus>("chatgpt_status"),
-  chatgptConnect: () => callOrThrow<ChatGptStatus>("chatgpt_connect"),
+  chatgptConnect: (newAccount = false) => callOrThrow<ChatGptStatus>("chatgpt_connect", { newAccount }),
+  chatgptSelectAccount: (clientId: string) => callOrThrow<ChatGptStatus>("chatgpt_select_account", { clientId }),
   /** Remote revocation and local cleanup are separate; IPC errors propagate. */
   chatgptDisconnect: () => callOrThrow<ChatGptDisconnectResult>("chatgpt_disconnect"),
   chatgptModels: () => callOrThrow<ChatGptModel[]>("chatgpt_models"),
-  chatgptWelcomed: () => call<void>("chatgpt_welcomed"),
+  chatgptWelcomed: (clientId: string | null) => call<void>("chatgpt_welcomed", { clientId }),
   /**
    * The models a provider offers, for the picker in the chat view. Rust asks
    * the provider only when it has a key (or a server address).

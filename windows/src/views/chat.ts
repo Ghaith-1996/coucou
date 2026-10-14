@@ -78,9 +78,13 @@ let nextId = 1;
 /** The ChatGPT account as Rust last said, and its catalog once fetched. */
 let chatgpt: ChatGptStatus | null = null;
 let catalog: ChatGptModel[] | null = null;
+// Native account events supersede reads already in flight in either window.
+let chatgptRevision = 0;
 
 function refreshChatGpt(then?: () => void) {
+  const revision = chatgptRevision;
   void Bridge.chatgptStatus().then((s) => {
+    if (revision !== chatgptRevision) return;
     chatgpt = s ?? null;
     then?.();
     State.notify();
@@ -226,9 +230,11 @@ function buildPicker(onChange: () => void): Picker {
 
   async function connect(p: ProviderDef) {
     const ticket = ++request;
+    const revision = chatgptRevision;
     status(t(STRINGS.connecting));
     try {
-      chatgpt = await Bridge.chatgptConnect();
+      const connected = await Bridge.chatgptConnect();
+      if (revision === chatgptRevision) chatgpt = connected;
       Sound.play("approve");
       if (ticket === request) await loadChatGpt(p);
     } catch (err) {
@@ -265,9 +271,13 @@ function buildPicker(onChange: () => void): Picker {
 
   async function loadChatGpt(p: ProviderDef) {
     const ticket = ++request;
+    const revision = chatgptRevision;
+    // A reopened picker must not expose a previous account's enabled choices
+    // while the native status request is still pending.
+    status(t(STRINGS.loading));
     const s = await Bridge.chatgptStatus();
+    if (ticket !== request || revision !== chatgptRevision) return;
     chatgpt = s ?? null;
-    if (ticket !== request) return;
     if (!s?.connected || !s.planEnabled) {
       signInPrompt(p, s ?? null);
       return;
@@ -276,12 +286,12 @@ function buildPicker(onChange: () => void): Picker {
     else status(t(STRINGS.loading));
     try {
       const models = await Bridge.chatgptModels();
-      if (ticket !== request) return;
+      if (ticket !== request || revision !== chatgptRevision) return;
       catalog = models;
       drawChatGpt(p, s, models);
       onChange();
     } catch (err) {
-      if (ticket === request) signInPrompt(p, s, String(err).replace(/^Error:\s*/, ""));
+      if (ticket === request && revision === chatgptRevision) signInPrompt(p, s, String(err).replace(/^Error:\s*/, ""));
     }
   }
 
@@ -410,6 +420,18 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   const el = h("div", { class: "picker history" }, h("div", { class: "history-head" }, h("span", { class: "history-title", text: tl(STRINGS.history) }), fresh), list);
   let isOpen = false;
   let armedDelete: string | null = null;
+  let armedButton: HTMLButtonElement | null = null;
+  const pendingDeletes = new Set<string>();
+  const deleteFailures = new Map<string, string>();
+  let summaries: ConversationSummary[] = [];
+  let listRequest = 0;
+  let navigationAttempt = 0;
+
+  function disarmDelete() {
+    armedDelete = null;
+    armedButton?.replaceChildren(svg(ICONS.trash, 11));
+    armedButton = null;
+  }
 
   fresh.addEventListener("click", () => {
     newConversation();
@@ -424,9 +446,11 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     const del = h("button", { class: "history-act", title: tl(STRINGS.delete), "aria-label": tl(STRINGS.delete) }, svg(ICONS.trash, 11));
     const line = h("div", { class: State.chatId === s.id ? "picker-model on history-row" : "picker-model history-row", role: "button", tabindex: "0" }, name, when, rename, del);
 
+    rename.disabled = del.disabled = pendingDeletes.has(s.id);
     line.addEventListener("click", () => void open_(s.id));
     rename.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (pendingDeletes.has(s.id)) return;
       const input = h("input", { class: "history-rename", value: s.title, maxlength: "120" }) as HTMLInputElement;
       name.replaceWith(input);
       input.focus();
@@ -450,32 +474,71 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     });
     del.addEventListener("click", async (e) => {
       e.stopPropagation();
+      if (pendingDeletes.has(s.id)) return;
       // A second click deletes: one slip of the mouse loses nothing.
       if (armedDelete !== s.id) {
+        disarmDelete();
         armedDelete = s.id;
+        armedButton = del;
         del.replaceChildren(h("span", { class: "history-confirm", text: t(STRINGS.confirmDelete) }));
         return;
       }
-      armedDelete = null;
-      await Bridge.chatHistoryDelete(s.id).catch(() => {});
-      if (State.chatId === s.id) newConversation();
-      Sound.play("pop");
+      const active = State.chatId === s.id;
+      const messages = State.chatHistory;
+      const count = messages.length;
+      const session = chatSession;
+      const navigation = navigationAttempt;
+      pendingDeletes.add(s.id);
+      deleteFailures.delete(s.id);
+      render();
+      try {
+        await Bridge.chatHistoryDelete(s.id);
+      } catch (err) {
+        pendingDeletes.delete(s.id);
+        deleteFailures.set(s.id, String(err).replace(/^Error:\s*/, ""));
+        render();
+        if (isOpen) Sound.play("error");
+        return;
+      }
+      pendingDeletes.delete(s.id);
+      deleteFailures.delete(s.id);
+      // Only the untouched conversation that was confirmed may be cleared.
+      // Navigation, file drops and new messages can all happen during IPC.
+      if (active && State.chatId === s.id && chatSession === session && navigationAttempt === navigation
+        && State.chatHistory === messages && messages.length === count) newConversation();
+      summaries = summaries.filter((item) => item.id !== s.id);
+      render();
+      if (isOpen) Sound.play("pop");
       void draw();
     });
     return line;
   }
 
-  async function draw() {
-    const items = await Bridge.chatHistoryList();
+  function render() {
+    disarmDelete();
     clear(list);
-    if (!items?.length) {
+    if (!summaries.length) {
       list.append(h("div", { class: "picker-status", text: t(STRINGS.noHistory) }));
       return;
     }
-    for (const s of items) list.append(row(s));
+    for (const summary of summaries) {
+      list.append(row(summary));
+      const error = deleteFailures.get(summary.id);
+      if (error) list.append(h("div", { class: "picker-status history-error", role: "alert", text: error }));
+    }
+  }
+
+  async function draw() {
+    const request = ++listRequest;
+    const items = await Bridge.chatHistoryList();
+    if (request !== listRequest || items === null) return;
+    summaries = items;
+    render();
   }
 
   async function open_(id: string) {
+    if (pendingDeletes.has(id)) return;
+    navigationAttempt++;
     try {
       const saved = await Bridge.chatHistoryOpen(id);
       chatSession++;
@@ -499,7 +562,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
 
   function open() {
     isOpen = true;
-    armedDelete = null;
+    disarmDelete();
     el.classList.add("on");
     onChange();
     void draw();
@@ -507,6 +570,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
 
   function close() {
     isOpen = false;
+    disarmDelete();
     el.classList.remove("on");
     onChange();
   }
@@ -680,8 +744,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (failure) want = `save:${failure.error}`;
     else if (onChatGpt() && usageLimit) want = "limit";
     else if (onChatGpt() && chatgpt?.showWelcome) want = "welcome";
-    if (notice.dataset.kind === want) return;
-    notice.dataset.kind = want;
+    const noticeKey = want === "welcome" ? `${want}:${chatgpt?.accountId ?? ""}` : want;
+    if (notice.dataset.kind === noticeKey) return;
+    notice.dataset.kind = noticeKey;
     clear(notice);
     if (!want) return;
     if (failure) {
@@ -705,10 +770,11 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         h("div", { class: "chat-notice-actions" }, manage),
       ));
     } else {
+      const accountId = chatgpt?.accountId ?? null;
       const ok = h("button", {
         class: "chatgpt-connect",
         text: tl(STRINGS.gotIt),
-        onclick: () => void Bridge.chatgptWelcomed().then(() => refreshChatGpt(drawNotice)),
+        onclick: () => void Bridge.chatgptWelcomed(accountId).then(() => refreshChatGpt(drawNotice)),
       });
       notice.append(h("div", { class: "chat-notice" },
         h("div", { class: "chat-notice-title", text: t(STRINGS.welcomeTitle) }),
@@ -769,8 +835,12 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     drawNotice();
   });
   void onEvent<ChatGptStatus>("chatgpt-status", (s) => {
+    chatgptRevision++;
     chatgpt = s;
     catalog = null; // another account, or none: its catalog is asked again
+    // Every status event invalidates pending catalog work, including a welcome
+    // acknowledgement on the same account. Don't leave its spinner stranded.
+    if (onChatGpt() && picker.isOpen) picker.close();
     State.notify();
   });
 

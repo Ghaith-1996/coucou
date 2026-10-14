@@ -83,7 +83,7 @@ internals.invoke = async (cmd, args) => {
 };
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-const CONNECTED = { connected: true, email: "me@example.com", planEnabled: true, needsReconnect: false, showWelcome: false, manageUsageUrl: "https://chatgpt.com/#settings" };
+const CONNECTED = { connected: true, accountId: "test-client", email: "me@example.com", planEnabled: true, needsReconnect: false, showWelcome: false, manageUsageUrl: "https://chatgpt.com/#settings" };
 const CATALOG = [
   { id: LUNA, label: "GPT-6 Luna", available: true, efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
   { id: SOL, label: "GPT-6.1 Sol", available: true, efforts: ["low", "medium", "high", "xhigh", "max"] },
@@ -253,6 +253,102 @@ test("the first sign-in shows the plan notice once; Got it records it", async ()
   assert.equal(sent("chatgpt_welcomed").length, 1);
   assert.equal($(".chat-notice-title"), null);
 });
+
+test("welcome buttons stay bound to the registration displayed when they were rendered", async () => {
+  answers.chatgpt_status = { ...CONNECTED, showWelcome: true };
+  view = buildPrompt(() => {});
+  await flush();
+  view.sync();
+  const oldButton = view.el.find(".chatgpt-connect").find((b) => b.textContent === "Got it");
+  const newer = { ...CONNECTED, accountId: "other-client", showWelcome: true };
+  answers.chatgpt_status = newer;
+  emit("chatgpt-status", newer);
+  view.sync();
+  const newButton = view.el.find(".chatgpt-connect").find((b) => b.textContent === "Got it");
+  assert.notEqual(newButton, oldButton, "same-kind welcome notices must refresh for a different account");
+  oldButton.fire("click");
+  newButton.fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_welcomed"), [{ clientId: "test-client" }, { clientId: "other-client" }]);
+});
+
+test("a delayed initial account status cannot overwrite a newer registration event", async () => {
+  const pending = Promise.withResolvers();
+  answers.chatgpt_status = () => pending.promise;
+  view = buildPrompt(() => {});
+  await flush();
+  const newer = { ...CONNECTED, accountId: "other-client", showWelcome: true };
+  emit("chatgpt-status", newer);
+  view.sync();
+  pending.resolve({ ...CONNECTED, showWelcome: true });
+  await flush();
+  view.sync();
+  answers.chatgpt_status = newer;
+  view.el.find(".chatgpt-connect").find((b) => b.textContent === "Got it").fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_welcomed"), [{ clientId: "other-client" }]);
+});
+
+test("same-account status invalidation closes a pending picker instead of stranding its spinner", async () => {
+  const pending = Promise.withResolvers();
+  answers.chatgpt_models = () => pending.promise;
+  $(".model-btn").fire("click");
+  await flush();
+  assert.ok($(".picker").classList.contains("on"));
+  emit("chatgpt-status", CONNECTED);
+  pending.resolve(CATALOG);
+  await flush();
+  assert.equal($(".picker").classList.contains("on"), false);
+  answers.chatgpt_models = CATALOG;
+  $(".model-btn").fire("click");
+  await flush();
+  assert.equal(view.el.find(".picker-model").length, 2, "reopening can fetch a fresh catalog");
+});
+
+test("reopening after switching accounts clears old model choices before awaiting status", async () => {
+  $(".model-btn").fire("click");
+  await flush();
+  assert.equal(view.el.find(".picker-model").length, 2);
+  const newer = { ...CONNECTED, accountId: "other-client" };
+  emit("chatgpt-status", newer);
+  const pending = Promise.withResolvers();
+  answers.chatgpt_status = () => pending.promise;
+  answers.chatgpt_models = [CATALOG[0], { ...CATALOG[1], available: false }];
+  $(".model-btn").fire("click");
+  assert.ok($(".picker").classList.contains("on"));
+  assert.equal(view.el.find(".picker-model").length, 0, "no previous-account choice while status is pending");
+  pending.resolve(newer);
+  await flush();
+  const rows = view.el.find(".picker-model");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].disabled, true);
+  rows[1].fire("click");
+  assert.equal(State.settings.chatModels.chatgpt, undefined);
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`a delayed old-account catalog ${outcome} cannot replace the new account's choices`, async () => {
+    const pending = Promise.withResolvers();
+    answers.chatgpt_models = () => pending.promise;
+    $(".model-btn").fire("click");
+    await flush();
+    const newer = { ...CONNECTED, accountId: "other-client" };
+    answers.chatgpt_status = newer;
+    answers.chatgpt_models = [CATALOG[0], { ...CATALOG[1], available: false }];
+    emit("chatgpt-status", newer);
+    $(".model-btn").fire("click");
+    await flush();
+    if (outcome === "success") pending.resolve(CATALOG);
+    else pending.reject(new Error("old-account catalog failed"));
+    await flush();
+    const rows = view.el.find(".picker-model");
+    assert.equal(rows.length, 2);
+    assert.equal(rows[1].disabled, true);
+    rows[1].fire("click");
+    assert.equal(State.settings.chatModels.chatgpt, undefined);
+    assert.equal($(".picker-list").find(".chatgpt-connect").length, 0, "a stale error must not replace the current picker");
+  });
+}
 
 test("a saved conversation reopens from the history with its signatures", async () => {
   answers.chat_history_list = [{ id: "c-00000000000000aa", title: "Lisbon trip", updatedAt: Date.now(), count: 2 }];

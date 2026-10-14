@@ -60,5 +60,17 @@ backend is off limits.
     silence, agent card, leaving the chat, interrupt, End, a failed answer,
     a refused transcript, other captures' events).
 
-Next: a natural voice. OpenAI's text-to-speech through the ChatGPT sign-in
-if OpenAI allows it, or Piper (local, free).
+## OpenAI's voice when the sign-in allows it
+
+When the chat is on ChatGPT, each chunk is first asked of OpenAI's voice
+(`POST /v1/audio/speech`, `gpt-4o-mini-tts`, voice `marin`, MP3, with the
+same access token as the chat; never an API key).
+- Sign in with ChatGPT doesn't document speech out, so it is tried, not
+  assumed.
+- The first refusal (HTTP 400/401/403/404) is logged
+  (`chatgpt: speech not available on this sign-in`) and not asked again
+  until restart. Other failures fall back for that chunk only.
+- Windows' voices read whatever OpenAI's voice doesn't.
+- The log says `speech: ChatGPT's voice in use` the first time it works.
+
+If it is refused, the next step is Piper (local, free neural voices).

@@ -15,9 +15,15 @@ field the capture started in.
    - the focused element belongs to another process than the foreground
      window (a system popup, say).
    The field is tied to the capture id (`Dictation::bind`). A stop press keeps
-   the field the capture started with. It is forgotten after 160 s (30 s of
-   capture, 2 min of preview, some slack), when the next capture starts, or
-   once it was used.
+   the field the capture started with. Before an offer, the field survives
+   capture and transcription without a guessed transcription timeout. The
+   first offer supplies the exact native preview deadline (two minutes after
+   transcription finishes), and later offers cannot extend it. An expired
+   offered field is discarded on the next UI Automation job; a new capture
+   replaces it, and any attempted write consumes it. An unoffered field stays
+   until replacement, but cannot be written without an active preview's grant
+   and write permit. Stale offers never change a newer capture's field or
+   deadline.
 2. **Offer** (`assistant_insert_offer`, when the transcript arrives). Only for
    plain words: a real transcript (never the simulated one) that is not a pill
    command and not "open <app>". Rust checks the field (step 4's checks) and:
@@ -71,11 +77,16 @@ field the capture started in.
      immediately before SetValue, including after potentially slow UIA reads.
    - Afterwards the keyboard goes back to the target window.
 6. **Receipt**:
-   - `succeeded` (evidence `uia-value:read-back`): the value read back
-     contains the words;
-   - `unknown`: SetValue said yes but the value doesn't show them, or the write
-     reply timed out. A timeout cannot prove that the queued/in-flight write
-     did not happen. The permit is retired and the action is never retried;
+   - `succeeded` (evidence `uia-value:read-back`): the complete value read back
+     exactly matches the intended spliced value, including the surrounding
+     text and insertion location. Words already present elsewhere are not
+     evidence that SetValue worked. Replacing a selection with identical words
+     is a valid no-op when the complete requested state matches; no read-back
+     whitespace or line-break differences are normalized;
+   - `unknown`: SetValue said yes but read-back failed or differs from the
+     intended value, or the write reply timed out. A timeout cannot prove that
+     the queued/in-flight write did not happen. The permit is retired and the
+     action is never retried;
    - `failed`: SetValue failed. The words then become a `chat-draft` (the
      policy allows it) and wait in Coucou's chat field, unsent, so they are
      not lost.
@@ -105,11 +116,15 @@ never the words or the app.
 
 - Rust: `refusal` for every check, `spliced` (caret, selection, end,
   disagreeing value, spacing, accents, CJK), `verified`, the thread without a
-  field; `Voice::propose` / `begin_insert` / `finish_insert` / `preview_text` /
+  field; `Voice::propose` / `begin_insert` / `finish_insert` / `insertion_preview` /
   `fallback_draft` for `insert-text`; exact capture ownership, refusal retention,
   original expiry, duplicate confirmations, cancellation/replacement, terminal
-  timeouts; the shared contract fixture (`insert-text` available, decision
-  `ask`, no target or an extra field such as `pressEnter` refused). These
+  timeouts; slow transcription and a valid near-expiry offer, exact native
+  target expiry, non-renewing reoffers and stale-capture deadline isolation;
+  ignored SetValue with preexisting words, exact-value mismatches and an
+  identical-selection no-op; the shared contract fixture (`insert-text`
+  available, decision `ask`, no target or an extra field such as `pressEnter`
+  refused). These
   regressions use simulated captures and a queued worker, without desktop access.
 - Live (opt-in, `cargo test dictation -- --ignored`): a WinForms text box in a
   separate PowerShell process, with "Hello world" and the caret after

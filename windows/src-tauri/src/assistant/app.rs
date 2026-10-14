@@ -160,8 +160,8 @@ pub async fn assistant_insert_offer(
     dictation: State<'_, Dictation>,
     capture_id: String,
 ) -> Result<Option<InsertOffer>, ErrorCode> {
-    let text = voice.preview_text(&capture_id)?;
-    let offer = match dictation.offer(&capture_id).await {
+    let (text, expires) = voice.insertion_preview(&capture_id)?;
+    let offer = match dictation.offer(&capture_id, expires).await {
         Ok(offer) => offer,
         // No other app's field had the keyboard: nothing to offer.
         Err(Refusal::Gone) => return Ok(None),

@@ -87,10 +87,86 @@ fn non_ascii_text_splits_on_character_boundaries() {
 }
 
 #[test]
-fn evidence_is_the_words_read_back() {
-    assert!(verified("Hello big world", " big "));
-    assert!(!verified("Hello world", "big"));
-    assert!(!verified("anything", "   "));
+fn evidence_is_the_exact_intended_value_read_back() {
+    assert!(verified("Hello big world", "Hello big world"));
+    assert!(!verified("Hello world", "Hello big world"));
+    assert!(!verified("Hello big world!", "Hello big world"));
+    assert!(!verified(" Hello big world ", "Hello big world"));
+    assert!(!verified("one\r\ntwo", "one\ntwo"), "different ValuePattern results are not normalized");
+    assert!(!verified("", ""), "an empty fallback is not evidence");
+}
+
+#[test]
+fn preexisting_words_do_not_verify_an_ignored_write() {
+    let original = "Hello big world";
+    for caret in [None, Some(("Hello ", "")), Some(("Hello big ", "world"))] {
+        let intended = spliced(original, caret, "big");
+        assert_ne!(intended, original);
+        assert!(!verified(original, &intended), "SetValue ignored the requested insertion");
+        assert!(verified(&intended, &intended));
+    }
+}
+
+#[test]
+fn replacing_the_selection_with_identical_words_verifies_the_requested_noop() {
+    let original = "Hello big world";
+    let intended = spliced(original, Some(("Hello ", "big")), " big ");
+    assert_eq!(intended, original);
+    assert!(verified(original, &intended), "the exact requested state is already present");
+}
+
+#[test]
+fn slow_transcription_keeps_the_target_until_the_native_preview_deadline() {
+    let captured = Instant::now();
+    let mut target = Remembered::new("cap-slow".into(), "original field");
+    // A full capture plus more than the old ten-second transcription slack.
+    // Seed instants instead of sleeping or invoking a microphone/model.
+    let preview = captured + Duration::from_secs(30 + 90);
+    let expires = preview + super::super::voice::PREVIEW_TTL;
+    assert!(!target.expired(preview), "an unoffered target has no guessed transcription timeout");
+    assert_eq!(target.offer("cap-slow", expires, preview), Ok(&"original field"));
+    let near_end = expires - Duration::from_millis(1);
+    assert!(near_end > captured + Duration::from_secs(160));
+    assert!(!target.expired(near_end));
+    assert_eq!(target.offer("cap-slow", expires, near_end), Ok(&"original field"));
+    assert!(target.expired(expires));
+    assert_eq!(target.offer("cap-slow", expires, expires), Err(Refusal::Gone));
+}
+
+#[test]
+fn a_first_offer_after_a_slow_transcription_can_arrive_near_preview_expiry() {
+    let captured = Instant::now();
+    let mut target = Remembered::new("cap-slow".into(), "original field");
+    let expires = captured + Duration::from_secs(30 + 90 + 120);
+    assert_eq!(target.offer("cap-slow", expires, expires - Duration::from_millis(1)), Ok(&"original field"));
+    assert!(target.expired(expires));
+}
+
+#[test]
+fn repeated_offers_never_renew_the_original_target_deadline() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    let mut target = Remembered::new("cap-current".into(), "original field");
+    assert_eq!(target.offer("cap-current", expires, now), Ok(&"original field"));
+    assert_eq!(target.offer("cap-current", expires + Duration::from_secs(60), expires - Duration::from_millis(1)), Ok(&"original field"));
+    assert_eq!(target.expires, Some(expires));
+    assert_eq!(target.offer("cap-current", expires + Duration::from_secs(120), expires), Err(Refusal::Gone));
+    assert_eq!(target.expires, Some(expires), "an expired target cannot be renewed either");
+}
+
+#[test]
+fn stale_capture_offers_cannot_set_or_replace_a_new_targets_deadline() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    let mut target = Remembered::new("cap-new".into(), "new field");
+    assert_eq!(target.offer("cap-old", now, now), Err(Refusal::Gone));
+    assert_eq!(target.expires, None);
+    assert_eq!(target.offer("cap-new", expires, now), Ok(&"new field"));
+    for stale_deadline in [now, expires + Duration::from_secs(120)] {
+        assert_eq!(target.offer("cap-old", stale_deadline, now), Err(Refusal::Gone));
+        assert_eq!(target.expires, Some(expires));
+    }
+    assert_eq!(target.offer("cap-new", expires, expires - Duration::from_millis(1)), Ok(&"new field"));
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -164,6 +240,22 @@ fn every_attempted_write_outcome_consumes_the_field() {
 }
 
 #[test]
+fn ignored_set_value_with_preexisting_words_is_unconfirmed_and_terminal() {
+    let mut bound = Some(FakeField {
+        value: std::cell::RefCell::new("Hello big world".into()),
+        ..field()
+    });
+    let answer = write_bound(&mut bound, |_| true, |field| {
+        let intended = spliced(&field.value.borrow(), None, "big");
+        // The provider reports SetValue success but leaves its value unchanged.
+        Ok(if verified(&field.value.borrow(), &intended) { Written::Verified } else { Written::Unconfirmed })
+    });
+    assert_eq!(answer, Ok(Written::Unconfirmed));
+    assert!(bound.is_none());
+    assert_eq!(write_bound(&mut bound, |_| true, |_| panic!("an uncertain write cannot be retried")), Err(Refusal::Gone));
+}
+
+#[test]
 fn a_write_permit_expires_and_cancellation_is_shared_with_the_worker() {
     let live = permit();
     let worker = live.clone();
@@ -176,6 +268,28 @@ fn a_write_permit_expires_and_cancellation_is_shared_with_the_worker() {
     assert_eq!(expired.check(), Err(Refusal::Gone));
     let boundary = WritePermit { expires: Instant::now(), ..permit() };
     assert_eq!(boundary.check(), Err(Refusal::Gone), "the expiry instant is already too late");
+}
+
+#[tokio::test]
+async fn an_offer_queues_the_exact_native_deadline_without_restarting_it() {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let (send, jobs) = mpsc::channel();
+    let dictation = Dictation { jobs: Mutex::new(send) };
+    let expires = Instant::now() + Duration::from_secs(10);
+    let mut offering = Box::pin(dictation.offer("cap-current", expires));
+    std::future::poll_fn(|cx| {
+        assert!(offering.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    }).await;
+    let Job::Offer(capture, queued_deadline, reply) = jobs.try_recv().unwrap() else {
+        panic!("expected an offer job");
+    };
+    assert_eq!(capture, "cap-current");
+    assert_eq!(queued_deadline, expires);
+    reply.send(Err(Refusal::FocusMoved)).unwrap();
+    assert_eq!(offering.await, Err(Refusal::FocusMoved));
 }
 
 #[tokio::test(start_paused = true)]
@@ -218,7 +332,7 @@ async fn a_write_reply_timeout_is_terminal_and_closes_the_late_workers_permissio
 async fn nothing_remembered_means_no_offer_and_no_write() {
     let dictation = Dictation::start(|_| {});
     dictation.bind(Some("cap-none".into()));
-    assert!(dictation.offer("cap-none").await.is_err());
+    assert!(dictation.offer("cap-none", permit().expires).await.is_err());
     let args = InsertTextArgs { text: "hi".into(), target_window: 1, target_pid: 1 };
     assert!(dictation.write("cap-none", args, permit()).await.is_err());
 }
@@ -279,7 +393,7 @@ async fn words_go_into_a_real_text_box_at_its_caret_and_are_read_back() {
     let dictation = Dictation::start(|line| println!("{line}"));
     dictation.probe().await;
     dictation.bind(Some("cap-live".into()));
-    let offer = dictation.offer("cap-live").await;
+    let offer = dictation.offer("cap-live", permit().expires).await;
     let result = match offer {
         // Never write anywhere but the test's own box.
         Ok(offer) if offer.target_pid == child.id() => {
@@ -309,7 +423,7 @@ async fn a_real_password_box_is_never_offered() {
     let dictation = Dictation::start(|line| println!("{line}"));
     dictation.probe().await;
     dictation.bind(Some("cap-live".into()));
-    let offer = dictation.offer("cap-live").await;
+    let offer = dictation.offer("cap-live", permit().expires).await;
     let _ = child.kill();
     assert_eq!(offer, Err(Refusal::Protected));
 }

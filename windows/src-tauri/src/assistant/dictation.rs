@@ -18,7 +18,7 @@
 // only on the element named. The words go where the caret (or the selection)
 // was when TextPattern can say where that is and the field's value agrees,
 // at the end otherwise. Nothing is ever sent: no Enter, no submit. Success
-// needs evidence, the field's value read back with the words in it.
+// needs evidence, the field's value read back exactly as intended.
 //
 // Every UI Automation call runs on one thread of its own (COM MTA), which also
 // holds the remembered element; the rest of the app only sees plain data.
@@ -32,9 +32,6 @@ use serde::Serialize;
 
 use super::contracts::InsertTextArgs;
 
-/// How long a remembered field stays usable: the longest capture plus the
-/// time its transcript may wait on the card, and a little slack.
-pub const MAX_AGE: Duration = Duration::from_secs(30 + 120 + 10);
 /// How long the app waits on the UI Automation thread for one answer. A hung
 /// target app must not hang the island.
 pub const REPLY_TIMEOUT: Duration = Duration::from_secs(4);
@@ -70,7 +67,7 @@ pub struct Offer {
 /// What came of a write the user confirmed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Written {
-    /// The value read back contains the words.
+    /// The value read back matches the complete intended value.
     Verified,
     /// The write may have happened (unverified read-back or a reply timeout).
     Unconfirmed,
@@ -159,10 +156,38 @@ fn unspaced(c: char) -> bool {
     matches!(c as u32, 0x3000..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
 }
 
-/// The words are in the value read back.
-pub fn verified(value: &str, text: &str) -> bool {
-    let text = text.trim();
-    !text.is_empty() && value.contains(text)
+/// The exact requested state is read back. A phrase may already have been in
+/// the field before an ignored write; matching only that phrase is no proof.
+/// Replacing a selection with identical words is a valid no-op when the whole
+/// intended value agrees. Do not normalize differences between providers.
+pub fn verified(value: &str, intended: &str) -> bool {
+    !intended.is_empty() && value == intended
+}
+
+/// One capture's field. Transcription has no fixed duration; only an offer
+/// supplies the original native preview deadline. Further offers cannot renew
+/// it, and stale captures cannot change the current field's lifetime.
+struct Remembered<T> {
+    capture: String,
+    field: T,
+    expires: Option<Instant>,
+}
+
+impl<T> Remembered<T> {
+    fn new(capture: String, field: T) -> Self {
+        Self { capture, field, expires: None }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        self.expires.is_some_and(|expires| now >= expires)
+    }
+
+    fn offer(&mut self, capture: &str, expires: Instant, now: Instant) -> Result<&T, Refusal> {
+        if self.capture != capture { return Err(Refusal::Gone); }
+        self.expires = Some(self.expires.map_or(expires, |original| original.min(expires)));
+        if self.expired(now) { return Err(Refusal::Gone); }
+        Ok(&self.field)
+    }
 }
 
 /// Valid only for the outstanding confirmation, until cancellation or its
@@ -206,7 +231,7 @@ enum Job {
     Probe(Reply<()>),
     /// The capture that probe was for (None: no capture started).
     Bind(Option<String>),
-    Offer(String, Reply<Result<Offer, Refusal>>),
+    Offer(String, Instant, Reply<Result<Offer, Refusal>>),
     /// Checked again, then written.
     Write(String, InsertTextArgs, WritePermit, Reply<Result<Written, Refusal>>),
 }
@@ -254,9 +279,11 @@ impl Dictation {
     }
 
     /// The app this capture's field belongs to, if the field can take text.
-    pub async fn offer(&self, capture_id: &str) -> Result<Offer, Refusal> {
+    /// `expires` is the original preview deadline supplied by Voice, never by
+    /// the page and never computed anew when the user retries an offer.
+    pub async fn offer(&self, capture_id: &str, expires: Instant) -> Result<Offer, Refusal> {
         let capture = capture_id.to_string();
-        self.ask(|reply| Job::Offer(capture, reply), Err(Refusal::Busy)).await
+        self.ask(|reply| Job::Offer(capture, expires, reply), Err(Refusal::Busy)).await
     }
 
     /// Checks the field again, then writes the confirmed words into it.
@@ -282,7 +309,7 @@ fn run(jobs: mpsc::Receiver<Job>, _log: fn(String)) {
         match job {
             Job::Probe(reply) => drop(reply.send(())),
             Job::Bind(_) => {}
-            Job::Offer(_, reply) => drop(reply.send(Err(Refusal::Unsupported))),
+            Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported))),
             Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone))),
         }
     }

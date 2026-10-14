@@ -366,7 +366,7 @@ impl Voice {
     pub fn begin_insert(&self, capture_id: &str, grant: &policy::Grant) -> Result<(String, InsertTextArgs, WritePermit), ErrorCode> {
         let mut phase = self.0.phase.lock().unwrap();
         let Phase::Preview { id, transcript, since } = &*phase else { return Err(ErrorCode::Expired) };
-        if id != capture_id || since.elapsed() > PREVIEW_TTL { return Err(ErrorCode::Expired); }
+        if id != capture_id || since.elapsed() >= PREVIEW_TTL { return Err(ErrorCode::Expired); }
         if transcript.simulated { return Err(ErrorCode::Unavailable); }
         let proposal = self.0.proposal.lock().unwrap();
         let p = proposal.as_ref().ok_or(ErrorCode::Expired)?;
@@ -408,16 +408,16 @@ impl Voice {
         if refused && expired { Err(ErrorCode::Expired) } else { Ok(()) }
     }
 
-    /// The words of the transcript waiting on the island for this capture,
-    /// left there. Only real speech: a simulated transcript is a placeholder
-    /// and is never offered to another app.
-    pub fn preview_text(&self, capture_id: &str) -> Result<String, ErrorCode> {
+    /// The words and original deadline of this capture's preview, left there.
+    /// Both are read under the same capture ownership check. Only real speech:
+    /// a simulated transcript is never offered to another app.
+    pub fn insertion_preview(&self, capture_id: &str) -> Result<(String, Instant), ErrorCode> {
         match &*self.0.phase.lock().unwrap() {
-            Phase::Preview { id, transcript, since } if id == capture_id && since.elapsed() <= PREVIEW_TTL => {
+            Phase::Preview { id, transcript, since } if id == capture_id && since.elapsed() < PREVIEW_TTL => {
                 if transcript.simulated {
                     Err(ErrorCode::Unavailable)
                 } else {
-                    Ok(transcript.text.clone())
+                    Ok((transcript.text.clone(), *since + PREVIEW_TTL))
                 }
             }
             _ => Err(ErrorCode::Expired),

@@ -1,6 +1,6 @@
 // The dictation thread on Windows: UI Automation in a COM MTA of its own.
-// Holds at most one remembered field, for at most MAX_AGE. Logs say what
-// happened, never the words or the app.
+// Holds one capture's field, bounded by its native preview deadline once
+// offered. Logs say what happened, never the words or the app.
 
 use std::sync::mpsc;
 use std::time::Instant;
@@ -23,11 +23,9 @@ use super::*;
 const UIA_TIMEOUT_MS: u32 = 1500;
 
 struct Field {
-    capture: Option<String>,
     window: HWND,
     pid: u32,
     element: IUIAutomationElement,
-    since: Instant,
 }
 
 pub(super) fn run(jobs: mpsc::Receiver<Job>, log: fn(String)) {
@@ -60,7 +58,7 @@ fn refuse_all(jobs: mpsc::Receiver<Job>) {
         match job {
             Job::Probe(reply) => drop(reply.send(())),
             Job::Bind(_) => {}
-            Job::Offer(_, reply) => drop(reply.send(Err(Refusal::Unsupported))),
+            Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported))),
             Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone))),
         }
     }
@@ -69,10 +67,11 @@ fn refuse_all(jobs: mpsc::Receiver<Job>) {
 fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
     // The latest probe, until a capture claims it; then the capture's field.
     let mut pending: Option<Field> = None;
-    let mut bound: Option<Field> = None;
+    let mut bound: Option<Remembered<Field>> = None;
     for job in jobs {
-        // A field past its age is dropped whatever comes next.
-        if bound.as_ref().is_some_and(|f| f.since.elapsed() > MAX_AGE) {
+        // Drop an offered field at its original preview deadline on the next
+        // job. Before then, slow transcription must not age its target out.
+        if bound.as_ref().is_some_and(|target| target.expired(Instant::now())) {
             bound = None;
         }
         match job {
@@ -84,9 +83,9 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
                 let probed = pending.take();
                 match capture {
                     // A stop press: that capture keeps the field it started with.
-                    Some(id) if bound.as_ref().is_some_and(|f| f.capture.as_deref() == Some(&id)) => {}
+                    Some(id) if bound.as_ref().is_some_and(|target| target.capture == id) => {}
                     Some(id) => {
-                        bound = probed.map(|f| Field { capture: Some(id), ..f });
+                        bound = probed.map(|field| Remembered::new(id, field));
                         if bound.is_some() {
                             log("dictation: field remembered for the capture".into());
                         }
@@ -94,26 +93,25 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
                     None => {}
                 }
             }
-            Job::Offer(capture, reply) => {
-                let answer = match bound.as_ref().filter(|f| f.capture.as_deref() == Some(&capture)) {
-                    None => Err(Refusal::Gone),
-                    Some(field) => check(field).map(|_| Offer {
+            Job::Offer(capture, expires, reply) => {
+                let answer = bound.as_mut().ok_or(Refusal::Gone)
+                    .and_then(|target| target.offer(&capture, expires, Instant::now()))
+                    .and_then(|field| check(field).map(|_| Offer {
                         label: app_label(field.pid),
                         target_window: field.window.0 as usize as u64,
                         target_pid: field.pid,
-                    }),
-                };
+                    }));
                 if let Err(why) = answer {
                     log(format!("dictation: no insertion offered ({})", name(why)));
                 }
                 let _ = reply.send(answer);
             }
             Job::Write(capture, args, permit, reply) => {
-                let answer = write_bound(&mut bound, |f| {
-                    f.capture.as_deref() == Some(&capture)
-                        && f.window.0 as usize as u64 == args.target_window
-                        && f.pid == args.target_pid
-                }, |field| write(field, &args.text, &permit, &reply));
+                let answer = write_bound(&mut bound, |target| {
+                    target.capture == capture
+                        && target.field.window.0 as usize as u64 == args.target_window
+                        && target.field.pid == args.target_pid
+                }, |target| write(&target.field, &args.text, &permit, &reply));
                 log(match answer {
                     Ok(Written::Verified) => "dictation: text inserted and read back".into(),
                     Ok(Written::Unconfirmed) => "dictation: text set but not read back".into(),
@@ -150,7 +148,7 @@ fn focused_field(ua: &IUIAutomation2) -> Option<Field> {
     // The focus can sit in a popup of another process (a system menu, say):
     // only a field of the foreground app is a target.
     let element_pid = unsafe { element.CurrentProcessId() }.ok()? as u32;
-    (element_pid == pid).then(|| Field { capture: None, window, pid, element, since: Instant::now() })
+    (element_pid == pid).then(|| Field { window, pid, element })
 }
 
 fn facts(field: &Field) -> (Facts, Option<IUIAutomationValuePattern>) {
@@ -190,17 +188,17 @@ fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<W
     let next = spliced(&current, caret.as_ref().map(|(b, s)| (b.as_str(), s.as_str())), text);
     // UIA reads can block. Check again immediately before the only effect,
     // so a cancelled/replaced capture or a timed-out queued job cannot write.
-    let next = BSTR::from(next);
+    let next_value = BSTR::from(next.as_str());
     permit.check()?;
     if reply.is_closed() { return Err(Refusal::Gone); }
-    if unsafe { pattern.SetValue(&next) }.is_err() {
+    if unsafe { pattern.SetValue(&next_value) }.is_err() {
         return Ok(Written::Failed);
     }
-    let after = unsafe { pattern.CurrentValue() }.map(|v| v.to_string()).unwrap_or_default();
+    let read_back = unsafe { pattern.CurrentValue() }.is_ok_and(|value| verified(&value.to_string(), &next));
     // Give the keyboard back to the app the words went to. Coucou has it
     // (the island's card), so Windows lets it pass it on.
     let _ = unsafe { SetForegroundWindow(field.window) };
-    Ok(if verified(&after, text) { Written::Verified } else { Written::Unconfirmed })
+    Ok(if read_back { Written::Verified } else { Written::Unconfirmed })
 }
 
 /// (text before the caret, selected text), from the field's TextPattern.

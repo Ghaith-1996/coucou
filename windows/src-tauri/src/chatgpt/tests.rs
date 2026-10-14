@@ -933,51 +933,141 @@ async fn nonterminal_refresh_failures_restore_the_session_only_if_metadata_commi
 
 #[tokio::test]
 async fn successful_refresh_unblocks_only_after_both_credential_and_metadata_commits() {
-    for rotated in [false, true] {
+    for (scope, granted) in sign_in_scope_cases().into_iter().chain([
+        (Some("   "), false),
+        (Some(PLAN_SCOPE), true),
+        (Some("  email  chatgpt.tokens.use.direct  openid  "), true),
+    ]) {
+      for rotated in [false, true] {
         for store_ok in [false, true] {
             for finish_ok in [false, true] {
                 let active = std::sync::Mutex::new(None);
-                let original = registered_account();
+                let mut original = registered_account();
+                original.saved_accounts.push(account(Some("oaiapp_saved")).registration().unwrap());
+                original.pending_account = account(Some("oaiapp_pending")).registration();
                 let persisted = std::cell::RefCell::new(original.clone());
-                let invalidated = std::cell::Cell::new(false);
+                let generation = std::cell::Cell::new(4);
+                let request = RequestAccount { client_id: "oaiapp_original".into(), generation: 4 };
+                let access = std::cell::RefCell::new(Some(Access {
+                    client_id: request.client_id.clone(), generation: 4,
+                    token: "old-access".into(), until: Instant::now() + Duration::from_secs(3600),
+                }));
                 let remembered = std::cell::Cell::new(false);
+                let credential_saved = std::cell::Cell::new(false);
                 let mut writes = 0;
                 let mut stores = 0;
                 let result = refresh_with(&active, &original,
                     || {
                         assert!(status_from_storage(Ok(persisted.borrow().clone()), Ok((true, true)), active.lock().unwrap().as_deref(), None).connected);
-                        let mut tokens = new_account_tokens();
-                        if !rotated { tokens.refresh_token = None; }
+                        let mut response = json!({ "access_token": "new-access", "expires_in": 3600 });
+                        if rotated { response["refresh_token"] = json!("new-refresh"); }
+                        if let Some(scope) = scope { response["scope"] = json!(scope); }
+                        let tokens: Tokens = serde_json::from_value(response).unwrap();
                         std::future::ready(Ok(tokens))
                     },
                     |next| {
                         writes += 1;
-                        if writes == 2 && !finish_ok { return Err("disk full".into()); }
+                        if writes == 2 {
+                            assert!(!rotated || credential_saved.get(), "rotation must be saved before clearing recovery");
+                            assert_eq!(next.plan_enabled, granted, "scope={scope:?}");
+                            assert!(!next.session_needs_reconnect);
+                            assert_eq!(generation.get(), if granted { 4 } else { 5 }, "fence old requests before fallible storage");
+                            if !finish_ok { return Err("disk full".into()); }
+                        }
                         persisted.replace(next.clone()); Ok(())
                     },
                     |key, value| {
                         stores += 1;
                         assert_eq!((key, value), (REFRESH_TOKEN_KEY, "new-refresh"));
                         assert!(persisted.borrow().session_needs_reconnect);
-                        if store_ok { Ok(()) } else { Err("keystore locked".into()) }
+                        assert_eq!(generation.get(), if granted { 4 } else { 5 }, "lost scope invalidates before credential writes");
+                        if store_ok { credential_saved.set(true); Ok(()) } else { Err("keystore locked".into()) }
                     },
-                    || invalidated.set(true),
+                    || { access.replace(None); generation.set(generation.get() + 1); },
                     |tokens| {
                         assert!(!persisted.borrow().session_needs_reconnect);
+                        assert!(persisted.borrow().plan_enabled, "never cache a token without the plan grant");
                         assert_eq!(tokens.access_token, "new-access");
                         remembered.set(true);
                     },
                 ).await;
                 let committed = (!rotated || store_ok) && finish_ok;
                 assert!(active.lock().unwrap().is_none());
-                assert_eq!(result.is_ok(), committed);
-                assert_eq!(remembered.get(), committed);
-                assert_eq!(invalidated.get(), !committed);
+                if committed && granted { assert_eq!(result, Ok("new-access".into())); }
+                else if committed {
+                    assert_eq!(result, Err(t("Plan usage wasn't allowed at sign-in. Reconnect and allow it to chat on your ChatGPT plan.")));
+                } else { assert!(result.is_err()); }
+                assert_eq!(remembered.get(), committed && granted);
+                assert_eq!(generation.get(), if committed && granted { 4 } else { 5 });
+                assert_eq!(check_session_generation(&request, generation.get()).is_ok(), committed && granted);
+                assert_eq!(access.borrow().is_some(), committed && granted);
                 assert_eq!(stores, usize::from(rotated));
-                assert_eq!(persisted.borrow().session_needs_reconnect, !committed);
-                assert_eq!(status_for(&persisted.borrow(), true, true).connected, committed);
+                let mut expected = original.clone();
+                expected.session_needs_reconnect = !committed;
+                if committed { expected.plan_enabled = granted; }
+                assert_eq!(*persisted.borrow(), expected, "refresh preserves identity, host, welcome and other registrations");
+                let restarted: Account = serde_json::from_slice(&serde_json::to_vec(&*persisted.borrow()).unwrap()).unwrap();
+                let status = status_for(&restarted, true, true);
+                assert_eq!(status.connected, committed);
+                assert_eq!(status.plan_enabled, !committed || granted);
+                assert!(!status.show_welcome && !status.can_switch_accounts);
+                assert_eq!(require_selected_client(&restarted, &request.client_id).is_ok(), committed && granted);
+                assert!(require_selected_client(&restarted, "oaiapp_saved").is_err());
+                if committed && !granted {
+                    let consent = query(&authorize_url(&restarted, &Attempt::new(1455), None));
+                    assert_eq!(consent["client_id"], request.client_id);
+                    assert_eq!(consent["prompt"], "consent", "recover permission on the same registration");
+                }
             }
         }
+      }
+    }
+}
+
+#[tokio::test]
+async fn refresh_cannot_add_plan_permission_to_an_account_without_a_prior_grant() {
+    for (scope, _) in sign_in_scope_cases() {
+        let active = std::sync::Mutex::new(None);
+        let original = Account { plan_enabled: false, ..registered_account() };
+        let mut tokens = new_account_tokens(); tokens.scope = scope.map(str::to_string);
+        let result = refresh_with(&active, &original,
+            || std::future::ready(Ok(tokens)),
+            |_| panic!("no metadata changes without a prior grant"),
+            |_, _| panic!("no credential changes without a prior grant"),
+            || panic!("no session change"),
+            |_| panic!("no new access"),
+        ).await;
+        assert_eq!(result, Err(t("Plan usage wasn't allowed at sign-in. Reconnect and allow it to chat on your ChatGPT plan.")));
+        assert!(active.lock().unwrap().is_none());
+    }
+}
+
+#[tokio::test]
+async fn malformed_supplied_scope_is_not_omission_and_keeps_refresh_recovery_guarded() {
+    for scope in [Value::Null, json!(false), json!(7), json!([PLAN_SCOPE]), json!({ "scope": PLAN_SCOPE })] {
+        let active = std::sync::Mutex::new(None);
+        let original = registered_account();
+        let mut saved = None;
+        let invalidated = std::cell::Cell::new(false);
+        let result = refresh_with(&active, &original,
+            || {
+                let parsed = serde_json::from_value::<Tokens>(json!({ "access_token": "new-access",
+                    "refresh_token": "new-refresh", "scope": scope }));
+                assert!(parsed.is_err(), "a supplied scope must be a string");
+                std::future::ready(parsed.map_err(|_| RefreshFailure::InvalidResponse))
+            },
+            |next| { saved = Some(next.clone()); Ok(()) },
+            |_, _| panic!("a malformed response cannot commit credentials"),
+            || invalidated.set(true),
+            |_| panic!("a malformed response cannot cache access"),
+        ).await;
+        assert_eq!(result, Err(t("ChatGPT didn't accept the sign-in. Reconnect in Settings.")));
+        assert!(active.lock().unwrap().is_none());
+        assert!(invalidated.get());
+        let saved = saved.unwrap();
+        assert!(saved.session_needs_reconnect);
+        assert_eq!(saved.registration(), original.registration());
+        assert!(!status_for(&saved, true, true).connected);
     }
 }
 
@@ -998,17 +1088,19 @@ async fn malformed_success_keeps_the_session_blocked_because_rotation_may_have_h
 
 #[test]
 fn cancelled_refresh_leaves_durable_recovery_and_invalidates_the_previous_access() {
+  for response_ready_before_stop in [false, true] {
     let active = std::sync::Mutex::new(None);
     let original = registered_account();
     let persisted = std::cell::RefCell::new(original.clone());
     let invalidated = std::cell::Cell::new(false);
+    let (response, receive) = tokio::sync::oneshot::channel::<Tokens>();
     let mut refreshed = false;
     let mut refresh = Box::pin(recover_authentication_with(401, &mut refreshed,
         || refresh_with(&active, &original,
-            std::future::pending::<Result<Tokens, RefreshFailure>>,
+            || async move { receive.await.map_err(|_| RefreshFailure::Unreachable) },
             |next| { persisted.replace(next.clone()); Ok(()) },
-            |_, _| panic!("no response arrived"),
-            || invalidated.set(true), |_| panic!("no response arrived"),
+            |_, _| panic!("a cancelled exchange cannot commit credentials"),
+            || invalidated.set(true), |_| panic!("a cancelled exchange cannot cache access"),
         ),
         || -> std::future::Ready<Result<(), String>> { panic!("no second rejection arrived") },
     ));
@@ -1017,10 +1109,16 @@ fn cancelled_refresh_leaves_durable_recovery_and_invalidates_the_previous_access
     assert!(persisted.borrow().session_needs_reconnect);
     assert!(status_from_storage(Ok(persisted.borrow().clone()), Ok((true, true)), active.lock().unwrap().as_deref(), None).connected);
     assert!(!invalidated.get());
+    if response_ready_before_stop {
+        let mut tokens = new_account_tokens(); tokens.scope = Some(String::new());
+        response.send(tokens).unwrap();
+    }
     drop(refresh);
     assert!(active.lock().unwrap().is_none());
     assert!(invalidated.get());
     assert!(!status_for(&persisted.borrow(), true, true).connected);
+    assert_eq!(persisted.borrow().registration(), original.registration(), "unobserved responses never replace account metadata");
+  }
 }
 
 #[tokio::test]

@@ -436,6 +436,39 @@ for (const operation of ["models", "send"]) {
   }
 }
 
+for (const operation of ["models", "send"]) {
+  test(`reduced refresh plan permission from ${operation} offers same-account consent recovery`, async () => {
+    const el = await section();
+    assert.equal(button(el, "Reconnect"), undefined);
+    const reduced = { ...CONNECTED, planEnabled: false };
+    const command = operation === "models" ? "chatgpt_models" : "chat_send";
+    answers[command] = () => {
+      answers.chatgpt_status = reduced;
+      emit("chatgpt-status", reduced);
+      throw new Error("Plan usage wasn't allowed at sign-in. Reconnect and allow it to chat on your ChatGPT plan.");
+    };
+    await assert.rejects(operation === "models" ? Bridge.chatgptModels() : Bridge.chatSend("hello", null), /Reconnect and allow it/);
+    assert.ok(button(el, "Reconnect"), "an open Settings section exposes lost plan permission");
+    assert.ok(button(el, "Disconnect"), "the rotated session remains available for cleanup");
+    assert.equal(button(el, "Use a different ChatGPT account"), undefined);
+    assert.ok(selectedLabel(el).includes("test-client"));
+    assert.equal(message(el), "Plan usage wasn't allowed at sign-in.");
+    const reopened = await section();
+    assert.ok(button(reopened, "Reconnect"), "persisted plan permission remains recoverable after reopening");
+    assert.equal(message(reopened), "Plan usage wasn't allowed at sign-in.");
+    answers.chatgpt_connect = () => {
+      answers.chatgpt_status = CONNECTED;
+      emit("chatgpt-status", CONNECTED);
+      return CONNECTED;
+    };
+    button(reopened, "Reconnect").fire("click");
+    await flush();
+    assert.deepEqual(sent("chatgpt_connect").at(-1), { newAccount: false });
+    assert.equal(button(reopened, "Reconnect"), undefined);
+    assert.ok(selectedLabel(reopened).includes("test-client"));
+  });
+}
+
 const PENDING_ACCOUNT = { ...SIGNED_OUT, hasPendingAccount: true, pendingAccountId: "pending-client" };
 const PENDING_HINT = "Retry the unfinished sign-in, or start a separate registration. The unfinished registration will remain in saved accounts.";
 

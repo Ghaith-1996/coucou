@@ -155,7 +155,7 @@ pub struct Account {
     pub client_id: Option<String>,
     pub email: Option<String>,
     pub sub: Option<String>,
-    /// The sign-in granted `chatgpt.tokens.use.direct`.
+    /// The current token grant permits `chatgpt.tokens.use.direct`.
     pub plan_enabled: bool,
     /// "You're using your ChatGPT plan" was shown once.
     pub welcomed: bool,
@@ -636,6 +636,7 @@ struct Tokens {
     refresh_token: Option<String>,
     id_token: Option<String>,
     expires_in: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     scope: Option<String>,
 }
 
@@ -643,7 +644,7 @@ struct Tokens {
 pub struct IdClaims {
     pub iss: String,
     pub aud: Value,
-    #[serde(default, deserialize_with = "deserialize_azp")]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub azp: Option<String>,
     pub exp: u64,
     pub sub: String,
@@ -653,9 +654,9 @@ pub struct IdClaims {
     pub email: Option<String>,
 }
 
-fn deserialize_azp<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
-    // Omission is allowed; a present azp must be a string, including rejecting
-    // explicit null rather than silently treating it as an absent claim.
+fn deserialize_optional_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    // Omission is allowed; a supplied scope or azp must be a string. Explicit
+    // null must not silently acquire an omitted field's authorization meaning.
     String::deserialize(deserializer).map(Some)
 }
 
@@ -1160,13 +1161,25 @@ async fn refresh_with<F: std::future::Future<Output = Result<Tokens, RefreshFail
             Err(t("ChatGPT can't be reached."))
         }
         Ok(tokens) => {
+            // RFC 6749 §§5.1, 6: omitted refresh scope retains the prior grant;
+            // explicit scope can reduce it, never authorize a new permission.
+            let mut next = account.clone();
+            next.plan_enabled &= tokens.scope.as_deref().is_none_or(|scope| scope.split_whitespace().any(|s| s == PLAN_SCOPE));
+            if !next.plan_enabled {
+                // Fence in-flight models/Responses and erase cached access as
+                // soon as permission is lost, even if either store now fails.
+                if let Some(invalidate) = pending.0.take() { invalidate(); }
+            }
             let committed = (|| {
                 if let Some(next) = &tokens.refresh_token {
                     store(REFRESH_TOKEN_KEY, next)?;
                 }
-                persist(account)
+                persist(&next)
             })();
             committed?;
+            // Save rotation and the reduced grant for same-account recovery,
+            // but never return/cache this token for the triggering request.
+            require_selected_client(&next, client)?;
             pending.0 = None;
             remember(&tokens);
             Ok(tokens.access_token)

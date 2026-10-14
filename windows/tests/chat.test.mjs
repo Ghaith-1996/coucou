@@ -54,7 +54,7 @@ test("a provider without a key is never asked for its models", async () => {
   $(".model-btn").fire("click");
   await flush();
   assert.ok($(".chat-body").classList.contains("picking"));
-  assert.deepEqual(chips(), ["Anthropic", "Google", "OpenAI", "OpenRouter"]);
+  assert.deepEqual(chips(), ["ChatGPT", "Anthropic", "Google", "OpenAI", "OpenRouter"]);
   assert.deepEqual(sent("secret_present"), [{ key: "anthropic-api-key" }]);
   assert.deepEqual(sent("chat_models"), []);
   assert.match($(".picker-status").textContent, /No API key/);
@@ -83,7 +83,7 @@ test("switching provider saves it and asks the new provider only", async () => {
   $(".model-btn").fire("click");
   await flush();
   assert.deepEqual(sent("chat_models"), []);
-  view.el.find(".picker-chip")[1].fire("click");
+  view.el.find(".picker-chip")[2].fire("click");
   await flush();
   assert.equal(State.settings.chatProvider, "google");
   assert.deepEqual(sent("chat_models"), [{ provider: "google" }]);
@@ -122,3 +122,30 @@ test("a local answer streams into one reply, then the finished text replaces it"
   assert.deepEqual(State.chatHistory.map((m) => m.role), ["user", "assistant"]);
   assert.ok(!$(".model-btn").disabled);
 });
+
+for (const partial of ["", "Partial answer"]) {
+  test(`a completed native reply is kept after Stop${partial ? " with a streamed partial" : " without a delta"}`, async () => {
+    const pending = Promise.withResolvers();
+    answers.chat_send = () => pending.promise;
+    $(".chat-input").value = "question";
+    $(".send-btn").fire("click");
+    await flush();
+    if (partial) emit("chat-delta", partial);
+    $(".send-btn").fire("click");
+    await flush();
+    assert.equal(sent("chat_stop").length, 1);
+    pending.resolve({ text: "The complete answer" });
+    await flush();
+    view.sync();
+    assert.deepEqual(State.chatHistory.map(({ role, content }) => ({ role, content })), [
+      { role: "user", content: "question" },
+      { role: "assistant", content: "The complete answer" },
+    ]);
+    assert.notEqual(State.chatHistory.at(-1).stopped, true);
+    const saved = sent("chat_history_save").at(-1).conversation;
+    assert.equal(saved.messages.at(-1).content, "The complete answer");
+    assert.notEqual(saved.messages.at(-1).stopped, true);
+    assert.equal(view.el.find(".reply").length, 1);
+    assert.ok(!$(".model-btn").disabled);
+  });
+}

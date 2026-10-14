@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use crate::settings::Settings;
-use crate::{claude, local_chat, openai_compat, secrets};
+use crate::{chatgpt, claude, local_chat, openai_compat, secrets};
 
 pub const ANTHROPIC: &str = "anthropic";
 
@@ -78,6 +78,33 @@ impl Chat {
         *c = Conversation { epoch, ..Default::default() };
     }
 
+    /// A saved conversation reopened: its complete turns become the history,
+    /// in plain form (the next provider converts them as on any switch).
+    pub fn restore(&self, turns: &[(String, String)]) {
+        let mut c = self.inner.lock().unwrap();
+        let epoch = c.epoch + 1;
+        let plain = turns
+            .iter()
+            .flat_map(|(q, a)| [json!({ "role": "user", "content": q }), json!({ "role": "assistant", "content": a })])
+            .collect();
+        *c = Conversation { epoch, plain, ..Default::default() };
+    }
+
+    /// Regenerate: the last question and its answer leave the history, so the
+    /// question can be asked again. False when there is no complete turn.
+    pub fn undo_last(&self) -> bool {
+        let mut c = self.inner.lock().unwrap();
+        if c.plain.len() < 2 {
+            return false;
+        }
+        let plain_len = c.plain.len();
+        c.plain.truncate(plain_len - 2);
+        let native_len = c.native.len();
+        c.native.truncate(native_len.saturating_sub(2));
+        c.epoch += 1;
+        true
+    }
+
     /// Starts a turn with `provider`, converting the history if another
     /// provider answered the previous turns.
     pub fn begin(&self, provider: &str) -> Turn {
@@ -92,6 +119,15 @@ impl Chat {
             first: c.plain.is_empty(),
             history: c.native.clone(),
         }
+    }
+
+    /// The view can retain an unanswered/stopped question, so only committed
+    /// native history decides whether to attach context. Later file candidates
+    /// must not be reread or validated: context is only added on the first turn,
+    /// and the original dropped file may no longer exist.
+    fn context_for_turn(&self, context: Option<ChatContext>) -> Result<Option<ChatContext>, String> {
+        let first = self.inner.lock().unwrap().plain.is_empty();
+        context.filter(|_| first).map(checked_context).transpose()
     }
 
     /// Records a finished turn: the user message and the answer in the
@@ -163,6 +199,10 @@ pub fn model_for(settings: &Settings, provider: &str) -> String {
         let m = settings.model.trim();
         return if m.is_empty() { claude::DEFAULT_MODEL.to_string() } else { m.to_string() };
     }
+    if provider == chatgpt::PROVIDER {
+        let m = settings.chat_models.get(provider).map(|m| m.trim()).unwrap_or("");
+        return if m.is_empty() { chatgpt::SOL.to_string() } else { m.to_string() };
+    }
     settings
         .chat_models
         .get(provider)
@@ -170,6 +210,11 @@ pub fn model_for(settings: &Settings, provider: &str) -> String {
         .filter(|m| !m.is_empty())
         .or_else(|| openai_compat::provider(provider).map(|p| p.default_model.to_string()))
         .unwrap_or_default()
+}
+
+/// Match the picker's fallback for missing or stale per-model saved efforts.
+fn chatgpt_effort_for(settings: &Settings, model: &str) -> &'static str {
+    chatgpt::effort_for(settings.chat_efforts.get(model).map(String::as_str), model)
 }
 
 /// A file rides along only if it is one of Coucou's own copies of a dropped
@@ -204,11 +249,30 @@ pub async fn send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let context = context.map(checked_context).transpose()?;
+    let context = chat.context_for_turn(context)?;
     let provider = settings.chat_provider.as_str();
     let model = model_for(settings, provider);
     if provider == ANTHROPIC || provider.is_empty() {
         return claude::send(chat, &model, query, context).await;
+    }
+    if provider == chatgpt::PROVIDER {
+        use tauri::Emitter;
+        let effort = chatgpt_effort_for(settings, &model);
+        let island = crate::island::WINDOW_LABEL;
+        return chatgpt::send(
+            chat,
+            &model,
+            effort,
+            query,
+            context,
+            |text| {
+                let _ = app.emit_to(island, "chat-delta", text);
+            },
+            || {
+                let _ = app.emit_to(island, "chatgpt-usage-limit", ());
+            },
+        )
+        .await;
     }
     if let Some(p) = openai_compat::provider(provider) {
         return openai_compat::send(chat, p, &model, query, context).await;
@@ -250,6 +314,9 @@ pub async fn models(settings: &Settings, provider: &str) -> Result<Vec<ModelInfo
     if provider == ANTHROPIC {
         let key = secrets::get(claude::KEY).ok_or_else(no_key)?;
         return claude::models(&key).await;
+    }
+    if provider == chatgpt::PROVIDER {
+        return chatgpt::models().await.map(|m| chatgpt::as_model_infos(&m));
     }
     if let Some(p) = openai_compat::provider(provider) {
         let key = secrets::get(p.key).ok_or_else(no_key)?;
@@ -331,6 +398,46 @@ mod tests {
     }
 
     #[test]
+    fn a_reopened_conversation_and_a_regenerated_turn_keep_the_history_right() {
+        let chat = Chat::default();
+        chat.restore(&[("hi".into(), "hello".into()), ("more".into(), "sure".into())]);
+        let t = chat.begin("chatgpt");
+        assert!(!t.first);
+        assert_eq!(turn_texts(&t.history).len(), 4);
+        assert!(chat.undo_last());
+        let t = chat.begin("chatgpt");
+        assert_eq!(turn_texts(&t.history), vec![("user".into(), json!("hi")), ("assistant".into(), json!("hello"))]);
+        assert!(chat.undo_last());
+        assert!(!chat.undo_last(), "nothing left");
+        assert!(chat.begin("chatgpt").first);
+    }
+
+    #[test]
+    fn context_eligibility_follows_committed_turns_and_skips_unused_file_validation() {
+        let chat = Chat::default();
+        let window = ChatContext::Window { app_name: "Code".into(), title: "notes".into(), url: None };
+        assert!(chat.context_for_turn(Some(window.clone())).unwrap().is_some());
+        let _stopped = chat.begin("chatgpt");
+        let _failed = chat.begin("chatgpt");
+        assert!(chat.context_for_turn(Some(window.clone())).unwrap().is_some(), "Stop/failure does not commit a turn");
+
+        let retry = chat.begin("chatgpt");
+        chat.commit(&retry, json!({"role":"user","content":"q"}), json!({"role":"assistant","content":"a"}), "q", "a");
+        let missing = ChatContext::File { name: "gone.png".into(), path: String::new() };
+        assert!(chat.context_for_turn(Some(missing.clone())).unwrap().is_none(), "an unused attachment need not still exist");
+        assert!(chat.context_for_turn(Some(window.clone())).unwrap().is_none(), "a later turn never duplicates the context");
+
+        assert!(chat.undo_last());
+        assert!(chat.context_for_turn(Some(window.clone())).unwrap().is_some(), "regenerating the first turn restores eligibility");
+        assert!(chat.context_for_turn(Some(missing.clone())).is_err(), "first-turn file validation is still required");
+        chat.restore(&[("saved question".into(), "saved answer".into())]);
+        assert!(chat.context_for_turn(Some(missing.clone())).unwrap().is_none());
+        chat.reset();
+        assert!(chat.context_for_turn(Some(window)).unwrap().is_some());
+        assert!(chat.context_for_turn(Some(missing)).is_err());
+    }
+
+    #[test]
     fn the_prompt_greets_by_first_name_and_claims_web_search_only_for_claude() {
         let p = system_prompt_for(Some("Louis"), true);
         assert!(p.starts_with("You are Mochi, Louis's personal AI assistant living at the top of their screen."));
@@ -364,6 +471,47 @@ mod tests {
         assert_eq!(model_for(&s, "openai"), "gpt-x");
         assert_eq!(model_for(&s, "ollama"), "llama3.2");
         assert_eq!(model_for(&s, "anthropic"), "claude-haiku-4-5");
+    }
+
+    #[test]
+    fn chatgpt_send_normalizes_saved_efforts_like_the_island() {
+        let fixture: Value = serde_json::from_str(include_str!("../../tests/fixtures/chatgpt-efforts.json")).unwrap();
+        for (model, supported) in fixture["models"].as_object().unwrap() {
+            for saved in fixture["savedEfforts"].as_array().unwrap() {
+                let mut settings = Settings::default();
+                settings.chat_provider = chatgpt::PROVIDER.into();
+                settings.chat_models.insert(chatgpt::PROVIDER.into(), model.clone());
+                if let Some(effort) = saved.as_str() {
+                    settings.chat_efforts.insert(model.clone(), effort.into());
+                }
+                let original = settings.chat_efforts.clone();
+                let selected = model_for(&settings, &settings.chat_provider);
+                let expected = if supported.as_array().unwrap().contains(saved) { saved } else { &fixture["default"] };
+                assert_eq!(chatgpt_effort_for(&settings, &selected), expected.as_str().unwrap(), "{model}: {saved}");
+                assert_eq!(settings.chat_efforts, original, "normalizing does not rewrite settings");
+            }
+        }
+    }
+
+    #[test]
+    fn chatgpt_send_uses_the_selected_models_saved_effort() {
+        let mut settings = Settings::default();
+        settings.chat_provider = chatgpt::PROVIDER.into();
+        settings.chat_efforts.insert(chatgpt::LUNA.into(), "none".into());
+        settings.chat_efforts.insert(chatgpt::SOL.into(), "none".into());
+        settings.chat_efforts.insert("gpt-some-other-model".into(), "high".into());
+        for (saved_model, model, effort) in [
+            ("", chatgpt::SOL, "medium"),
+            (chatgpt::LUNA, chatgpt::LUNA, "none"),
+            (" gpt-6.1-sol ", chatgpt::SOL, "medium"),
+            ("gpt-some-other-model", "gpt-some-other-model", "high"),
+            (chatgpt::LUNA, chatgpt::LUNA, "none"),
+        ] {
+            settings.chat_models.insert(chatgpt::PROVIDER.into(), saved_model.into());
+            let selected = model_for(&settings, &settings.chat_provider);
+            assert_eq!(selected, model);
+            assert_eq!(chatgpt_effort_for(&settings, &selected), effort);
+        }
     }
 
     #[test]

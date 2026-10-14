@@ -266,3 +266,213 @@ fn silence_detection_needs_one_loud_window() {
     assert!(!is_silent(&speech, RATE));
     assert!(is_silent(&[], RATE));
 }
+
+/// Takes up to 5 s, unless told to stop; says whether it was.
+struct SlowStt(Arc<Mutex<Option<bool>>>);
+
+impl Transcriber for SlowStt {
+    fn transcribe(&self, _: &[f32], _: u32, abort: &AtomicBool) -> Result<Transcript, VoiceError> {
+        let started = Instant::now();
+        while !abort.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let aborted = abort.load(Ordering::SeqCst);
+        *self.0.lock().unwrap() = Some(aborted);
+        if aborted {
+            Err(VoiceError::Provider)
+        } else {
+            Ok(Transcript { text: "late".into(), simulated: false })
+        }
+    }
+}
+
+#[test]
+fn cancel_while_transcribing_stops_the_transcription() {
+    let (tx, rx) = mpsc::channel();
+    let heard = Arc::new(Mutex::new(None));
+    let mic = speaking(400);
+    let h = Harness { voice: Voice::new(Recorder(Mutex::new(tx)), mic.clone(), SlowStt(heard.clone()), log), events: rx, mic };
+    let id = h.voice.toggle().unwrap();
+    h.wait(VoiceState::Listening);
+    std::thread::sleep(Duration::from_millis(300));
+    h.voice.toggle();
+    h.wait(VoiceState::Processing);
+    let cancelled = Instant::now();
+    h.voice.cancel(&id);
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, id, "idle at once");
+    while heard.lock().unwrap().is_none() && cancelled.elapsed() < Duration::from_secs(6) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*heard.lock().unwrap(), Some(true), "the transcriber was told to stop");
+    assert!(cancelled.elapsed() < Duration::from_secs(1), "and stopped well before finishing");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(h.events.try_iter().all(|e| e.state != VoiceState::Preview && e.state != VoiceState::Error), "nothing after idle");
+    assert_eq!(h.voice.use_transcript(&id), Err(ErrorCode::Expired));
+}
+
+#[test]
+fn locking_the_screen_while_listening_closes_the_microphone() {
+    let h = harness(speaking(2000));
+    let id = h.voice.toggle().unwrap();
+    h.wait(VoiceState::Listening);
+    h.voice.interrupt("screen locked");
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, id);
+    assert_eq!(h.mic_open(), 0);
+    assert_eq!(h.voice.use_transcript(&id), Err(ErrorCode::Expired), "nothing kept");
+    assert!(LOG.lock().unwrap().iter().any(|l| l == "voice: interrupted (screen locked)"));
+}
+
+/// Holds the capture thread inside a read after speech is buffered, so the
+/// cancellation and button presses run while the phase is still Listening.
+struct GatedMic {
+    mic: SimMic,
+    buffered: Mutex<mpsc::Sender<()>>,
+    resume: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+struct GatedCapture {
+    capture: Box<dyn Capture>,
+    buffered: mpsc::Sender<()>,
+    resume: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+impl Microphone for GatedMic {
+    fn open(&self) -> Result<Box<dyn Capture>, VoiceError> {
+        Ok(Box::new(GatedCapture {
+            capture: self.mic.open()?,
+            buffered: self.buffered.lock().unwrap().clone(),
+            resume: self.resume.clone(),
+        }))
+    }
+}
+
+impl Capture for GatedCapture {
+    fn sample_rate(&self) -> u32 {
+        self.capture.sample_rate()
+    }
+
+    fn read(&mut self, out: &mut Vec<f32>) -> Result<(), VoiceError> {
+        self.capture.read(out)?;
+        self.buffered.send(()).unwrap();
+        self.resume.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+        Ok(())
+    }
+}
+
+struct RecordingStt(Arc<AtomicBool>);
+
+impl Transcriber for RecordingStt {
+    fn transcribe(&self, samples: &[f32], rate: u32, abort: &AtomicBool) -> Result<Transcript, VoiceError> {
+        self.0.store(true, Ordering::SeqCst);
+        SimStt.transcribe(samples, rate, abort)
+    }
+}
+
+fn assert_buffered_capture_cancelled(actions: impl FnOnce(&Voice, &str)) {
+    let (tx, events) = mpsc::channel();
+    let (buffered_tx, buffered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let transcribed = Arc::new(AtomicBool::new(false));
+    let mic = SimMic::new(RATE, vec![Chunk::Tone(400, 0.3)]);
+    let gated = GatedMic { mic: mic.clone(), buffered: Mutex::new(buffered_tx), resume: Arc::new(Mutex::new(resume_rx)) };
+    let h = Harness { voice: Voice::new(Recorder(Mutex::new(tx)), gated, RecordingStt(transcribed.clone()), log), events, mic };
+    let id = h.voice.toggle().unwrap();
+    h.wait(VoiceState::Listening);
+    buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    actions(&h.voice, &id);
+    resume_tx.send(()).unwrap();
+
+    loop {
+        let event = h.events.recv_timeout(Duration::from_secs(5)).expect("cancelled capture did not become idle");
+        assert_eq!(event.capture_id, id);
+        assert!(matches!(event.state, VoiceState::Listening | VoiceState::Idle), "cancelled audio produced {event:?}");
+        if event.state == VoiceState::Idle {
+            break;
+        }
+    }
+    assert_eq!(h.mic_open(), 0);
+    assert!(!transcribed.load(Ordering::SeqCst), "cancelled audio must never reach the transcriber");
+    assert_eq!(h.voice.use_transcript(&id), Err(ErrorCode::Expired));
+}
+
+fn press_stop(voice: &Voice, id: &str, toggle: bool) {
+    if toggle {
+        assert_eq!(voice.toggle().as_deref(), Some(id));
+    } else {
+        voice.stop(id);
+    }
+}
+
+#[test]
+fn interruption_wins_over_stop_and_toggle_in_either_order() {
+    for toggle in [false, true] {
+        for stop_first in [false, true] {
+            assert_buffered_capture_cancelled(|voice, id| {
+                if stop_first {
+                    press_stop(voice, id, toggle);
+                }
+                voice.interrupt("screen locked");
+                if !stop_first {
+                    press_stop(voice, id, toggle);
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn cancel_and_shutdown_cannot_be_undone_by_stop_or_toggle() {
+    for toggle in [false, true] {
+        for shutdown in [false, true] {
+            assert_buffered_capture_cancelled(|voice, id| {
+                if shutdown {
+                    voice.shutdown();
+                } else {
+                    voice.cancel(id);
+                }
+                press_stop(voice, id, toggle);
+            });
+        }
+    }
+}
+
+#[test]
+fn interruption_racing_stop_or_toggle_drops_buffered_audio() {
+    for toggle in [false, true] {
+        for _ in 0..16 {
+            assert_buffered_capture_cancelled(|voice, id| {
+                let start = std::sync::Barrier::new(2);
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        start.wait();
+                        voice.interrupt("going to sleep");
+                    });
+                    start.wait();
+                    press_stop(voice, id, toggle);
+                });
+            });
+        }
+    }
+}
+
+#[test]
+fn sleep_while_transcribing_stops_it_and_idle_changes_nothing() {
+    let (tx, rx) = mpsc::channel();
+    let heard = Arc::new(Mutex::new(None));
+    let mic = speaking(400);
+    let h = Harness { voice: Voice::new(Recorder(Mutex::new(tx)), mic.clone(), SlowStt(heard.clone()), log), events: rx, mic };
+    h.voice.interrupt("going to sleep");
+    assert!(h.events.recv_timeout(Duration::from_millis(100)).is_err(), "idle: no event");
+    let id = h.voice.toggle().unwrap();
+    h.wait(VoiceState::Listening);
+    std::thread::sleep(Duration::from_millis(300));
+    h.voice.toggle();
+    h.wait(VoiceState::Processing);
+    h.voice.interrupt("going to sleep");
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, id);
+    let since = Instant::now();
+    while heard.lock().unwrap().is_none() && since.elapsed() < Duration::from_secs(6) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*heard.lock().unwrap(), Some(true));
+}

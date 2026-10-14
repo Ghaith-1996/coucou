@@ -150,7 +150,8 @@ pub fn catalog(models: &Value) -> Vec<CatalogModel> {
 pub struct Account {
     /// This computer's `ext_agent_host_id`: an opaque `urn:uuid:…`, made once.
     pub host_id: String,
-    /// Issued at the first sign-in (`oaiapp_…`); never `dynamic_agent_client`.
+    /// Issued at registration (`oaiapp_…`); retained even if sign-in then fails.
+    /// Never `dynamic_agent_client`; identity is only set after verification.
     pub client_id: Option<String>,
     pub email: Option<String>,
     pub sub: Option<String>,
@@ -375,6 +376,33 @@ pub fn read_callback(target: &str, attempt: &Attempt, known_client: Option<&str>
     }
 }
 
+/// Validate the callback and retain a new registration before returning its
+/// code for exchange. Exchange or ID-token verification can fail afterwards;
+/// the next attempt must still reuse this issued client id. No identity,
+/// permission, or credential is accepted here.
+fn prepare_code_exchange(
+    account: &mut Account,
+    attempt: &Attempt,
+    target: &str,
+    persist: impl FnOnce(&Account) -> Result<(), String>,
+) -> Result<(String, String), String> {
+    let (code, client_id) = match read_callback(target, attempt, account.client_id.as_deref()) {
+        Callback::Code { code, client_id } => (code, client_id.ok_or_else(|| t("ChatGPT sign-in failed."))?),
+        Callback::Denied => return Err(t("ChatGPT sign-in was cancelled.")),
+        Callback::Error(why) => {
+            crate::log::line(format!("chatgpt: sign-in refused ({why})"));
+            return Err(t("ChatGPT sign-in failed."));
+        }
+    };
+    if account.client_id.is_none() {
+        let mut registration = account.clone();
+        registration.client_id = Some(client_id.clone());
+        persist(&registration)?;
+        *account = registration;
+    }
+    Ok((code, client_id))
+}
+
 /// The token endpoint's answer.
 #[derive(Debug, Deserialize)]
 struct Tokens {
@@ -517,14 +545,7 @@ pub async fn connect(open: impl Fn(&str)) -> Result<Status, String> {
     let target = tokio::time::timeout(SIGN_IN_TIMEOUT, wait_for_callback(listener))
         .await
         .map_err(|_| t("The sign-in took too long. Try again."))??;
-    let (code, client_id) = match read_callback(&target, &attempt, account.client_id.as_deref()) {
-        Callback::Code { code, client_id } => (code, client_id.ok_or_else(|| t("ChatGPT sign-in failed."))?),
-        Callback::Denied => return Err(t("ChatGPT sign-in was cancelled.")),
-        Callback::Error(why) => {
-            crate::log::line(format!("chatgpt: sign-in refused ({why})"));
-            return Err(t("ChatGPT sign-in failed."));
-        }
-    };
+    let (code, client_id) = prepare_code_exchange(&mut account, &attempt, &target, save_account)?;
 
     let reply = http(Duration::from_secs(30))?
         .post(TOKEN)
@@ -744,10 +765,10 @@ fn plan_ready() -> Result<(), String> {
 
 // ── Inference ────────────────────────────────────────────────────────────────
 
-/// The user's message for this turn, and its plain text for the history. The
-/// first turn carries the window line, a dropped text file's contents, or a
-/// dropped picture (`input_image`); a PDF goes by name only.
-pub fn user_content(first: bool, context: Option<&ChatContext>, query: &str) -> (Value, String) {
+/// The user's native content, retained in full for later turns. The first
+/// turn carries the window line, a dropped text file's contents, or a dropped
+/// picture (`input_image`); a PDF goes by name only.
+pub fn user_content(first: bool, context: Option<&ChatContext>, query: &str) -> Value {
     let mut prefix = String::new();
     let mut image = None;
     match context.filter(|_| first) {
@@ -775,22 +796,45 @@ File contents:
         None => {}
     }
     let text = format!("{prefix}{query}");
-    let content = match image {
+    match image {
         None => json!(text),
         Some(url) => json!([{ "type": "input_image", "image_url": url }, { "type": "input_text", "text": text }]),
-    };
-    (content, text)
+    }
 }
 
-/// The request body. The history is plain turns; system-level text goes in
-/// `instructions` (a `system` message is refused on this route).
+/// Only the input parts this provider creates may be replayed. Rebuild their
+/// supported fields rather than forwarding arbitrary provider-native blocks.
+fn history_content(role: &str, content: &Value) -> Option<Value> {
+    if content.is_string() {
+        return Some(content.clone());
+    }
+    let parts = content.as_array()?;
+    if role != "user" || parts.is_empty() {
+        return None;
+    }
+    let parts: Option<Vec<Value>> = parts.iter().map(|part| {
+        match part["type"].as_str()? {
+            "input_text" => Some(json!({ "type": "input_text", "text": part["text"].as_str()? })),
+            "input_image" => Some(json!({ "type": "input_image", "image_url": part["image_url"].as_str()? })),
+            _ => None,
+        }
+    }).collect();
+    parts.map(Value::Array)
+}
+
+/// The request body. History retains native text/image input because this
+/// route uses `store: false`. System-level text goes in `instructions` (a
+/// `system` message is refused on this route).
 pub fn request_body(model: &str, effort: &str, instructions: &str, history: &[Value], user: Value) -> Value {
     let mut input: Vec<Value> = history
         .iter()
         .filter_map(|m| {
             let role = m["role"].as_str()?;
-            let text = m["content"].as_str()?;
-            matches!(role, "user" | "assistant").then(|| json!({ "role": role, "content": text }))
+            if !matches!(role, "user" | "assistant") {
+                return None;
+            }
+            let content = history_content(role, &m["content"])?;
+            Some(json!({ "role": role, "content": content }))
         })
         .collect();
     input.push(json!({ "role": "user", "content": user }));
@@ -885,6 +929,13 @@ fn failure(status: u16, code: &str, param: &str) -> Failure {
     }
 }
 
+/// Record the exact native user content only after the stream has completed.
+/// The plain record remains separate for switching providers.
+fn finish_turn(chat: &Chat, turn: &chat::Turn, user: Value, plain: &str, answer: String) -> ChatReply {
+    chat.commit(turn, json!({ "role": "user", "content": user }), json!({ "role": "assistant", "content": answer }), plain, &answer);
+    ChatReply { text: answer }
+}
+
 /// One turn on the ChatGPT plan, streamed: `on_delta` gets the text so far.
 /// `on_usage_limit` is told when the plan's limit is reached.
 pub async fn send(
@@ -901,8 +952,8 @@ pub async fn send(
         return Err(tf("{model} doesn't take this reasoning effort.", &[("model", model)]));
     }
     let turn = chat.begin(PROVIDER);
-    let (user, user_text) = user_content(turn.first, context.as_ref(), &query);
-    let body = request_body(model, effort, &chat::system_prompt(false), &turn.history, user);
+    let user = user_content(turn.first, context.as_ref(), &query);
+    let body = request_body(model, effort, &chat::system_prompt(false), &turn.history, user.clone());
 
     let mut token = access_token(false).await?;
     let mut tries = 0;
@@ -983,8 +1034,7 @@ pub async fn send(
     }
     on_delta(answer.clone());
     let plain = chat::plain_question(turn.first, context.as_ref(), &query);
-    chat.commit(&turn, json!({ "role": "user", "content": user_text }), json!({ "role": "assistant", "content": answer }), &plain, &answer);
-    Ok(ChatReply { text: answer })
+    Ok(finish_turn(chat, &turn, user, &plain, answer))
 }
 
 #[cfg(test)]

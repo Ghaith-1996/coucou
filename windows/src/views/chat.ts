@@ -59,6 +59,10 @@ const STRINGS = {
   delete: N_("Delete"),
   confirmDelete: N_("Delete?"),
   regenerate: N_("Regenerate"),
+  regenerateFailed: N_("Could not regenerate this answer. Please try again."),
+  notSaved: N_("Conversation not saved"),
+  saveFailed: N_("Your latest messages are only available here. Copy them before leaving this conversation or closing Coucou. {error}"),
+  historyFull: N_("The 400-message storage limit was reached."),
   stopped: N_("Stopped"),
   welcomeTitle: N_("You're using your ChatGPT plan"),
   welcomeBody: N_("Eligible AI requests in Coucou use the usage included in your ChatGPT plan or credits balance."),
@@ -345,13 +349,20 @@ function buildPicker(onChange: () => void): Picker {
 let chatCreatedAt = 0;
 /** Its generated or explicitly renamed title, kept when more messages arrive. */
 let chatTitle = "";
+/** New/open invalidates old saves; regeneration stays in the same conversation. */
+let chatSession = 0;
+/** Only the latest save may change the active conversation's warning. */
+let saveAttempt = 0;
+let saveFailure: { id: string; error: string } | null = null;
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
+  chatSession++;
   State.chatHistory = [];
   State.chatId = null;
   State.droppedFile = null;
   State.promptContext = null;
+  saveFailure = null;
   void Bridge.chatReset();
 }
 
@@ -364,7 +375,20 @@ function saveConversation() {
     chatCreatedAt = Date.now();
     chatTitle = titleFor(messages);
   }
-  void Bridge.chatHistorySave(toSaved(State.chatId, chatTitle, chatCreatedAt || Date.now(), messages)).catch(() => {});
+  const id = State.chatId;
+  const attempt = ++saveAttempt;
+  const session = chatSession;
+  const isCurrent = () => attempt === saveAttempt && session === chatSession && State.chatId === id;
+  void Bridge.chatHistorySave(toSaved(id, chatTitle, chatCreatedAt || Date.now(), messages)).then(() => {
+    if (!isCurrent()) return;
+    saveFailure = null;
+    State.notify();
+  }).catch((err) => {
+    if (!isCurrent()) return;
+    saveFailure = { id, error: String(err).replace(/^Error:\s*/, "") };
+    Sound.play("error");
+    State.notify();
+  });
 }
 
 interface HistoryPanel {
@@ -448,11 +472,13 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   async function open_(id: string) {
     try {
       const saved = await Bridge.chatHistoryOpen(id);
+      chatSession++;
       State.chatHistory = fromSaved(saved, nextId);
       nextId += saved.messages.length;
       State.chatId = saved.id;
       chatCreatedAt = saved.createdAt;
       chatTitle = saved.title;
+      saveFailure = null;
       State.droppedFile = null;
       State.promptContext = null;
       Sound.play("blip");
@@ -567,6 +593,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
 
   let sending = false;
+  let undoPending = false;
   let stopRequested = false;
   // Reserve the composer before the native microphone startup can yield.
   let startingVoice = false;
@@ -617,7 +644,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.disabled = sending;
     if (voice) voice.disabled = sending || startingVoice;
     // While an answer comes, the send button is Stop.
-    send.disabled = startingVoice;
+    send.disabled = startingVoice || undoPending;
     send.classList.toggle("stop", sending);
     const label = t(sending ? STRINGS.stop : STRINGS.send);
     send.title = label;
@@ -626,15 +653,26 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     drawEffort();
   }
 
-  /** The welcome or the usage limit, above the conversation, when ChatGPT is on. */
+  /** Save failures for every provider, or ChatGPT's welcome and usage limit. */
   function drawNotice() {
+    const failure = saveFailure?.id === State.chatId ? saveFailure : null;
     let want = "";
-    if (onChatGpt() && usageLimit) want = "limit";
+    if (failure) want = `save:${failure.error}`;
+    else if (onChatGpt() && usageLimit) want = "limit";
     else if (onChatGpt() && chatgpt?.showWelcome) want = "welcome";
     if (notice.dataset.kind === want) return;
     notice.dataset.kind = want;
     clear(notice);
     if (!want) return;
+    if (failure) {
+      const error = failure.error === "too many messages" ? t(STRINGS.historyFull) : failure.error;
+      notice.append(h("div", { class: "chat-notice warn", role: "alert" },
+        h("div", { class: "chat-notice-title", text: t(STRINGS.notSaved) }),
+        h("div", { class: "chat-notice-body", text: t(STRINGS.saveFailed, { error }) }),
+      ));
+      onHeightChange();
+      return;
+    }
     const manage = h("button", {
       class: "picker-link",
       text: tl(STRINGS.manageUsage),
@@ -695,7 +733,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   });
 
   void onEvent<string>("chat-delta", (text) => {
-    if (!sending || !text) return; // nothing visible yet: the dots stay
+    if (!sending || undoPending || !text) return; // no answer yet: the dots stay
     liveText = text;
     if (!live) {
       live = h("div", { class: "reply" });
@@ -784,18 +822,46 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   /** The last answer again, with the model and effort picked now. */
   async function regenerate() {
-    if (sending) return;
+    if (sending || startingVoice) return;
     const messages = State.chatHistory;
     const answer = messages[messages.length - 1];
     const question = messages[messages.length - 2];
     if (answer?.role !== "assistant" || question?.role !== "user") return;
-    // A stopped answer never entered the model's history.
-    if (!answer.stopped) await Bridge.chatUndoLast();
+    // Reserve every entry point before native undo yields. It is an atomic
+    // preparation, not an answer to Stop; keep the visible turn until success.
+    sending = true;
+    undoPending = true;
+    State.stateOverride = "thinking";
+    drawModelButton();
+    State.notify();
+    let undone = false;
+    try {
+      // A stopped answer never entered the model's history.
+      undone = !!answer.stopped || (await Bridge.chatUndoLast()) === true;
+    } catch {
+      // A rejected command must not discard the displayed answer either.
+    }
+    undoPending = false;
+    if (!undone || State.chatHistory !== messages) {
+      sending = false;
+      State.stateOverride = null;
+      renderedCount = -1;
+      if (!undone && State.chatHistory === messages && State.view === "prompt") {
+        State.noteMessage = t(STRINGS.regenerateFailed);
+        State.view = "note";
+        Sound.play("error");
+      }
+      drawModelButton();
+      State.notify();
+      onHeightChange();
+      return;
+    }
     State.chatHistory = messages.slice(0, -2);
     await ask(question.content);
   }
 
   send.addEventListener("click", () => {
+    if (undoPending) return;
     if (sending) {
       stopRequested = true;
       void Bridge.chatStop();
@@ -827,7 +893,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       e.preventDefault();
       if (picker.isOpen) picker.close();
       if (history.isOpen) history.close();
-    } else if (key === "Escape" && sending) {
+    } else if (key === "Escape" && sending && !undoPending) {
       e.preventDefault();
       stopRequested = true;
       void Bridge.chatStop();

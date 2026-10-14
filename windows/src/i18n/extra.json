@@ -4845,6 +4845,50 @@
    "pt-BR": "Esta conversa não existe mais.",
    "ru": "Этого разговора больше нет.",
    "id": "Percakapan ini sudah tidak ada."
+  },
+  "Could not regenerate this answer. Please try again.": {
+   "zh-Hans": "无法重新生成此回答。请重试。",
+   "hi": "यह जवाब फिर से जनरेट नहीं हो सका। कृपया फिर से कोशिश करें।",
+   "es": "No se pudo regenerar esta respuesta. Vuelve a intentarlo.",
+   "ar": "تعذرت إعادة إنشاء هذه الإجابة. يُرجى المحاولة مجددًا.",
+   "fr": "Impossible de régénérer cette réponse. Réessayez.",
+   "bn": "এই উত্তরটি আবার তৈরি করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível gerar esta resposta novamente. Tente de novo.",
+   "ru": "Не удалось заново создать этот ответ. Попробуйте ещё раз.",
+   "id": "Tidak dapat membuat ulang jawaban ini. Silakan coba lagi."
+  },
+  "Conversation not saved": {
+   "zh-Hans": "对话未保存",
+   "hi": "बातचीत सहेजी नहीं गई",
+   "es": "Conversación no guardada",
+   "ar": "لم تُحفظ المحادثة",
+   "fr": "Conversation non enregistrée",
+   "bn": "কথোপকথন সংরক্ষিত হয়নি",
+   "pt-BR": "Conversa não salva",
+   "ru": "Разговор не сохранён",
+   "id": "Percakapan tidak tersimpan"
+  },
+  "Your latest messages are only available here. Copy them before leaving this conversation or closing Coucou. {error}": {
+   "zh-Hans": "你的最新消息仅在此处可用。离开此对话或关闭 Coucou 之前，请先复制这些消息。{error}",
+   "hi": "आपके हाल के संदेश सिर्फ़ यहीं उपलब्ध हैं। इस बातचीत को छोड़ने या Coucou बंद करने से पहले उन्हें कॉपी कर लें। {error}",
+   "es": "Tus últimos mensajes solo están disponibles aquí. Cópialos antes de salir de esta conversación o cerrar Coucou. {error}",
+   "ar": "رسائلك الأخيرة متاحة هنا فقط. انسخها قبل مغادرة هذه المحادثة أو إغلاق Coucou. {error}",
+   "fr": "Vos derniers messages sont uniquement disponibles ici. Copiez-les avant de quitter cette conversation ou de fermer Coucou. {error}",
+   "bn": "আপনার সাম্প্রতিক বার্তাগুলি শুধু এখানেই আছে। এই কথোপকথন ছেড়ে যাওয়ার বা Coucou বন্ধ করার আগে সেগুলি কপি করে নিন। {error}",
+   "pt-BR": "Suas mensagens mais recentes só estão disponíveis aqui. Copie-as antes de sair desta conversa ou fechar o Coucou. {error}",
+   "ru": "Ваши последние сообщения доступны только здесь. Скопируйте их, прежде чем покинуть этот разговор или закрыть Coucou. {error}",
+   "id": "Pesan terbaru Anda hanya tersedia di sini. Salin sebelum meninggalkan percakapan ini atau menutup Coucou. {error}"
+  },
+  "The 400-message storage limit was reached.": {
+   "zh-Hans": "已达到 400 条消息的存储上限。",
+   "hi": "400 संदेशों की स्टोरेज सीमा पूरी हो गई है।",
+   "es": "Se alcanzó el límite de almacenamiento de 400 mensajes.",
+   "ar": "تم بلوغ حد التخزين البالغ 400 رسالة.",
+   "fr": "La limite de stockage de 400 messages a été atteinte.",
+   "bn": "৪০০টি বার্তা সংরক্ষণের সীমায় পৌঁছেছে।",
+   "pt-BR": "O limite de armazenamento de 400 mensagens foi atingido.",
+   "ru": "Достигнут лимит хранения в 400 сообщений.",
+   "id": "Batas penyimpanan 400 pesan telah tercapai."
   }
  }
 }

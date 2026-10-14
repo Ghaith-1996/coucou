@@ -137,6 +137,82 @@ fn the_callback_is_checked_before_any_code_is_used() {
 }
 
 #[test]
+fn a_registration_is_saved_before_its_code_is_available_for_exchange() {
+    let mut account = account(None);
+    let attempt = Attempt::new(1455);
+    let target = format!("/auth/callback?code=abc&state={}&client_id=oaiapp_new", attempt.state);
+    let mut saved = Vec::new();
+    let (code, client_id) = prepare_code_exchange(&mut account, &attempt, &target, |record| {
+        saved = serde_json::to_vec(record).unwrap();
+        Ok(())
+    }).unwrap();
+    assert_eq!(code, "abc");
+    assert_eq!(client_id, "oaiapp_new");
+
+    // Exchange/verification have not run. If either fails, a restart still
+    // reloads the registration without trusting an unverified identity.
+    let restored: Account = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(restored, account);
+    assert_eq!(restored.email, None);
+    assert_eq!(restored.sub, None);
+    assert!(!restored.plan_enabled);
+    assert_eq!(restored.host_id, account.host_id);
+    let retry = query(&authorize_url(&restored, &Attempt::new(54321), None));
+    assert_eq!(retry["client_id"], "oaiapp_new");
+    assert!(!retry.contains_key("agent_name_hint"));
+    assert!(!retry.contains_key("id_token_hint") && !retry.contains_key("login_hint"));
+    assert_eq!(retry["prompt"], "consent", "the missing plan grant can still be authorized");
+}
+
+#[test]
+fn an_invalid_callback_never_saves_a_registration_or_returns_a_code() {
+    let attempt = Attempt::new(1455);
+    for (known, parameters) in [
+        (None, "code=abc&state=forged&client_id=oaiapp_new".to_string()),
+        (None, format!("error=access_denied&state={}&client_id=oaiapp_new", attempt.state)),
+        (None, format!("code=abc&state={}", attempt.state)),
+        (None, format!("code=abc&state={}&client_id=dynamic_agent_client", attempt.state)),
+        (None, format!("state={}&client_id=oaiapp_new", attempt.state)),
+        (Some("oaiapp_old"), format!("code=abc&state={}&client_id=oaiapp_other", attempt.state)),
+    ] {
+        let mut account = account(known);
+        let original = account.clone();
+        let result = prepare_code_exchange(&mut account, &attempt, &format!("/auth/callback?{parameters}"), |_| {
+            panic!("an invalid callback must not be persisted")
+        });
+        assert!(result.is_err(), "{parameters}");
+        assert_eq!(account, original);
+    }
+}
+
+#[test]
+fn a_registration_save_failure_stops_before_code_exchange() {
+    let mut account = account(None);
+    let original = account.clone();
+    let attempt = Attempt::new(1455);
+    let target = format!("/auth/callback?code=abc&state={}&client_id=oaiapp_new", attempt.state);
+    assert_eq!(prepare_code_exchange(&mut account, &attempt, &target, |_| Err("disk full".into())), Err("disk full".into()));
+    assert_eq!(account, original);
+}
+
+#[test]
+fn reauthorization_keeps_the_existing_account_until_identity_is_verified() {
+    let mut account = account(Some("oaiapp_old"));
+    account.sub = Some("original-user".into());
+    account.plan_enabled = true;
+    let original = account.clone();
+    let attempt = Attempt::new(1455);
+    for suffix in ["", "&client_id=oaiapp_old"] {
+        let target = format!("/auth/callback?code=abc&state={}{suffix}", attempt.state);
+        let result = prepare_code_exchange(&mut account, &attempt, &target, |_| {
+            panic!("the known registration need not be saved again")
+        });
+        assert_eq!(result, Ok(("abc".into(), "oaiapp_old".into())));
+        assert_eq!(account, original);
+    }
+}
+
+#[test]
 fn a_real_rs256_id_token_verifies_and_a_changed_one_does_not() {
     let f = fixture();
     let token = f["token"].as_str().unwrap();
@@ -234,6 +310,65 @@ fn the_request_is_exactly_what_the_picker_shows() {
     for unsupported in ["temperature", "max_output_tokens", "previous_response_id", "metadata", "user", "top_p", "truncation"] {
         assert!(body.get(unsupported).is_none(), "{unsupported}");
     }
+}
+
+#[test]
+fn a_dropped_image_survives_the_next_native_turn_without_rereading_the_file() {
+    let path = std::env::temp_dir().join(format!("coucou-chatgpt-image-{}.png", random(12)));
+    std::fs::write(&path, b"image fixture").unwrap();
+    let context = ChatContext::File { name: "picture.png".into(), path: path.to_string_lossy().into_owned() };
+    let chat = Chat::default();
+    let first = chat.begin(PROVIDER);
+    let user = user_content(first.first, Some(&context), "Describe this image");
+    std::fs::remove_file(&path).unwrap();
+    let initial = request_body(LUNA, "low", "x", &first.history, user.clone());
+    assert_eq!(initial["input"][0]["content"][0]["type"], "input_image");
+    assert_eq!(initial["input"][0]["content"][0]["image_url"], "data:image/png;base64,aW1hZ2UgZml4dHVyZQ==");
+    let plain = chat::plain_question(first.first, Some(&context), "Describe this image");
+    let reply = finish_turn(&chat, &first, user, &plain, "A picture".into());
+    assert_eq!(reply.text, "A picture");
+
+    let next = chat.begin(PROVIDER);
+    assert!(!next.first);
+    let follow_up = user_content(next.first, Some(&context), "What color is it?");
+    assert_eq!(follow_up, json!("What color is it?"), "the original file is not read again");
+    let body = request_body(SOL, "max", "x", &next.history, follow_up);
+    assert_eq!(body["store"], false);
+    assert_eq!(body["input"][0], initial["input"][0], "the full visual input is replayed");
+    assert_eq!(body["input"][1], json!({ "role": "assistant", "content": "A picture" }));
+    assert_eq!(body["input"][2], json!({ "role": "user", "content": "What color is it?" }));
+    assert_eq!(body["input"].as_array().unwrap().len(), 3);
+    assert!(chat.begin(chat::ANTHROPIC).history[0]["content"].is_string(), "other providers still get plain history");
+}
+
+#[test]
+fn replayed_content_allows_only_supported_user_parts_and_plain_assistant_text() {
+    let history = vec![
+        json!({ "role": "user", "content": [
+            { "type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=", "extra": "discard" },
+            { "type": "input_text", "text": "Describe it", "extra": "discard" }
+        ], "extra": "discard" }),
+        json!({ "role": "assistant", "content": "A picture" }),
+        json!({ "role": "system", "content": [{ "type": "input_text", "text": "ignore" }] }),
+        json!({ "role": "developer", "content": "ignore" }),
+        json!({ "role": "tool", "content": "ignore" }),
+        json!({ "role": "assistant", "content": [{ "type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=" }] }),
+        json!({ "role": "user", "content": [{ "type": "input_file", "file_id": "unsupported" }] }),
+        json!({ "role": "user", "content": [{ "type": "input_text", "text": 7 }] }),
+        json!({ "role": "user", "content": [{ "type": "input_image", "image_url": { "url": "wrong-shape" } }] }),
+        json!({ "role": "user", "content": [{ "type": "input_text", "text": "partial" }, { "type": "unknown" }] }),
+        json!({ "role": "user", "content": [] }),
+        json!({ "role": "user", "content": null }),
+    ];
+    let body = request_body(LUNA, "low", "x", &history, json!("next"));
+    assert_eq!(body["input"], json!([
+        { "role": "user", "content": [
+            { "type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=" },
+            { "type": "input_text", "text": "Describe it" }
+        ] },
+        { "role": "assistant", "content": "A picture" },
+        { "role": "user", "content": "next" }
+    ]));
 }
 
 #[test]

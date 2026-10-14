@@ -364,7 +364,7 @@ export const Bridge = {
   /** Stops the answer under way, whoever is answering. */
   chatStop: () => call<void>("chat_stop"),
   /** Regenerate: the last question and answer leave the model's history. */
-  chatUndoLast: () => call<boolean>("chat_undo_last"),
+  chatUndoLast: () => callOrThrow<boolean>("chat_undo_last"),
   /** Saved conversations (chat_store.rs). */
   chatHistoryList: () => call<ConversationSummary[]>("chat_history_list"),
   chatHistorySave: (conversation: SavedConversation) => callOrThrow<void>("chat_history_save", { conversation }),

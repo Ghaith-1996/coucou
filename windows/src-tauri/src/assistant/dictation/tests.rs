@@ -990,3 +990,115 @@ fn a_new_capture_without_a_field_replaces_an_expired_capture_with_initial_absenc
         panic!("the old capture cannot inspect its replacement");
     }), Err(Refusal::Gone.into()));
 }
+
+#[test]
+fn copy_reads_fresh_password_evidence_after_element_identity() {
+    use std::cell::{Cell, RefCell};
+    let password = Cell::new(false);
+    let reads = RefCell::new(Vec::new());
+    // A cached read-only/unsupported offer said non-password. The field
+    // switches while the new check is reading its identity.
+    assert_eq!(copy_revalidated(
+        || { reads.borrow_mut().push("identity"); password.set(true); Ok(true) },
+        || { reads.borrow_mut().push("password"); Ok(password.get()) },
+        || { reads.borrow_mut().push("window"); true },
+    ), Err(Refusal::Protected));
+    assert_eq!(*reads.borrow(), vec!["identity", "password", "window"]);
+}
+
+#[test]
+fn copy_requires_live_identity_and_a_successful_negative_password_read() {
+    for (identity, password, window, expected) in [
+        (Ok(true), Ok(false), true, Ok(())),
+        (Ok(true), Ok(true), true, Err(Refusal::Protected)),
+        (Ok(false), Ok(false), true, Err(Refusal::Gone)),
+        (Ok(true), Ok(false), false, Err(Refusal::Gone)),
+        (Err(Refusal::Busy), Ok(false), true, Err(Refusal::Busy)),
+        (Ok(true), Err(Refusal::Busy), true, Err(Refusal::Busy)),
+    ] {
+        assert_eq!(copy_revalidated(|| identity, || password, || window), expected);
+    }
+}
+
+#[test]
+fn copy_keeps_the_same_target_and_original_deadline_without_writing() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    let mut bound = Some(Remembered::new("cap-current".into(), "original field"));
+    for answer in [Ok(()), Err(Refusal::Protected), Err(Refusal::Busy), Ok(())] {
+        assert_eq!(copy_bound(&mut bound, "cap-current", expires, || now, |field| {
+            assert_eq!(*field, "original field");
+            answer
+        }), answer);
+        assert_eq!(bound.as_ref().unwrap().field, Some("original field"));
+        assert_eq!(bound.as_ref().unwrap().expires, Some(expires));
+    }
+    assert_eq!(copy_bound(&mut bound, "cap-old", now, || now, |_| panic!("stale capture")), Err(Refusal::Gone));
+    assert_eq!(bound.as_ref().unwrap().expires, Some(expires));
+    assert_eq!(copy_bound(&mut bound, "cap-current", expires + Duration::from_secs(120), || expires,
+        |_| panic!("an expired field is not checked")), Err(Refusal::Gone));
+    assert_eq!(bound.as_ref().unwrap().expires, Some(expires));
+    assert!(bound.as_ref().unwrap().field.is_none());
+}
+
+#[test]
+fn a_copy_check_cannot_outlive_its_deadline_while_reading_the_field() {
+    let now = std::cell::Cell::new(Instant::now());
+    let expires = now.get() + Duration::from_secs(120);
+    let mut bound = Some(Remembered::new("cap-current".into(), "original field"));
+    assert_eq!(copy_bound(&mut bound, "cap-current", expires, || now.get(), |_| {
+        now.set(expires);
+        Ok(())
+    }), Err(Refusal::Gone));
+    assert!(bound.as_ref().unwrap().field.is_none());
+}
+
+#[test]
+fn copy_never_adopts_an_absent_or_another_captures_target() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    for mut bound in [
+        None,
+        Some(Remembered { capture: "cap-current".into(), field: None, expires: None }),
+        Some(Remembered::new("cap-new".into(), "new field")),
+    ] {
+        assert_eq!(copy_bound(&mut bound, "cap-current", expires, || now,
+            |_| panic!("there is no owned target")), Err(Refusal::Gone));
+        if let Some(target) = bound.filter(|target| target.capture == "cap-new") {
+            assert_eq!(target.field, Some("new field"));
+            assert_eq!(target.expires, None);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_copy_check_timeout_discards_late_positive_evidence() {
+    use std::future::Future;
+    use std::task::Poll;
+    let (send, jobs) = mpsc::channel();
+    let dictation = Dictation { jobs: Mutex::new(send) };
+    let expires = permit().expires;
+    let mut checking = Box::pin(dictation.check_copy("cap-current", expires));
+    std::future::poll_fn(|cx| {
+        assert!(checking.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    }).await;
+    let Job::CheckCopy(capture, deadline, reply) = jobs.try_recv().unwrap() else {
+        panic!("only a read-only check may be queued");
+    };
+    assert_eq!(capture, "cap-current");
+    assert_eq!(deadline, expires);
+    tokio::time::advance(REPLY_TIMEOUT).await;
+    assert_eq!(checking.await, Err(Refusal::Busy));
+    assert!(reply.is_closed());
+    assert!(reply.send(Ok(())).is_err());
+    assert!(jobs.try_recv().is_err(), "no write, grant, or automatic retry");
+}
+
+#[tokio::test]
+async fn an_unavailable_copy_worker_fails_closed() {
+    let (send, jobs) = mpsc::channel();
+    drop(jobs);
+    let dictation = Dictation { jobs: Mutex::new(send) };
+    assert_eq!(dictation.check_copy("cap-current", permit().expires).await, Err(Refusal::Busy));
+}

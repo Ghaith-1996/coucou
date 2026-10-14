@@ -71,6 +71,7 @@ export function buildVoice(): ViewHost {
       e.preventDefault();
       // Holding Enter through a re-offer must not confirm the new target.
       if (e.repeat) return;
+      if (Voice.copying || Voice.using) return;
       const app = Voice.app;
       const insert = Voice.insert;
       // While the app or the field is being looked up, or used, Enter waits.
@@ -116,6 +117,7 @@ export function buildVoice(): ViewHost {
           const insert = Voice.insert;
           detail.textContent = event?.simulated
             ? t("Simulated transcript — real speech recognition comes next.")
+            : Voice.copyFailed ? t("Couldn’t copy the text. Try again.")
             : app?.status === "finding" ? t("Looking for {name}…", { name: app.name })
             : app?.status === "missing" ? t("No app called “{name}” in the Start menu.", { name: app.name })
             : command && !command.ok ? command.reason
@@ -138,14 +140,17 @@ export function buildVoice(): ViewHost {
       const app = state === "preview" ? Voice.app : null;
       const offered = app?.status === "ready" || app?.status === "opening" ? app : null;
       if (offered) buttons.open.querySelector("span")!.textContent = t("Open {name}", { name: offered.label });
-      (buttons.open as HTMLButtonElement).disabled = app?.status === "opening";
+      const actionPending = Voice.copying || Voice.using;
+      (buttons.open as HTMLButtonElement).disabled = actionPending || app?.status === "opening";
+      (buttons.act as HTMLButtonElement).disabled = actionPending;
       const insert = state === "preview" ? Voice.insert : null;
       const field = insert?.status === "ready" || insert?.status === "inserting" ? insert : null;
       if (field) buttons.insert.querySelector("span")!.textContent = t("Insert into {name}", { name: field.label });
-      (buttons.insert as HTMLButtonElement).disabled = insert?.status === "inserting";
-      (buttons.retry as HTMLButtonElement).disabled = insert?.status === "retrying";
-      (buttons.use as HTMLButtonElement).disabled = insert?.status === "inserting";
-      (buttons.useToo as HTMLButtonElement).disabled = insert?.status === "inserting";
+      (buttons.insert as HTMLButtonElement).disabled = actionPending || insert?.status === "inserting";
+      (buttons.retry as HTMLButtonElement).disabled = actionPending || insert?.status === "retrying";
+      (buttons.copy as HTMLButtonElement).disabled = actionPending;
+      (buttons.use as HTMLButtonElement).disabled = actionPending || insert?.status === "inserting";
+      (buttons.useToo as HTMLButtonElement).disabled = actionPending || insert?.status === "inserting";
       const copy = canCopyInsert(insert) ? ",copy" : "";
       const want =
         state === "listening" ? "stop,cancel"

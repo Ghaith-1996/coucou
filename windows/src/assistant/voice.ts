@@ -99,6 +99,12 @@ export const Voice = {
   app: null as AppOffer | null,
   /** Dictation: the field the capture started in, if it can take the words. */
   insert: null as InsertOffer | null,
+  /** Lock actions through the fresh field check and the one clipboard attempt. */
+  copying: false,
+  /** A failed check or clipboard attempt left the transcript untouched. */
+  copyFailed: false,
+  /** A pending Use must not race a Copy check or an insertion. */
+  using: false,
 
   get active(): boolean {
     const s = this.event?.state;
@@ -207,8 +213,10 @@ export async function voiceUse() {
   const current = Voice.event;
   // Rust reserves this preview until the write finishes. A concurrent Use
   // would be refused and could otherwise dismiss a still-pending insertion.
-  if (current?.state !== "preview" || Voice.insert?.status === "inserting" || !host) return;
+  if (current?.state !== "preview" || Voice.copying || Voice.using || Voice.insert?.status === "inserting" || !host) return;
   const requestGeneration = generation;
+  Voice.using = true;
+  State.notify();
   try {
     const draft = await Bridge.voiceUse(current.captureId);
     if (requestGeneration !== generation) {
@@ -227,13 +235,18 @@ export async function voiceUse() {
     // Expired or refused: nothing was done.
     end();
     Sound.play("error");
+  } finally {
+    if (requestGeneration === generation) {
+      Voice.using = false;
+      State.notify();
+    }
   }
 }
 
 /** Do it: the pill command on the card becomes a `pill-set` Rust decides. */
 export async function voiceDo() {
   const current = Voice.event;
-  if (current?.state !== "preview" || current.simulated || !host) return;
+  if (current?.state !== "preview" || current.simulated || Voice.copying || Voice.using || !host) return;
   // The preview may have been open while Settings changed. Apply the spoken
   // intent to today's declaration, never the whole set saved in the preview.
   const before = sanitizeDeclared(State.settings, HOST_OS);
@@ -292,7 +305,7 @@ async function findApp(id: string, name: string) {
 export async function voiceOpen() {
   const current = Voice.event;
   const app = Voice.app;
-  if (current?.state !== "preview" || app?.status !== "ready" || !host) return;
+  if (current?.state !== "preview" || Voice.copying || Voice.using || app?.status !== "ready" || !host) return;
   Voice.app = { ...app, status: "opening" };
   State.notify();
   const requestGeneration = generation;
@@ -332,8 +345,9 @@ async function findField(id: string) {
 export async function voiceInsert() {
   const current = Voice.event;
   const offer = Voice.insert;
-  if (current?.state !== "preview" || !host) return;
+  if (current?.state !== "preview" || Voice.copying || Voice.using || !host) return;
   if (offer?.status === "refused" && canRetryInsert(offer.reason)) {
+    Voice.copyFailed = false;
     Voice.insert = { status: "retrying", reason: offer.reason };
     State.notify();
     // No grant was offered yet. Recheck the same capture without writing or
@@ -391,9 +405,35 @@ export async function voiceInsert() {
 /** Copy: the transcript on the clipboard, for a field Coucou can't write to. */
 export async function voiceCopy() {
   const current = Voice.event;
-  if (current?.state !== "preview" || current.simulated || !canCopyInsert(Voice.insert)) return;
-  await writeClipboard(current.transcript ?? "");
-  Sound.play("approve");
+  if (current?.state !== "preview" || current.simulated || Voice.copying || Voice.using || !canCopyInsert(Voice.insert)) return;
+  const requestGeneration = generation;
+  const owns = () => requestGeneration === generation && Voice.event === current && Voice.copying;
+  Voice.copying = true;
+  Voice.copyFailed = false;
+  State.notify();
+  try {
+    const result = await Bridge.insertCopyCheck(current.captureId);
+    if (!owns()) return;
+    if (result?.status !== "allowed") {
+      Voice.insert = { status: "refused", reason: result?.status === "refused" ? result.reason : "busy", copyAllowed: false };
+      Sound.play("error");
+      return;
+    }
+    // The native check and another process's clipboard cannot be atomic.
+    // Use fresh evidence immediately, with no asynchronous fallback attempt.
+    await writeClipboard(current.transcript ?? "", { fallback: false });
+    if (owns()) Sound.play("approve");
+  } catch {
+    if (!owns()) return;
+    Voice.copyFailed = true;
+    Voice.insert = { status: "refused", reason: "busy", copyAllowed: false };
+    Sound.play("error");
+  } finally {
+    if (requestGeneration === generation) {
+      Voice.copying = false;
+      State.notify();
+    }
+  }
 }
 
 /** Forgets the capture; `close` folds the card away. */
@@ -406,6 +446,9 @@ function end(close = true) {
   Voice.event = null;
   Voice.app = null;
   Voice.insert = null;
+  Voice.copying = false;
+  Voice.copyFailed = false;
+  Voice.using = false;
   shown = false;
   unpin();
   if (close && State.view === "voice" && host) host.collapse();
@@ -521,6 +564,9 @@ export function resetVoiceForTests() {
   Voice.event = null;
   Voice.app = null;
   Voice.insert = null;
+  Voice.copying = false;
+  Voice.copyFailed = false;
+  Voice.using = false;
   shown = false;
   pinnedByVoice = false;
   userPinned = false;

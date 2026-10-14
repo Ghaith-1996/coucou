@@ -59,6 +59,7 @@ fn refuse_all(jobs: mpsc::Receiver<Job>) {
             Job::Probe(reply) => drop(reply.send(())),
             Job::Bind(_) => {}
             Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported.into()))),
+            Job::CheckCopy(_, _, reply) => drop(reply.send(Err(Refusal::Busy))),
             Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone.into()))),
         }
     }
@@ -96,6 +97,19 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
                 if let Err(why) = answer {
                     log(format!("dictation: no insertion offered ({})", name(why.reason)));
                 }
+                let _ = reply.send(answer);
+            }
+            Job::CheckCopy(capture, expires, reply) => {
+                if reply.is_closed() { continue; }
+                let answer = copy_bound(&mut bound, &capture, expires, Instant::now, |field| {
+                    copy_revalidated(
+                        || unsafe { field.element.CurrentProcessId() }
+                            .map(|pid| pid as u32 == field.pid).map_err(|_| Refusal::Busy),
+                        || unsafe { field.element.CurrentIsPassword() }
+                            .map(|password| password.as_bool()).map_err(|_| Refusal::Busy),
+                        || window_state(field).0 == Some(field.pid),
+                    )
+                });
                 let _ = reply.send(answer);
             }
             Job::Write(capture, args, permit, reply) => {

@@ -254,6 +254,37 @@ fn offer_bound<T>(
     check(target.offer(capture, expires, now)?).map(Some)
 }
 
+/// A read-only Copy check uses the same remembered target and original
+/// deadline. Neither success nor refusal consumes it or creates a grant.
+fn copy_bound<T>(
+    bound: &mut Option<Remembered<T>>,
+    capture: &str,
+    expires: Instant,
+    now: impl Fn() -> Instant,
+    check: impl FnOnce(&T) -> Result<(), Refusal>,
+) -> Result<(), Refusal> {
+    let target = bound.as_mut().ok_or(Refusal::Gone)?;
+    let result = check(target.offer(capture, expires, now())?);
+    target.expire(now());
+    if target.field.is_none() { return Err(Refusal::Gone); }
+    result
+}
+
+/// Copy needs live identity and a fresh negative password read, regardless
+/// of writability or focus. A failed password read is unknown, not protected.
+/// UIA and a later clipboard call cannot be atomic across another process.
+fn copy_revalidated(
+    element_alive: impl FnOnce() -> Result<bool, Refusal>,
+    password: impl FnOnce() -> Result<bool, Refusal>,
+    window_alive: impl FnOnce() -> bool,
+) -> Result<(), Refusal> {
+    if !element_alive()? { return Err(Refusal::Gone); }
+    let password = password()?;
+    // Check the cheap native window identity after the blocking UIA reads.
+    if !window_alive() { return Err(Refusal::Gone); }
+    if password { Err(Refusal::Protected) } else { Ok(()) }
+}
+
 /// Valid only for the outstanding confirmation, until cancellation or its
 /// original preview/grant expiry. The UIA thread checks this just before writing.
 #[derive(Debug, Clone)]
@@ -353,6 +384,8 @@ enum Job {
     /// The capture that probe was for (None: no capture started).
     Bind(Option<String>),
     Offer(String, Instant, Reply<Result<Option<Offer>, Rejection>>),
+    /// Fresh evidence for one Copy click; never reads or writes field text.
+    CheckCopy(String, Instant, Reply<Result<(), Refusal>>),
     /// Checked again, then written.
     Write(String, InsertTextArgs, WritePermit, Reply<Result<Written, Rejection>>),
 }
@@ -407,6 +440,11 @@ impl Dictation {
         self.ask(|reply| Job::Offer(capture, expires, reply), Err(Refusal::Busy.into())).await
     }
 
+    pub async fn check_copy(&self, capture_id: &str, expires: Instant) -> Result<(), Refusal> {
+        let capture = capture_id.to_string();
+        self.ask(|reply| Job::CheckCopy(capture, expires, reply), Err(Refusal::Busy)).await
+    }
+
     /// Checks the field again, then writes the confirmed words into it.
     pub async fn write(&self, capture_id: &str, args: InsertTextArgs, permit: WritePermit) -> Result<Written, Rejection> {
         let capture = capture_id.to_string();
@@ -431,6 +469,7 @@ fn run(jobs: mpsc::Receiver<Job>, _log: fn(String)) {
             Job::Probe(reply) => drop(reply.send(())),
             Job::Bind(_) => {}
             Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported.into()))),
+            Job::CheckCopy(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported))),
             Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone.into()))),
         }
     }

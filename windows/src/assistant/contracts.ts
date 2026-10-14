@@ -84,6 +84,11 @@ export type InsertOfferReply =
   | { status: "ready"; label: string; grant: AppGrant }
   | { status: "refused"; reason: InsertRefusal; copyAllowed: boolean };
 
+/** Fresh read-only evidence for one Copy click; no insertion grant or transcript. */
+export type InsertCopyReply =
+  | { status: "allowed" }
+  | { status: "refused"; reason: InsertRefusal };
+
 /** assistant_insert_text: written (or maybe), kept on the card, or put in the chat instead. */
 export type InsertTextReply =
   | { status: "done"; receipt: ActionReceipt }

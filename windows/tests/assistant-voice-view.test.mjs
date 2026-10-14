@@ -18,12 +18,14 @@ const listeners = new Map();
 window.addEventListener = (name, fn) => listeners.set(name, [...listeners.get(name) ?? [], fn]);
 const { State } = await import("../src/core/state.ts");
 const { CONTRACT_VERSION } = await import("../src/assistant/contracts.ts");
-const { Voice, registerVoice, resetVoiceForTests, voiceCopy, voiceShortcut } = await import("../src/assistant/voice.ts");
+const { Voice, registerVoice, resetVoiceForTests, voiceCopy, voiceInsert, voiceShortcut, voiceUse } = await import("../src/assistant/voice.ts");
 const { buildVoice } = await import("../src/assistant/voice-view.ts");
 const answers = new Map();
 const copied = [];
+let clipboardResult;
+let fallbackCopies = 0;
 Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
-  async writeText(text) { copied.push(text); },
+  async writeText(text) { copied.push(text); return clipboardResult; },
 } });
 const invoke = internals.invoke;
 internals.invoke = async (cmd, args) => {
@@ -54,6 +56,10 @@ beforeEach(() => {
   calls.length = 0;
   answers.clear();
   copied.length = 0;
+  clipboardResult = undefined;
+  fallbackCopies = 0;
+  document.execCommand = () => { fallbackCopies++; return true; };
+  answers.set("assistant_insert_copy_check", { status: "allowed" });
   answers.set("assistant_voice_toggle", "cap-1");
   State.pendingApproval = null;
   State.view = "overview";
@@ -354,4 +360,186 @@ test("a field that disappears during re-offer replaces earlier Copy permission w
   assert.equal(Voice.event.transcript, "keep these words");
   assert.equal(sent("assistant_insert_offer").length, 2);
   assert.equal(sent("assistant_insert_text").length, 0);
+});
+
+for (const initial of ["read-only", "unsupported"]) {
+  for (const reason of ["protected", "gone", "busy"]) {
+    test(`Copy rechecks a cached ${initial} field and refuses fresh ${reason} evidence`, async () => {
+      await preview({ status: "refused", reason: initial, copyAllowed: true });
+      const retained = button("Copy");
+      answers.set("assistant_insert_copy_check", { status: "refused", reason });
+      await voiceCopy();
+      assert.deepEqual(sent("assistant_insert_copy_check"), [{ captureId: "cap-1" }]);
+      assert.deepEqual(copied, []);
+      assert.equal(Voice.insert.reason, reason);
+      assert.equal(button("Copy"), undefined);
+      retained.fire("click");
+      await voiceCopy();
+      assert.deepEqual(copied, []);
+      assert.equal(sent("assistant_insert_copy_check").length, 1);
+      assert.equal(Voice.event.transcript, "keep these words");
+      assert.equal(sent("assistant_insert_text").length, 0);
+      assert.equal(sent("assistant_voice_use").length, 0);
+    });
+  }
+}
+
+for (const result of [null, false, new Error("UIA unavailable")]) {
+  test(`an unavailable or invalid Copy check fails closed: ${String(result)}`, async () => {
+    await preview({ status: "refused", reason: "read-only", copyAllowed: true });
+    answers.set("assistant_insert_copy_check", result);
+    await voiceCopy();
+    assert.deepEqual(copied, []);
+    assert.ok(button("Retry"), "an unknown check failure has an explicit safe recheck path");
+    assert.equal(Voice.insert.reason, "busy", "unknown is not reported as a password");
+    assert.equal(Voice.event.state, "preview");
+  });
+}
+
+test("Copy locks retained buttons, direct handlers and Enter until fresh evidence arrives", async () => {
+  await preview({ status: "refused", reason: "focus-moved", copyAllowed: true });
+  const retainedCopy = button("Copy");
+  const retainedRetry = button("Retry");
+  const retainedUse = button("Use in chat");
+  const pending = Promise.withResolvers();
+  answers.set("assistant_insert_copy_check", pending.promise);
+  const copying = voiceCopy();
+  assert.equal(retainedCopy.disabled, true);
+  assert.equal(retainedRetry.disabled, true);
+  assert.equal(retainedUse.disabled, true);
+  assert.equal(Boolean(button("Cancel").disabled), false);
+  retainedCopy.fire("click");
+  retainedRetry.fire("click");
+  retainedUse.fire("click");
+  enter();
+  await voiceCopy();
+  await voiceInsert();
+  await voiceUse();
+  await flush();
+  assert.deepEqual(copied, [], "cached eligibility cannot reach the clipboard");
+  assert.equal(sent("assistant_insert_copy_check").length, 1);
+  assert.equal(sent("assistant_insert_offer").length, 1);
+  assert.equal(sent("assistant_insert_text").length, 0);
+  assert.equal(sent("assistant_voice_use").length, 0);
+  pending.resolve({ status: "allowed" });
+  await copying;
+  assert.deepEqual(copied, ["keep these words"]);
+  assert.equal(button("Copy").disabled, false);
+  assert.equal(button("Use in chat").disabled, false);
+  assert.equal(Voice.event.state, "preview");
+});
+
+for (const interruption of ["cancel", "idle", "replacement", "error"]) {
+  test(`a Copy check resolving after ${interruption} cannot copy or restore the old preview`, async () => {
+    await preview({ status: "refused", reason: "unsupported", copyAllowed: true });
+    const pending = Promise.withResolvers();
+    answers.set("assistant_insert_copy_check", pending.promise);
+    const copying = voiceCopy();
+    if (interruption === "cancel" || interruption === "replacement") button("Cancel").fire("click");
+    if (interruption === "idle") emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-1", state: "idle" });
+    if (interruption === "error") emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-1", state: "error", error: "provider" });
+    if (interruption === "replacement") {
+      answers.set("assistant_voice_toggle", "cap-2");
+      await voiceShortcut();
+    }
+    const current = Voice.event;
+    pending.resolve({ status: "allowed" });
+    await copying;
+    assert.deepEqual(copied, []);
+    assert.equal(Voice.event, current);
+  });
+}
+
+for (const pendingAtExpiry of [false, true]) {
+  test(`Copy preserves the original preview expiry with its check pending: ${pendingAtExpiry}`, async (t) => {
+    const nativeTimeout = setTimeout;
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    answers.set("assistant_insert_offer", { status: "refused", reason: "read-only", copyAllowed: true });
+    await voiceShortcut();
+    emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-1", state: "preview", transcript: "expires on time" });
+    await new Promise((resolve) => nativeTimeout(resolve, 0));
+    t.mock.timers.tick(90_000);
+    const pending = Promise.withResolvers();
+    if (pendingAtExpiry) answers.set("assistant_insert_copy_check", pending.promise);
+    const copying = voiceCopy();
+    if (!pendingAtExpiry) await copying;
+    t.mock.timers.tick(29_999);
+    assert.equal(Voice.event.state, "preview");
+    t.mock.timers.tick(1);
+    assert.equal(Voice.event, null);
+    pending.resolve({ status: "allowed" });
+    await copying;
+    assert.deepEqual(copied, pendingAtExpiry ? [] : ["expires on time"]);
+  });
+}
+
+test("every Copy click needs its own check, including a field which is now writable", async () => {
+  await preview({ status: "refused", reason: "read-only", copyAllowed: true });
+  await voiceCopy();
+  assert.deepEqual(copied, ["keep these words"]);
+  assert.equal(sent("assistant_insert_offer").length, 1, "Copy does not create a new insertion grant");
+  answers.set("assistant_insert_copy_check", { status: "refused", reason: "protected" });
+  await voiceCopy();
+  assert.equal(sent("assistant_insert_copy_check").length, 2);
+  assert.deepEqual(copied, ["keep these words"]);
+  assert.equal(sent("assistant_insert_text").length, 0);
+});
+
+for (const cancel of [false, true]) {
+  test(`a delayed clipboard rejection never starts a dictation fallback, cancelled: ${cancel}`, async () => {
+    await preview({ status: "refused", reason: "unsupported", copyAllowed: true });
+    const pending = Promise.withResolvers();
+    clipboardResult = pending.promise;
+    const copying = voiceCopy();
+    await flush();
+    assert.deepEqual(copied, ["keep these words"], "one attempt, after fresh native evidence");
+    await voiceCopy();
+    await voiceUse();
+    assert.equal(sent("assistant_insert_copy_check").length, 1);
+    assert.equal(sent("assistant_voice_use").length, 0);
+    if (cancel) {
+      button("Cancel").fire("click");
+      answers.set("assistant_voice_toggle", "cap-2");
+      await voiceShortcut();
+    }
+    pending.reject(new Error("clipboard denied"));
+    await copying;
+    assert.equal(fallbackCopies, 0);
+    if (!cancel) assert.equal(view.el.querySelector(".sub").textContent, "Couldn’t copy the text. Try again.");
+    assert.deepEqual(copied, ["keep these words"]);
+    assert.equal(Voice.event.captureId, cancel ? "cap-2" : "cap-1");
+  });
+}
+
+test("a pending Use in chat blocks a retained Copy click and direct Copy or Insert", async () => {
+  await preview({ status: "refused", reason: "focus-moved", copyAllowed: true });
+  const retained = button("Copy");
+  const pending = Promise.withResolvers();
+  answers.set("assistant_voice_use", pending.promise);
+  const using = voiceUse();
+  retained.fire("click");
+  await voiceCopy();
+  await voiceInsert();
+  assert.deepEqual(copied, []);
+  assert.equal(sent("assistant_insert_copy_check").length, 0);
+  assert.equal(sent("assistant_insert_offer").length, 1);
+  pending.resolve({ actionId: "draft-once", text: "keep these words" });
+  await using;
+});
+
+
+test("a failed Copy can be explicitly retried without consuming the preview or writing", async () => {
+  await preview({ status: "refused", reason: "unsupported", copyAllowed: true });
+  answers.set("assistant_insert_copy_check", new Error("unavailable"));
+  await voiceCopy();
+  assert.equal(view.el.querySelector(".sub").textContent, "Couldn’t copy the text. Try again.");
+  assert.deepEqual(copied, []);
+  button("Retry").fire("click");
+  await flush();
+  assert.equal(view.el.querySelector(".sub").textContent, "This field doesn't take dictated text. Use it in chat.");
+  answers.set("assistant_insert_copy_check", { status: "allowed" });
+  await voiceCopy();
+  assert.deepEqual(copied, ["keep these words"]);
+  assert.equal(sent("assistant_insert_text").length, 0);
+  assert.equal(Voice.event.state, "preview");
 });

@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, State, Webview};
 use serde::Serialize;
 
 use super::contracts::{ActionKind, ActionReceipt, ErrorCode, ValidArgs, VoiceEvent, VOICE_EVENT};
-use super::dictation::{Dictation, Rejection, Written};
+use super::dictation::{Dictation, Refusal, Rejection, Written};
 use super::policy::Grant;
 use super::voice::{self, model, ChatDraft, Voice};
 use crate::island::WINDOW_LABEL;
@@ -170,6 +170,43 @@ pub async fn assistant_insert_offer(
     let args = serde_json::json!({ "text": text, "targetWindow": offer.target_window, "targetPid": offer.target_pid });
     let grant = voice.propose(&capture_id, ActionKind::InsertText, args)?;
     Ok(Some(InsertOffer::Ready { label: offer.label, grant }))
+}
+
+/// Fresh evidence for one clipboard attempt, without proposing or consuming
+/// an insertion. The page already holds the transcript; no text is returned.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum InsertCopyCheck {
+    Allowed,
+    Refused { reason: Refusal },
+}
+
+#[tauri::command]
+pub async fn assistant_insert_copy_check(
+    webview: Webview,
+    voice: State<'_, Voice>,
+    dictation: State<'_, Dictation>,
+    capture_id: String,
+) -> Result<InsertCopyCheck, ErrorCode> {
+    if webview.label() != WINDOW_LABEL { return Err(ErrorCode::Unavailable); }
+    checked_copy_preview(&voice, &capture_id, |expires| dictation.check_copy(&capture_id, expires)).await
+}
+
+/// Check ownership on both sides of the await. A native Cancel, replacement,
+/// Use, insertion or expiry can invalidate a positive UIA answer meanwhile.
+pub(super) async fn checked_copy_preview<F>(
+    voice: &Voice,
+    capture_id: &str,
+    check: impl FnOnce(std::time::Instant) -> F,
+) -> Result<InsertCopyCheck, ErrorCode>
+where F: std::future::Future<Output = Result<(), Refusal>> {
+    let (_, expires) = voice.insertion_preview(capture_id)?;
+    let result = check(expires).await;
+    if voice.insertion_preview(capture_id)?.1 != expires { return Err(ErrorCode::Expired); }
+    Ok(match result {
+        Ok(()) => InsertCopyCheck::Allowed,
+        Err(reason) => InsertCopyCheck::Refused { reason },
+    })
 }
 
 /// What came of the user's "Insert into <app>".

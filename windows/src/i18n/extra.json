@@ -4340,6 +4340,17 @@
    "ru": "Поле изменилось. Ничего не было введено. Проверьте его и снова нажмите «Вставить».",
    "id": "Kolom berubah. Tidak ada yang diketik. Periksa, lalu Sisipkan lagi."
   },
+  "Couldn’t copy the text. Try again.": {
+   "zh-Hans": "无法复制文本。请重试。",
+   "hi": "टेक्स्ट कॉपी नहीं हो सका। फिर से कोशिश करें।",
+   "es": "No se pudo copiar el texto. Inténtalo de nuevo.",
+   "ar": "تعذّر نسخ النص. حاول مرة أخرى.",
+   "fr": "Impossible de copier le texte. Réessayez.",
+   "bn": "লেখাটি কপি করা যায়নি। আবার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível copiar o texto. Tente novamente.",
+   "ru": "Не удалось скопировать текст. Попробуйте ещё раз.",
+   "id": "Teks tidak dapat disalin. Coba lagi."
+  },
   "The app didn't answer. Nothing was typed.": {
    "zh-Hans": "该应用没有响应。没有输入任何内容。",
    "hi": "ऐप ने जवाब नहीं दिया। कुछ भी टाइप नहीं हुआ।",

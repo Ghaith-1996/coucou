@@ -980,3 +980,74 @@ fn a_terminal_insertion_failure_can_become_an_allowed_chat_draft() {
     assert!(draft.action_id.starts_with("act-"));
     assert_eq!(h.voice.fallback_draft("cap-dictate", " ".into()).unwrap_err(), ErrorCode::InvalidArgs);
 }
+
+#[tokio::test]
+async fn copy_checks_preserve_the_preview_deadline_and_never_propose_insertion() {
+    use super::super::app::{checked_copy_preview, InsertCopyCheck};
+    use super::super::dictation::Refusal;
+    let h = harness(speaking(0));
+    spoken(&h, "cap-copy", "Words to copy");
+    let original = h.voice.insertion_preview("cap-copy").unwrap();
+    for result in [Ok(()), Err(Refusal::Protected), Err(Refusal::Busy), Ok(())] {
+        let reply = checked_copy_preview(&h.voice, "cap-copy", |expires| {
+            assert_eq!(expires, original.1);
+            std::future::ready(result)
+        }).await.unwrap();
+        assert_eq!(reply, match result {
+            Ok(()) => InsertCopyCheck::Allowed,
+            Err(reason) => InsertCopyCheck::Refused { reason },
+        });
+        assert_eq!(h.voice.insertion_preview("cap-copy").unwrap(), original);
+        assert!(h.voice.0.proposal.lock().unwrap().is_none());
+        assert!(h.events.try_recv().is_err(), "the check cannot consume or dismiss a preview");
+    }
+}
+
+#[tokio::test]
+async fn copy_rechecks_capture_ownership_and_expiry_after_the_native_read() {
+    use super::super::app::checked_copy_preview;
+    for change in ["cancel", "replace", "expire", "insert", "use"] {
+        let h = harness(speaking(0));
+        spoken(&h, "cap-copy", "Old words");
+        let result = checked_copy_preview(&h.voice, "cap-copy", |_| {
+            match change {
+                "cancel" => h.voice.cancel("cap-copy"),
+                "replace" => spoken(&h, "cap-new", "New words"),
+                "expire" => {
+                    let mut phase = h.voice.0.phase.lock().unwrap();
+                    let Phase::Preview { since, .. } = &mut *phase else { panic!("preview") };
+                    *since = Instant::now() - PREVIEW_TTL;
+                }
+                "insert" => {
+                    let grant = h.voice.propose("cap-copy", ActionKind::InsertText, insertion("Old words")).unwrap();
+                    h.voice.begin_insert("cap-copy", &grant).unwrap();
+                }
+                "use" => { h.voice.use_transcript("cap-copy").unwrap(); }
+                _ => unreachable!(),
+            }
+            std::future::ready(Ok(()))
+        }).await;
+        assert_eq!(result, Err(ErrorCode::Expired), "late evidence after {change}");
+        if change == "replace" {
+            assert_eq!(h.voice.insertion_preview("cap-new").unwrap().0, "New words");
+        }
+    }
+}
+
+#[tokio::test]
+async fn copy_checks_reject_stale_and_simulated_previews_before_reading_a_field() {
+    use super::super::app::checked_copy_preview;
+    let h = harness(speaking(0));
+    spoken(&h, "cap-current", "Current words");
+    let result = checked_copy_preview(&h.voice, "cap-old", |_| async {
+        panic!("a stale capture must never reach the target reader");
+    }).await;
+    assert_eq!(result, Err(ErrorCode::Expired));
+    if let Phase::Preview { transcript, .. } = &mut *h.voice.0.phase.lock().unwrap() {
+        transcript.simulated = true;
+    }
+    let result = checked_copy_preview(&h.voice, "cap-current", |_| async {
+        panic!("a simulated capture must never reach the target reader");
+    }).await;
+    assert_eq!(result, Err(ErrorCode::Unavailable));
+}

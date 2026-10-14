@@ -417,6 +417,13 @@ export const Bridge = {
   /** Starts a voice capture, or stops the one listening. The capture id, or null when busy. */
   voiceToggle: () => call<string | null>("assistant_voice_toggle"),
   voiceStop: (captureId: string) => call<void>("assistant_voice_stop", { captureId }),
+  /** Audio mode: a capture that ends by itself after speech and a pause. The capture id, or null. */
+  voiceHandsFree: () => call<string | null>("assistant_voice_hands_free"),
+  /** Audio mode: the transcript, as the next chat message. Throws with the refusal code. */
+  voiceConverse: (captureId: string) => callOrThrow<string>("assistant_voice_converse", { captureId }),
+  /** Audio mode: `text` read aloud by a Windows voice, as a WAV data URL. */
+  speechSay: (text: string) =>
+    callOrThrow<{ audio: string; language: string; matched: boolean }>("speech_say", { text }),
   /** Ends the capture and drops its audio or transcript. Never an action. */
   voiceCancel: (captureId: string) => call<void>("assistant_voice_cancel", { captureId }),
   /** The transcript as a chat draft Rust's policy allowed; throws with the refusal code. */

@@ -29,6 +29,7 @@ import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
 import { voiceShortcut } from "../assistant/voice";
+import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -38,6 +39,13 @@ const STRINGS = {
   send: N_("Send"),
   stop: N_("Stop"),
   voice: N_("Start voice capture"),
+  audio: N_("Audio mode: talk with the chat"),
+  audioListening: N_("Listening…"),
+  audioTranscribing: N_("Transcribing…"),
+  audioThinking: N_("Thinking…"),
+  audioSpeaking: N_("Speaking — tap to interrupt"),
+  audioEnd: N_("End"),
+  audioSilence: N_("Audio mode ended: nothing was heard."),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
@@ -559,7 +567,21 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     title: tl(STRINGS.voice),
     "aria-label": tl(STRINGS.voice),
   }, svg(ICONS.mic, 15, { stroke: 1.8 })) : null;
-  const bar = h("div", { class: "chat-bar" }, input, voice, send);
+  const audioBtn = HOST_OS === "windows" ? h("button", {
+    type: "button",
+    class: "audio-btn",
+    title: tl(STRINGS.audio),
+    "aria-label": tl(STRINGS.audio),
+    onclick: () => toggleAudioMode(),
+  }, svg(ICONS.wave, 15, { stroke: 1.8 })) : null;
+  const bar = h("div", { class: "chat-bar" }, input, audioBtn, voice, send);
+  // Audio mode's state, above the bar while it is on.
+  const audioLabel = h("span", { class: "audio-label" });
+  const audioDot = h("i", { class: "audio-dot" });
+  const audioStatus = h("button", { type: "button", class: "audio-status", onclick: () => interruptAudio() }, audioDot, audioLabel);
+  const audioEnd = h("button", { type: "button", class: "audio-end", text: t(STRINGS.audioEnd), onclick: () => stopAudioMode() });
+  const audioRow = h("div", { class: "audio-row" }, audioStatus, audioEnd);
+  audioRow.hidden = true;
 
   const modelDot = h("i", { class: "model-dot" });
   const modelName = h("span", { class: "model-name" });
@@ -595,7 +617,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       input.focus();
     },
   );
-  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, modelRow, bar);
+  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, modelRow, audioRow, bar);
 
   const el = h("div", { class: "view" }, h("div", { class: "card wash chat-card" }, body));
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
@@ -774,7 +796,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.notify();
   });
 
-  async function ask(query: string) {
+  async function ask(query: string): Promise<string | null> {
     if (picker.isOpen) picker.close();
     if (history.isOpen) history.close();
     sending = true;
@@ -805,17 +827,19 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     // Stop/failure can leave visible messages without a committed native turn.
     // Rust decides whether this candidate belongs on its first completed turn.
     const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
+    let answer: string | null = null;
 
     try {
       const reply = await Bridge.chatSend(query, context);
-      if (!isCurrent()) return;
+      if (!isCurrent()) return null;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text, ...answeredBy });
       State.stateOverride = null;
       usageLimit = false;
       Sound.play("finish");
       saveConversation();
+      answer = reply.text;
     } catch (err) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return null;
       State.stateOverride = null;
       if (stopRequested) {
         // What arrived before Stop stays on screen, marked; the model never sees it again.
@@ -843,7 +867,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       onHeightChange();
       input.focus();
     }
+    return answer;
   }
+
+  setAudioAsk((text) => (sending || undoPending ? Promise.resolve(null) : ask(text)));
 
   async function submit() {
     const query = input.value.trim();
@@ -935,9 +962,26 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   refreshChatGpt();
 
+  function drawAudio() {
+    const on = AudioMode.state !== "off";
+    audioRow.hidden = !on && !AudioMode.note;
+    audioBtn?.classList.toggle("on", on);
+    audioRow.dataset.state = AudioMode.state;
+    audioDot.style.transform = AudioMode.state === "listening" ? `scale(${1 + AudioMode.level * 1.5})` : "";
+    audioLabel.textContent = t(
+      AudioMode.state === "listening" ? STRINGS.audioListening
+      : AudioMode.state === "transcribing" ? STRINGS.audioTranscribing
+      : AudioMode.state === "thinking" ? STRINGS.audioThinking
+      : AudioMode.state === "speaking" ? STRINGS.audioSpeaking
+      : AudioMode.note === "silence" ? STRINGS.audioSilence : "",
+    );
+    audioEnd.hidden = !on;
+  }
+
   return {
     el,
     sync() {
+      drawAudio();
       const file = State.droppedFile;
       const wantChip = file?.name ?? "";
       if (chipRow.dataset.label !== wantChip) {

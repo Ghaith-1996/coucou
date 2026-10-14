@@ -4922,6 +4922,61 @@
    "pt-BR": "Os anexos originais não estão disponíveis nesta conversa. Solte o arquivo novamente para iniciar uma nova conversa com ele.",
    "ru": "Исходные вложения недоступны в этом чате. Перетащите файл ещё раз, чтобы начать с ним новый чат.",
    "id": "Lampiran asli tidak tersedia dalam percakapan ini. Jatuhkan file lagi untuk memulai percakapan baru dengannya."
+  },
+  "Audio mode: talk with the chat": {
+   "zh-Hans": "语音模式：与聊天对话",
+   "hi": "ऑडियो मोड: चैट से बात करें",
+   "es": "Modo de voz: habla con el chat",
+   "ar": "الوضع الصوتي: تحدّث مع الدردشة",
+   "fr": "Mode audio : parler avec le chat",
+   "bn": "অডিও মোড: চ্যাটের সাথে কথা বলুন",
+   "pt-BR": "Modo de áudio: converse com o chat",
+   "ru": "Голосовой режим: говорите с чатом",
+   "id": "Mode audio: bicara dengan obrolan"
+  },
+  "Thinking…": {
+   "zh-Hans": "思考中…",
+   "hi": "सोच रहा है…",
+   "es": "Pensando…",
+   "ar": "يفكّر…",
+   "fr": "Réflexion…",
+   "bn": "ভাবছে…",
+   "pt-BR": "Pensando…",
+   "ru": "Думаю…",
+   "id": "Berpikir…"
+  },
+  "Speaking — tap to interrupt": {
+   "zh-Hans": "正在说话 — 点按可打断",
+   "hi": "बोल रहा है — रोकने के लिए टैप करें",
+   "es": "Hablando — toca para interrumpir",
+   "ar": "يتحدث — انقر للمقاطعة",
+   "fr": "Parle — touchez pour interrompre",
+   "bn": "বলছে — থামাতে ট্যাপ করুন",
+   "pt-BR": "Falando — toque para interromper",
+   "ru": "Говорю — нажмите, чтобы прервать",
+   "id": "Berbicara — ketuk untuk menyela"
+  },
+  "End": {
+   "zh-Hans": "结束",
+   "hi": "समाप्त",
+   "es": "Terminar",
+   "ar": "إنهاء",
+   "fr": "Terminer",
+   "bn": "শেষ",
+   "pt-BR": "Encerrar",
+   "ru": "Завершить",
+   "id": "Akhiri"
+  },
+  "Audio mode ended: nothing was heard.": {
+   "zh-Hans": "语音模式已结束：没有听到任何声音。",
+   "hi": "ऑडियो मोड बंद हुआ: कुछ सुनाई नहीं दिया।",
+   "es": "Modo de voz terminado: no se oyó nada.",
+   "ar": "انتهى الوضع الصوتي: لم يُسمع شيء.",
+   "fr": "Mode audio terminé : rien n'a été entendu.",
+   "bn": "অডিও মোড শেষ: কিছুই শোনা যায়নি।",
+   "pt-BR": "Modo de áudio encerrado: nada foi ouvido.",
+   "ru": "Голосовой режим завершён: ничего не было слышно.",
+   "id": "Mode audio berakhir: tidak ada yang terdengar."
   }
  }
 }

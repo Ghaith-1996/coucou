@@ -8,6 +8,7 @@ pub mod contracts;
 #[cfg(windows)]
 pub mod launch;
 pub mod policy;
+pub mod speech;
 pub mod voice;
 
 #[cfg(test)]

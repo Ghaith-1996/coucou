@@ -169,7 +169,7 @@ pub async fn speech_say(
     }
     // OpenAI's voice when the chat is on ChatGPT and the sign-in allows it.
     let on_chatgpt = shared.settings.lock().unwrap().chat_provider == crate::chatgpt::PROVIDER;
-    if on_chatgpt && crate::chatgpt::speech_available() {
+    if on_chatgpt && crate::chatgpt::speech_available().await {
         let text: String = text.chars().take(MAX_CHARS).collect();
         match crate::chatgpt::speak(&text).await {
             Ok(mp3) => {

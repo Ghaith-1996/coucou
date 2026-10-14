@@ -10,7 +10,7 @@ import { installFakeDom } from "./fakedom.mjs";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 
 installFakeDom();
-const { buildPrompt } = await import("../src/views/chat.ts");
+const { buildPrompt, newConversation } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
 const { EFFORT_LABELS, LUNA, SOL, effortFor, effortsFor, withEffort } = await import("../src/core/chatgpt.ts");
 const { cleanTitle, fromSaved, newChatId, titleFor, toSaved } = await import("../src/core/conversations.ts");
@@ -24,6 +24,19 @@ test("each model offers exactly the efforts Rust accepts (shared fixture)", () =
   for (const [model, efforts] of Object.entries(table.models)) assert.deepEqual([...effortsFor(model)], efforts, model);
   for (const [value, label] of Object.entries(table.labels)) assert.equal(EFFORT_LABELS[value], label);
   assert.ok(!effortsFor(SOL).includes("none"), "GPT-6.1 Sol has no None");
+});
+
+test("saved efforts normalize like native send settings (shared fixture)", () => {
+  for (const [model, supported] of Object.entries(table.models)) {
+    for (const saved of table.savedEfforts) {
+      const chatEfforts = saved === null ? {} : { [model]: saved };
+      const original = { ...chatEfforts };
+      const settings = { ...DEFAULT_SETTINGS, chatModels: { chatgpt: model }, chatEfforts };
+      const expected = supported.includes(saved) ? saved : table.default;
+      assert.equal(effortFor(settings, model), expected, `${model}: ${JSON.stringify(saved)}`);
+      assert.deepEqual(settings.chatEfforts, original, "normalizing does not rewrite settings");
+    }
+  }
 });
 
 test("the effort is remembered per model, Medium by default, never an unsupported one", () => {
@@ -83,7 +96,7 @@ internals.invoke = async (cmd, args) => {
 };
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-const CONNECTED = { connected: true, email: "me@example.com", planEnabled: true, needsReconnect: false, showWelcome: false, manageUsageUrl: "https://chatgpt.com/#settings" };
+const CONNECTED = { connected: true, accountId: "test-client", email: "me@example.com", planEnabled: true, needsReconnect: false, showWelcome: false, manageUsageUrl: "https://chatgpt.com/#settings" };
 const CATALOG = [
   { id: LUNA, label: "GPT-6 Luna", available: true, efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
   { id: SOL, label: "GPT-6.1 Sol", available: true, efforts: ["low", "medium", "high", "xhigh", "max"] },
@@ -97,6 +110,7 @@ beforeEach(async () => {
   State.chatHistory = [];
   State.chatId = null;
   State.stateOverride = null;
+  State.noteMessage = "";
   State.view = "prompt";
   State.droppedFile = null;
   view = buildPrompt(() => {});
@@ -123,6 +137,207 @@ test("not signed in: the picker offers Continue with ChatGPT, and nothing is ask
   assert.equal(sent("chatgpt_connect").length, 1);
   assert.equal(sent("chatgpt_models").length, 1, "the catalog once signed in");
 });
+
+// The native command emits chatgpt-status on success, failure and cancellation.
+// Exercise both deliveries, because the event and command use separate channels.
+const SIGNED_OUT = { ...CONNECTED, connected: false, accountId: null, email: null };
+async function beginSignIn(t, initial = SIGNED_OUT) {
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve(CONNECTED); await flush(); });
+  answers.chatgpt_status = initial;
+  answers.chatgpt_connect = () => pending.promise;
+  $(".model-btn").fire("click");
+  await flush();
+  $(".chatgpt-connect").fire("click");
+  await flush();
+  return pending;
+}
+
+for (const order of ["before", "after"]) {
+  for (const error of ["Sign-in failed. Try again.", "Sign-in cancelled."]) {
+    test(`the initiating picker preserves ${error} when status arrives ${order} rejection`, async (t) => {
+      const pending = await beginSignIn(t);
+      if (order === "before") emit("chatgpt-status", SIGNED_OUT);
+      pending.reject(new Error(error));
+      await flush();
+      if (order === "after") emit("chatgpt-status", SIGNED_OUT);
+      await flush();
+      assert.ok($(".picker").classList.contains("on"), "the failed attempt stays visible");
+      assert.match($(".picker-list").textContent, new RegExp(error.replace(/[.]/g, "\\.")));
+      assert.equal($(".chatgpt-connect").textContent, "Continue with ChatGPT", "retry remains available");
+      assert.equal(sent("chatgpt_models").length, 0);
+      answers.chatgpt_status = CONNECTED;
+      answers.chatgpt_connect = CONNECTED;
+      $(".chatgpt-connect").fire("click");
+      await flush();
+      assert.equal(view.el.find(".picker-model").length, 2, "retry can succeed");
+    });
+  }
+
+  test(`a successful initiating login refreshes its catalog with status ${order} settlement`, async (t) => {
+    const pending = await beginSignIn(t);
+    answers.chatgpt_status = CONNECTED;
+    if (order === "before") emit("chatgpt-status", CONNECTED);
+    pending.resolve(CONNECTED);
+    await flush();
+    if (order === "after") emit("chatgpt-status", CONNECTED);
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.deepEqual(view.el.find(".picker-model").map((row) => row.disabled), [false, false]);
+    assert.doesNotMatch($(".picker-list").textContent, /Finish signing in/);
+  });
+}
+
+for (const order of ["before", "after"]) {
+  test(`a first registration storage failure survives its newly issued account status ${order} rejection`, async (t) => {
+    const pending = await beginSignIn(t);
+    const partial = { ...SIGNED_OUT, accountId: "issued-client", needsReconnect: true, hasSavedCredentials: true };
+    answers.chatgpt_status = partial;
+    if (order === "before") emit("chatgpt-status", partial);
+    pending.reject(new Error("Could not save ChatGPT credentials"));
+    await flush();
+    if (order === "after") emit("chatgpt-status", partial);
+    assert.ok($(".picker").classList.contains("on"));
+    assert.match($(".picker-list").textContent, /Could not save ChatGPT credentials/);
+    assert.equal($(".chatgpt-connect").textContent, "Reconnect");
+    assert.equal(sent("chatgpt_models").length, 0);
+  });
+}
+
+test("a failed first registration binds its error to the issued account", async (t) => {
+  const pending = await beginSignIn(t);
+  const issued = { ...SIGNED_OUT, accountId: "issued-client", needsReconnect: true };
+  emit("chatgpt-status", issued);
+  pending.reject(new Error("Issued registration failed"));
+  await flush();
+  assert.match($(".picker-list").textContent, /Issued registration failed/);
+  const selected = { ...issued, accountId: "another-client" };
+  answers.chatgpt_status = selected;
+  emit("chatgpt-status", selected);
+  await flush();
+  assert.equal($(".picker").classList.contains("on"), false, "another registration invalidates the old error");
+  $(".model-btn").fire("click");
+  await flush();
+  assert.doesNotMatch($(".picker-list").textContent, /Issued registration failed/);
+});
+
+for (const order of ["before", "after"]) {
+  test(`same-account recovery ${order} login rejection clears the stale error`, async (t) => {
+    const pending = await beginSignIn(t, { ...CONNECTED, connected: false, needsReconnect: true });
+    answers.chatgpt_status = CONNECTED;
+    if (order === "before") emit("chatgpt-status", CONNECTED);
+    pending.reject(new Error("Earlier sign-in failed"));
+    await flush();
+    if (order === "after") emit("chatgpt-status", CONNECTED);
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.doesNotMatch($(".picker-list").textContent, /Earlier sign-in failed/);
+    assert.equal(view.el.find(".picker-model").length, 2);
+  });
+}
+
+for (const order of ["before", "after"]) {
+  test(`a reconnect started from a usable account clears its error after recovery, failed status ${order} rejection`, async (t) => {
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(CONNECTED); await flush(); });
+    answers.chatgpt_models = new Error("Catalog unavailable; reconnect");
+    $(".model-btn").fire("click");
+    await flush();
+    answers.chatgpt_connect = () => pending.promise;
+    $(".chatgpt-connect").fire("click");
+    await flush();
+    const failed = { ...CONNECTED, connected: false, needsReconnect: true };
+    if (order === "before") emit("chatgpt-status", failed);
+    pending.reject(new Error("Reconnect storage failed"));
+    await flush();
+    if (order === "after") emit("chatgpt-status", failed);
+    assert.match($(".picker-list").textContent, /Reconnect storage failed/);
+    answers.chatgpt_models = CATALOG;
+    answers.chatgpt_status = CONNECTED;
+    emit("chatgpt-status", CONNECTED);
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.doesNotMatch($(".picker-list").textContent, /Reconnect storage failed/);
+    assert.equal(view.el.find(".picker-model").length, 2);
+  });
+}
+
+for (const outcome of ["success", "failure"]) {
+  test(`a status after login fences an older catalog ${outcome}`, async (t) => {
+    const pending = await beginSignIn(t);
+    const oldCatalog = Promise.withResolvers();
+    t.after(async () => { oldCatalog.resolve(CATALOG); await flush(); });
+    answers.chatgpt_status = CONNECTED;
+    answers.chatgpt_models = () => oldCatalog.promise;
+    pending.resolve(CONNECTED);
+    await flush();
+    answers.chatgpt_models = [CATALOG[0], { ...CATALOG[1], available: false }];
+    emit("chatgpt-status", CONNECTED);
+    await flush();
+    if (outcome === "success") oldCatalog.resolve(CATALOG);
+    else oldCatalog.reject(new Error("Older catalog failed"));
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.equal(view.el.find(".picker-model")[1].disabled, true);
+    assert.doesNotMatch($(".picker-list").textContent, /Older catalog failed/);
+  });
+}
+
+for (const outcome of ["success", "failure"]) {
+  test(`a login ${outcome} cannot overwrite a concurrent different account`, async (t) => {
+    const pending = await beginSignIn(t);
+    const newer = { ...CONNECTED, accountId: "other-client", email: "other@example.com" };
+    answers.chatgpt_status = newer;
+    answers.chatgpt_models = [CATALOG[0], { ...CATALOG[1], available: false }];
+    emit("chatgpt-status", newer);
+    if (outcome === "success") pending.resolve(CONNECTED);
+    else pending.reject(new Error("Old login failed"));
+    await flush();
+    if (!$(".picker").classList.contains("on")) $(".model-btn").fire("click");
+    await flush();
+    assert.match($(".picker-list").textContent, /other@example.com/);
+    assert.doesNotMatch($(".picker-list").textContent, /Old login failed/);
+    assert.equal(view.el.find(".picker-model")[1].disabled, true);
+  });
+
+  test(`a closed login ${outcome} cannot replace the reopened picker`, async (t) => {
+    const pending = await beginSignIn(t);
+    $(".model-btn").fire("click");
+    answers.chatgpt_status = CONNECTED;
+    $(".model-btn").fire("click");
+    await flush();
+    const rows = view.el.find(".picker-model");
+    if (outcome === "success") pending.resolve(SIGNED_OUT);
+    else pending.reject(new Error("Closed login failed"));
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.deepEqual(view.el.find(".picker-model"), rows);
+    assert.doesNotMatch($(".picker-list").textContent, /Closed login failed/);
+  });
+}
+
+for (const provider of ["anthropic", "ollama"]) {
+  for (const outcome of ["success", "failure"]) {
+    test(`a ChatGPT status event preserves a pending ${provider} catalog ${outcome}`, async (t) => {
+      const pending = Promise.withResolvers();
+      t.after(async () => { pending.resolve([]); await flush(); });
+      State.settings = { ...State.settings, chatProvider: provider };
+      answers.secret_present = true;
+      answers.chat_models = () => pending.promise;
+      $(".model-btn").fire("click");
+      await flush();
+      assert.match($(".picker-list").textContent, /Loading models/);
+      emit("chatgpt-status", SIGNED_OUT);
+      if (outcome === "success") pending.resolve([{ id: "provider-model", label: "Provider model" }]);
+      else pending.reject(new Error("Provider catalog unavailable"));
+      await flush();
+      assert.ok($(".picker").classList.contains("on"));
+      assert.doesNotMatch($(".picker-list").textContent, /Loading models/);
+      if (outcome === "success") assert.deepEqual(view.el.find(".picker-model").map((row) => row.textContent), ["Provider model"]);
+      else assert.match($(".picker-list").textContent, /Provider catalog unavailable/);
+    });
+  }
+}
 
 test("both models are offered; one the account lacks is shown unavailable, never swapped", async () => {
   answers.chatgpt_models = [{ ...CATALOG[0], available: false }, CATALOG[1]];
@@ -239,6 +454,182 @@ test("the usage limit shows its notice with Manage usage, not an error page", as
   assert.deepEqual(sent("open_url").at(-1), { url: "https://chatgpt.com/#settings" });
 });
 
+const usageLimitReply = () => {
+  emit("chatgpt-usage-limit", null);
+  return Promise.reject(new Error("Usage limit reached. Review your plan or this app's limit in ChatGPT settings."));
+};
+
+async function sendQuestion(query = "try again") {
+  $(".chat-input").value = query;
+  $(".send-btn").fire("click");
+  await flush();
+  view.sync();
+}
+
+async function reachUsageLimit() {
+  answers.chat_send = usageLimitReply;
+  await sendQuestion("first question");
+  assert.equal(State.view, "prompt");
+  assert.equal($(".chat-notice-title").textContent, "Usage limit reached");
+}
+
+for (const [kind, message] of [
+  ["connectivity", "Could not connect to ChatGPT. Check your connection and try again."],
+  ["session", "ChatGPT didn't accept the sign-in. Reconnect in Settings."],
+  ["model", "This model isn't available on your ChatGPT account."],
+]) {
+  test(`a usage limit cannot hide the next ${kind} error`, async () => {
+    await reachUsageLimit();
+    answers.chat_send = new Error(message);
+    await sendQuestion();
+    assert.equal(State.view, "note", "only this request's limit event may suppress its error");
+    assert.equal(State.noteMessage, message);
+    assert.equal($(".chat-notice-title"), null, "the old usage warning is cleared");
+  });
+}
+
+test("a retry that reaches the usage limit again keeps Manage usage", async () => {
+  await reachUsageLimit();
+  await sendQuestion();
+  assert.equal(State.view, "prompt");
+  assert.equal(State.noteMessage, "");
+  assert.equal($(".chat-notice-title").textContent, "Usage limit reached");
+  assert.ok(view.el.find(".picker-link").some((button) => button.textContent === "Manage usage"));
+});
+
+test("a successful retry clears a usage limit and ignores a late limit event", async () => {
+  await reachUsageLimit();
+  answers.chat_send = { text: "Recovered" };
+  await sendQuestion();
+  emit("chatgpt-usage-limit", null);
+  view.sync();
+  assert.equal(State.view, "prompt");
+  assert.equal(State.chatHistory.at(-1).content, "Recovered");
+  assert.equal($(".chat-notice-title"), null, "a completed answer no longer owns usage events");
+});
+
+test("a retry clears the usage notice before its answer settles", async (t) => {
+  await reachUsageLimit();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Recovered" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  await sendQuestion();
+  assert.ok($(".send-btn").classList.contains("stop"));
+  assert.equal($(".chat-notice-title"), null, "the previous result cannot label an in-flight retry");
+});
+
+test("Stop after a usage limit keeps partial text and clears the old warning", async (t) => {
+  await reachUsageLimit();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  answers.chat_stop = () => pending.reject(new Error("Stopped."));
+  await sendQuestion();
+  emit("chat-delta", "Partial retry");
+  $(".send-btn").fire("click");
+  await flush();
+  view.sync();
+  assert.equal(State.view, "prompt");
+  assert.deepEqual([State.chatHistory.at(-1).content, State.chatHistory.at(-1).stopped], ["Partial retry", true]);
+  assert.equal($(".chat-notice-title"), null);
+});
+
+test("regenerating a stopped retry after a usage limit shows its own error", async (t) => {
+  await reachUsageLimit();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  answers.chat_stop = () => pending.reject(new Error("Stopped."));
+  await sendQuestion();
+  emit("chat-delta", "Partial retry");
+  $(".send-btn").fire("click");
+  await flush();
+  view.sync();
+  answers.chat_send = new Error("Regenerated request lost its connection.");
+  const regenerate = view.el.find(".md-copy").find((button) => button.title === "Regenerate" || String(button.getAttribute("aria-label")) === "Regenerate");
+  assert.ok(regenerate);
+  regenerate.fire("click");
+  await flush();
+  view.sync();
+  assert.equal(State.view, "note");
+  assert.equal(State.noteMessage, "Regenerated request lost its connection.");
+  assert.equal($(".chat-notice-title"), null);
+});
+
+for (const transition of ["new conversation", "provider round trip", "account switch"]) {
+  test(`a usage limit cannot hide a later error after ${transition}`, async () => {
+    await reachUsageLimit();
+    if (transition === "new conversation") newConversation();
+    else if (transition === "provider round trip") {
+      State.settings = { ...State.settings, chatProvider: "anthropic" };
+      view.sync();
+      State.settings = { ...State.settings, chatProvider: "chatgpt" };
+    } else {
+      const account = { ...CONNECTED, accountId: "new-account" };
+      answers.chatgpt_status = account;
+      emit("chatgpt-status", account);
+    }
+    answers.chat_send = new Error("This request failed for a different reason.");
+    await sendQuestion();
+    assert.equal(State.view, "note");
+    assert.equal(State.noteMessage, "This request failed for a different reason.");
+    assert.equal($(".chat-notice-title"), null);
+  });
+}
+
+test("a late ChatGPT usage event cannot attach to another provider's answer", async (t) => {
+  answers.chat_send = { text: "A completed ChatGPT answer" };
+  await sendQuestion();
+  State.settings = { ...State.settings, chatProvider: "anthropic" };
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  await sendQuestion();
+  // The request still belongs to Anthropic if settings change while IPC waits.
+  State.settings = { ...State.settings, chatProvider: "chatgpt" };
+  emit("chatgpt-usage-limit", null);
+  pending.reject(new Error("Anthropic connection failed."));
+  await flush();
+  assert.equal(State.view, "note");
+  assert.equal(State.noteMessage, "Anthropic connection failed.");
+  State.settings = { ...State.settings, chatProvider: "chatgpt" };
+  State.view = "prompt";
+  view.sync();
+  assert.equal($(".chat-notice-title"), null, "a different provider cannot acquire a ChatGPT usage warning");
+});
+
+test("a usage event after Stop cannot label the cancelled request as limited", async (t) => {
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  await sendQuestion();
+  emit("chat-delta", "Partial answer");
+  $(".send-btn").fire("click");
+  await flush();
+  emit("chatgpt-usage-limit", null);
+  pending.reject(new Error("Stopped."));
+  await flush();
+  view.sync();
+  assert.equal(State.view, "prompt");
+  assert.equal(State.chatHistory.at(-1).stopped, true);
+  assert.equal($(".chat-notice-title"), null);
+});
+
+test("usage events belong to the captured ChatGPT provider if settings change mid-answer", async (t) => {
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  await sendQuestion();
+  State.settings = { ...State.settings, chatProvider: "anthropic" };
+  emit("chatgpt-usage-limit", null);
+  pending.reject(new Error("Usage limit reached."));
+  await flush();
+  assert.equal(State.view, "prompt", "the in-flight request still belongs to ChatGPT");
+  State.settings = { ...State.settings, chatProvider: "chatgpt" };
+  view.sync();
+  assert.equal($(".chat-notice-title").textContent, "Usage limit reached");
+});
+
 test("the first sign-in shows the plan notice once; Got it records it", async () => {
   answers.chatgpt_status = { ...CONNECTED, showWelcome: true };
   view = buildPrompt(() => {});
@@ -253,6 +644,102 @@ test("the first sign-in shows the plan notice once; Got it records it", async ()
   assert.equal(sent("chatgpt_welcomed").length, 1);
   assert.equal($(".chat-notice-title"), null);
 });
+
+test("welcome buttons stay bound to the registration displayed when they were rendered", async () => {
+  answers.chatgpt_status = { ...CONNECTED, showWelcome: true };
+  view = buildPrompt(() => {});
+  await flush();
+  view.sync();
+  const oldButton = view.el.find(".chatgpt-connect").find((b) => b.textContent === "Got it");
+  const newer = { ...CONNECTED, accountId: "other-client", showWelcome: true };
+  answers.chatgpt_status = newer;
+  emit("chatgpt-status", newer);
+  view.sync();
+  const newButton = view.el.find(".chatgpt-connect").find((b) => b.textContent === "Got it");
+  assert.notEqual(newButton, oldButton, "same-kind welcome notices must refresh for a different account");
+  oldButton.fire("click");
+  newButton.fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_welcomed"), [{ clientId: "test-client" }, { clientId: "other-client" }]);
+});
+
+test("a delayed initial account status cannot overwrite a newer registration event", async () => {
+  const pending = Promise.withResolvers();
+  answers.chatgpt_status = () => pending.promise;
+  view = buildPrompt(() => {});
+  await flush();
+  const newer = { ...CONNECTED, accountId: "other-client", showWelcome: true };
+  emit("chatgpt-status", newer);
+  view.sync();
+  pending.resolve({ ...CONNECTED, showWelcome: true });
+  await flush();
+  view.sync();
+  answers.chatgpt_status = newer;
+  view.el.find(".chatgpt-connect").find((b) => b.textContent === "Got it").fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_welcomed"), [{ clientId: "other-client" }]);
+});
+
+test("same-account status invalidation closes a pending picker instead of stranding its spinner", async () => {
+  const pending = Promise.withResolvers();
+  answers.chatgpt_models = () => pending.promise;
+  $(".model-btn").fire("click");
+  await flush();
+  assert.ok($(".picker").classList.contains("on"));
+  emit("chatgpt-status", CONNECTED);
+  pending.resolve(CATALOG);
+  await flush();
+  assert.equal($(".picker").classList.contains("on"), false);
+  answers.chatgpt_models = CATALOG;
+  $(".model-btn").fire("click");
+  await flush();
+  assert.equal(view.el.find(".picker-model").length, 2, "reopening can fetch a fresh catalog");
+});
+
+test("reopening after switching accounts clears old model choices before awaiting status", async () => {
+  $(".model-btn").fire("click");
+  await flush();
+  assert.equal(view.el.find(".picker-model").length, 2);
+  const newer = { ...CONNECTED, accountId: "other-client" };
+  emit("chatgpt-status", newer);
+  const pending = Promise.withResolvers();
+  answers.chatgpt_status = () => pending.promise;
+  answers.chatgpt_models = [CATALOG[0], { ...CATALOG[1], available: false }];
+  $(".model-btn").fire("click");
+  assert.ok($(".picker").classList.contains("on"));
+  assert.equal(view.el.find(".picker-model").length, 0, "no previous-account choice while status is pending");
+  pending.resolve(newer);
+  await flush();
+  const rows = view.el.find(".picker-model");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].disabled, true);
+  rows[1].fire("click");
+  assert.equal(State.settings.chatModels.chatgpt, undefined);
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`a delayed old-account catalog ${outcome} cannot replace the new account's choices`, async () => {
+    const pending = Promise.withResolvers();
+    answers.chatgpt_models = () => pending.promise;
+    $(".model-btn").fire("click");
+    await flush();
+    const newer = { ...CONNECTED, accountId: "other-client" };
+    answers.chatgpt_status = newer;
+    answers.chatgpt_models = [CATALOG[0], { ...CATALOG[1], available: false }];
+    emit("chatgpt-status", newer);
+    $(".model-btn").fire("click");
+    await flush();
+    if (outcome === "success") pending.resolve(CATALOG);
+    else pending.reject(new Error("old-account catalog failed"));
+    await flush();
+    const rows = view.el.find(".picker-model");
+    assert.equal(rows.length, 2);
+    assert.equal(rows[1].disabled, true);
+    rows[1].fire("click");
+    assert.equal(State.settings.chatModels.chatgpt, undefined);
+    assert.equal($(".picker-list").find(".chatgpt-connect").length, 0, "a stale error must not replace the current picker");
+  });
+}
 
 test("a saved conversation reopens from the history with its signatures", async () => {
   answers.chat_history_list = [{ id: "c-00000000000000aa", title: "Lisbon trip", updatedAt: Date.now(), count: 2 }];

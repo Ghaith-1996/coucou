@@ -1229,6 +1229,102 @@ fn failed_atomic_account_writes_preserve_the_previous_registration_file() {
 }
 
 #[test]
+fn a_failed_account_rename_preserves_the_target_and_removes_its_temporary_file() {
+    let dir = std::env::temp_dir().join(format!("coucou-chatgpt-rename-{}", random(12)));
+    let path = dir.join("chatgpt.json");
+    std::fs::create_dir_all(&path).unwrap();
+    let sentinel = path.join("keep");
+    std::fs::write(&sentinel, b"existing target contents").unwrap();
+
+    assert!(save_account_to(&path, &registered_account()).is_err());
+
+    assert!(path.is_dir());
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"existing target contents");
+    assert!(!path.with_extension("json.tmp").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fresh_account_record_and_its_directory_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("coucou-chatgpt-private-{}", random(12)));
+    let path = dir.join("chatgpt.json");
+    let account = registered_account();
+
+    save_account_to(&path, &account).unwrap();
+
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(read_account_from(&path).unwrap(), account);
+    assert!(!path.with_extension("json.tmp").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn saving_an_account_closes_lax_directory_and_temporary_file_permissions() {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("coucou-chatgpt-lax-{}", random(12)));
+    let path = dir.join("chatgpt.json");
+    let temp = path.with_extension("json.tmp");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&path, b"previous account record").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&temp, b"a temporary record left by an older version").unwrap();
+    std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o666)).unwrap();
+    let mut stale_handle = std::fs::File::open(&temp).unwrap();
+    let mut account = registered_account();
+    account.saved_accounts.push(Registration {
+        client_id: "oaiapp_saved".into(), email: Some("saved@example.com".into()),
+        sub: Some("saved-user".into()), plan_enabled: true, welcomed: false,
+    });
+    account.pending_account = account.registration();
+    account.session_needs_reconnect = true;
+
+    save_account_to(&path, &account).unwrap();
+
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(read_account_from(&path).unwrap(), account);
+    assert!(!temp.exists());
+    let mut stale_content = String::new();
+    stale_handle.read_to_string(&mut stale_content).unwrap();
+    assert_eq!(stale_content, "a temporary record left by an older version",
+        "an already-open stale temp must not receive the new account metadata");
+    drop(stale_handle);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn saving_an_account_does_not_follow_a_stale_temporary_symlink() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("coucou-chatgpt-temp-link-{}", random(12)));
+    let path = dir.join("chatgpt.json");
+    let temp = path.with_extension("json.tmp");
+    let original = registered_account();
+    save_account_to(&path, &original).unwrap();
+    let target = dir.join("unrelated.json");
+    std::fs::write(&target, b"keep this unrelated file").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::os::unix::fs::symlink(&target, &temp).unwrap();
+    let mut changed = original;
+    changed.explicitly_disconnected = true;
+
+    save_account_to(&path, &changed).unwrap();
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep this unrelated file");
+    assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o644);
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(read_account_from(&path).unwrap(), changed);
+    assert!(!temp.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn a_refresh_credential_write_failure_keeps_the_new_identity_recoverable_without_caching_access() {
     let original = Account { explicitly_disconnected: true, ..registered_account() };
     let candidate = Account { host_id: original.host_id.clone(), client_id: Some("oaiapp_new".into()), ..Default::default() };

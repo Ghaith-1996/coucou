@@ -224,15 +224,27 @@ fn save_account(account: &Account) -> Result<(), String> {
 fn save_account_to(path: &Path, account: &Account) -> Result<(), String> {
     use std::io::Write;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        crate::platform::ensure_private_dir(dir).map_err(|e| e.to_string())?;
     }
     let text = serde_json::to_vec_pretty(account).map_err(|e| e.to_string())?;
     // All mutations share REFRESHING. A failed write must leave the previous
     // client/identity mapping intact, including when disconnect is retried.
     let temp = path.with_extension("json.tmp");
-    let result = std::fs::File::create(&temp)
-        .and_then(|mut file| { file.write_all(&text)?; file.sync_all() })
-        .and_then(|()| std::fs::rename(&temp, path));
+    // Replace a stale temp entry, never follow a symlink or reuse a publicly
+    // readable inode that another user might still have open.
+    if let Err(error) = std::fs::remove_file(&temp) {
+        if error.kind() != std::io::ErrorKind::NotFound { return Err(error.to_string()); }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    // Only clean up an entry this attempt created; create_new can fail if
+    // another entry appeared, and that entry must remain untouched.
+    let mut file = options.open(&temp).map_err(|e| e.to_string())?;
+    let result = file.write_all(&text).and_then(|()| file.sync_all());
+    drop(file);
+    let result = result.and_then(|()| std::fs::rename(&temp, path));
     if result.is_err() { let _ = std::fs::remove_file(&temp); }
     result.map_err(|e| e.to_string())
 }

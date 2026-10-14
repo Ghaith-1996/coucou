@@ -8,7 +8,7 @@ import { installFakeDom } from "./fakedom.mjs";
 import { calls, sent } from "./tauri.mjs";
 
 const dom = installFakeDom();
-const { parseMarkdown, parseInline, renderMarkdown, safeWebUrl } = await import("../src/views/markdown.ts");
+const { parseMarkdown, parseInline, renderMarkdown, safeWebUrl, writeClipboard } = await import("../src/views/markdown.ts");
 
 beforeEach(() => {
   calls.length = 0;
@@ -135,3 +135,35 @@ test("a web link opens through Rust; anything else is plain text", () => {
   assert.deepEqual(sent("open_url"), [{ url: "https://example.com/docs" }]);
   assert.match(root.textContent, /or this\.$/);
 });
+
+
+for (const fallback of [undefined, false]) {
+  test(`clipboard fallback remains opt-out for ordinary chat, fallback: ${fallback}`, async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const originalExec = document.execCommand;
+    const pending = Promise.withResolvers();
+    const attempts = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText(text) { attempts.push(["clipboard", text]); return pending.promise; },
+    } });
+    document.execCommand = (command) => {
+      attempts.push([command, document.body.find("textarea")[0]?.value]);
+      return true;
+    };
+    try {
+      const copying = writeClipboard("copy these words", fallback === undefined ? undefined : { fallback });
+      pending.reject(new Error("clipboard denied"));
+      if (fallback === false) await assert.rejects(copying, /clipboard denied/);
+      else await copying;
+      assert.deepEqual(attempts, fallback === false
+        ? [["clipboard", "copy these words"]]
+        : [["clipboard", "copy these words"], ["copy", "copy these words"]]);
+      assert.equal(document.body.find("textarea").length, 0);
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+      else delete navigator.clipboard;
+      if (originalExec) document.execCommand = originalExec;
+      else delete document.execCommand;
+    }
+  });
+}

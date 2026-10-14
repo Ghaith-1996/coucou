@@ -7,7 +7,7 @@ import { btn, card, stack, type ViewHost } from "../views/views";
 import { State } from "../core/state";
 import { washRGBA, type Wash } from "../core/layout";
 import { N_, t, tl } from "../i18n/i18n";
-import { Voice, voiceCancel, voiceCopy, voiceDo, voiceInsert, voiceOpen, voiceStop, voiceUse } from "./voice";
+import { Voice, canCopyInsert, canRetryInsert, voiceCancel, voiceCopy, voiceDo, voiceInsert, voiceOpen, voiceStop, voiceUse } from "./voice";
 import type { InsertRefusal, VoiceError } from "./contracts";
 
 const ERRORS: Record<VoiceError, string> = {
@@ -25,8 +25,9 @@ const REFUSALS: Record<InsertRefusal, string> = {
   gone: N_("That field is gone. Nothing was typed."),
   protected: N_("That's a password field: Coucou never types there."),
   "read-only": N_("That field is read-only."),
-  unsupported: N_("This field doesn't take dictated text. Copy it, or use it in chat."),
+  unsupported: N_("This field doesn't take dictated text. Use it in chat."),
   busy: N_("The app didn't answer. Nothing was typed."),
+  "value-changed": N_("The field changed. Nothing was typed. Check it, then Insert again."),
 };
 
 function clock(ms: number): string {
@@ -55,6 +56,8 @@ export function buildVoice(): ViewHost {
     open: btn("", "primary", () => void voiceOpen(), "↵"),
     // "Insert into <app>": dictation into the field the capture started in.
     insert: btn("", "primary", () => void voiceInsert(), "↵"),
+    // A refused offer has no named target or grant yet. Retry only rechecks it.
+    retry: btn(tl("Retry"), "primary", () => void voiceInsert(), "↵"),
     copy: btn(tl("Copy"), "secondary", () => void voiceCopy()),
     cancel: btn(tl("Cancel"), "secondary", voiceCancel, "Esc"),
     close: btn(tl("Close"), "secondary", voiceCancel, "Esc"),
@@ -66,13 +69,17 @@ export function buildVoice(): ViewHost {
     if (State.view !== "voice" || State.mode !== "expanded" || !Voice.event) return;
     if (e.key === "Enter" && Voice.event.state === "preview") {
       e.preventDefault();
+      // Holding Enter through a re-offer must not confirm the new target.
+      if (e.repeat) return;
+      if (Voice.copying || Voice.using) return;
       const app = Voice.app;
       const insert = Voice.insert;
       // While the app or the field is being looked up, or used, Enter waits.
       if (app?.status === "finding" || app?.status === "opening") return;
-      if (insert?.status === "finding" || insert?.status === "inserting") return;
+      if (insert?.status === "finding" || insert?.status === "retrying" || insert?.status === "inserting") return;
       void (app?.status === "ready" ? voiceOpen()
         : insert?.status === "ready" ? voiceInsert()
+        : insert?.status === "refused" && canRetryInsert(insert.reason) ? voiceInsert()
         : Voice.command?.ok ? voiceDo() : voiceUse());
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -110,10 +117,11 @@ export function buildVoice(): ViewHost {
           const insert = Voice.insert;
           detail.textContent = event?.simulated
             ? t("Simulated transcript — real speech recognition comes next.")
+            : Voice.copyFailed ? t("Couldn’t copy the text. Try again.")
             : app?.status === "finding" ? t("Looking for {name}…", { name: app.name })
             : app?.status === "missing" ? t("No app called “{name}” in the Start menu.", { name: app.name })
             : command && !command.ok ? command.reason
-            : insert?.status === "refused" ? t(REFUSALS[insert.reason])
+            : insert?.status === "refused" || insert?.status === "retrying" ? t(REFUSALS[insert.reason])
             : insert?.status === "ready" && insert.reason ? t(REFUSALS[insert.reason])
             : "";
           break;
@@ -132,11 +140,18 @@ export function buildVoice(): ViewHost {
       const app = state === "preview" ? Voice.app : null;
       const offered = app?.status === "ready" || app?.status === "opening" ? app : null;
       if (offered) buttons.open.querySelector("span")!.textContent = t("Open {name}", { name: offered.label });
-      (buttons.open as HTMLButtonElement).disabled = app?.status === "opening";
+      const actionPending = Voice.copying || Voice.using;
+      (buttons.open as HTMLButtonElement).disabled = actionPending || app?.status === "opening";
+      (buttons.act as HTMLButtonElement).disabled = actionPending;
       const insert = state === "preview" ? Voice.insert : null;
       const field = insert?.status === "ready" || insert?.status === "inserting" ? insert : null;
       if (field) buttons.insert.querySelector("span")!.textContent = t("Insert into {name}", { name: field.label });
-      (buttons.insert as HTMLButtonElement).disabled = insert?.status === "inserting";
+      (buttons.insert as HTMLButtonElement).disabled = actionPending || insert?.status === "inserting";
+      (buttons.retry as HTMLButtonElement).disabled = actionPending || insert?.status === "retrying";
+      (buttons.copy as HTMLButtonElement).disabled = actionPending;
+      (buttons.use as HTMLButtonElement).disabled = actionPending || insert?.status === "inserting";
+      (buttons.useToo as HTMLButtonElement).disabled = actionPending || insert?.status === "inserting";
+      const copy = canCopyInsert(insert) ? ",copy" : "";
       const want =
         state === "listening" ? "stop,cancel"
         : state === "processing" ? "cancel"
@@ -144,7 +159,9 @@ export function buildVoice(): ViewHost {
           ? offered ? "open,useToo,cancel"
           : app?.status === "finding" ? "useToo,cancel"
           : field ? "insert,useToo,cancel"
-          : insert?.status === "refused" && insert.reason !== "protected" ? "use,copy,cancel"
+          : insert?.status === "retrying" || (insert?.status === "refused" && canRetryInsert(insert.reason))
+            ? `retry,useToo${copy},cancel`
+          : insert?.status === "refused" ? `use${copy},cancel`
           : command ? "act,useToo,cancel" : "use,cancel"
         : "close";
       if (want !== shownButtons) {

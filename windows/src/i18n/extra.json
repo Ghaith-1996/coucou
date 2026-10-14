@@ -4977,6 +4977,61 @@
    "pt-BR": "Modo de áudio encerrado: nada foi ouvido.",
    "ru": "Голосовой режим завершён: ничего не было слышно.",
    "id": "Mode audio berakhir: tidak ada yang terdengar."
+  },
+  "Switch to this tab?": {
+   "zh-Hans": "切换到这个标签页？",
+   "hi": "इस टैब पर जाएँ?",
+   "es": "¿Cambiar a esta pestaña?",
+   "ar": "التبديل إلى علامة التبويب هذه؟",
+   "fr": "Passer à cet onglet ?",
+   "bn": "এই ট্যাবে যাবেন?",
+   "pt-BR": "Mudar para esta aba?",
+   "ru": "Переключиться на эту вкладку?",
+   "id": "Beralih ke tab ini?"
+  },
+  "Open this app?": {
+   "zh-Hans": "打开这个应用？",
+   "hi": "यह ऐप खोलें?",
+   "es": "¿Abrir esta app?",
+   "ar": "فتح هذا التطبيق؟",
+   "fr": "Ouvrir cette app ?",
+   "bn": "এই অ্যাপটি খুলবেন?",
+   "pt-BR": "Abrir este app?",
+   "ru": "Открыть это приложение?",
+   "id": "Buka aplikasi ini?"
+  },
+  "Do it": {
+   "zh-Hans": "执行",
+   "hi": "करें",
+   "es": "Hacerlo",
+   "ar": "نفّذ",
+   "fr": "Faire",
+   "bn": "করুন",
+   "pt-BR": "Fazer",
+   "ru": "Сделать",
+   "id": "Lakukan"
+  },
+  "No": {
+   "zh-Hans": "不",
+   "hi": "नहीं",
+   "es": "No",
+   "ar": "لا",
+   "fr": "Non",
+   "bn": "না",
+   "pt-BR": "Não",
+   "ru": "Нет",
+   "id": "Tidak"
+  },
+  "Looked at your browser tabs": {
+   "zh-Hans": "查看了你的浏览器标签页",
+   "hi": "आपके ब्राउज़र टैब देखे",
+   "es": "Miró tus pestañas del navegador",
+   "ar": "اطّلع على علامات تبويب متصفحك",
+   "fr": "A regardé vos onglets du navigateur",
+   "bn": "আপনার ব্রাউজারের ট্যাবগুলো দেখেছে",
+   "pt-BR": "Olhou as abas do seu navegador",
+   "ru": "Посмотрел вкладки вашего браузера",
+   "id": "Melihat tab peramban Anda"
   }
  }
 }

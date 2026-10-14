@@ -4,11 +4,13 @@
 
 pub mod app;
 pub mod apps;
+pub mod browser;
 pub mod contracts;
 #[cfg(windows)]
 pub mod launch;
 pub mod policy;
 pub mod speech;
+pub mod tools;
 pub mod voice;
 
 #[cfg(test)]

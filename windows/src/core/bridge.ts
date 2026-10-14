@@ -440,6 +440,9 @@ export const Bridge = {
   /** The user confirmed: Rust checks the grant, opens the app and says what came of it. */
   appLaunch: (captureId: string, grant: AppGrant) =>
     callOrThrow<ActionReceipt>("assistant_app_launch", { captureId, grant }),
+  /** A chat action card: Rust's grant on "Do it", null on "No". */
+  chatActionAnswer: (actionId: string, grant: AppGrant | null) =>
+    callOrThrow<void>("chat_action_answer", { actionId, grant }),
   /** What came of an assistant action, for the log (never with its text). */
   actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
   /** The speech models (Settings → Voice). Only the settings window may change them. */

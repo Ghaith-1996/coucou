@@ -30,6 +30,7 @@ import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
 import { voiceShortcut } from "../assistant/voice";
 import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
+import { ChatActions, answerCard, clearToolNotes } from "../assistant/chat-actions";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -46,6 +47,11 @@ const STRINGS = {
   audioSpeaking: N_("Speaking — tap to interrupt"),
   audioEnd: N_("End"),
   audioSilence: N_("Audio mode ended: nothing was heard."),
+  switchTab: N_("Switch to this tab?"),
+  openApp: N_("Open this app?"),
+  doIt: N_("Do it"),
+  no: N_("No"),
+  lookedAtTabs: N_("Looked at your browser tabs"),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
@@ -582,6 +588,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   const audioEnd = h("button", { type: "button", class: "audio-end", text: t(STRINGS.audioEnd), onclick: () => stopAudioMode() });
   const audioRow = h("div", { class: "audio-row" }, audioStatus, audioEnd);
   audioRow.hidden = true;
+  // Cards for what the chat wants to do on the PC (chat-actions.ts).
+  const actionSlot = h("div", { class: "action-slot" });
+  let shownCards = "";
 
   const modelDot = h("i", { class: "model-dot" });
   const modelName = h("span", { class: "model-name" });
@@ -617,7 +626,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       input.focus();
     },
   );
-  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, modelRow, audioRow, bar);
+  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, actionSlot, modelRow, audioRow, bar);
 
   const el = h("div", { class: "view" }, h("div", { class: "card wash chat-card" }, body));
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
@@ -802,6 +811,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     sending = true;
     stopRequested = false;
     liveText = "";
+    clearToolNotes();
     const messages = State.chatHistory;
     const session = chatSession;
     const isCurrent = () => State.chatHistory === messages && chatSession === session;
@@ -962,6 +972,33 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   refreshChatGpt();
 
+  function drawCards() {
+    const key = JSON.stringify([ChatActions.cards.map((c) => [c.actionId, c.answered]), ChatActions.used]);
+    if (key === shownCards) return;
+    shownCards = key;
+    clear(actionSlot);
+    for (const used of ChatActions.used) {
+      if (used === "browser-tabs") actionSlot.append(h("div", { class: "tool-note", text: t(STRINGS.lookedAtTabs) }));
+    }
+    for (const card of ChatActions.cards) {
+      const question = card.kind === "switch-tab" ? STRINGS.switchTab : STRINGS.openApp;
+      actionSlot.append(h(
+        "div",
+        { class: "action-card" },
+        h("div", { class: "action-text" },
+          h("div", { class: "action-question", text: t(question) }),
+          h("div", { class: "action-label", text: card.label }),
+          card.detail && card.detail !== "app" ? h("div", { class: "action-detail", text: card.detail }) : null,
+        ),
+        h("div", { class: "action-buttons" },
+          h("button", { type: "button", class: "btn secondary", text: t(STRINGS.no), disabled: card.answered, onclick: () => answerCard(card.actionId, false) }),
+          h("button", { type: "button", class: "btn primary", text: t(STRINGS.doIt), disabled: card.answered, onclick: () => answerCard(card.actionId, true) }),
+        ),
+      ));
+    }
+    onHeightChange();
+  }
+
   function drawAudio() {
     const on = AudioMode.state !== "off";
     audioRow.hidden = !on && !AudioMode.note;
@@ -982,6 +1019,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     el,
     sync() {
       drawAudio();
+      drawCards();
       const file = State.droppedFile;
       const wantChip = file?.name ?? "";
       if (chipRow.dataset.label !== wantChip) {

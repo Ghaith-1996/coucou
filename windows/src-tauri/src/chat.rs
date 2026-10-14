@@ -258,6 +258,14 @@ pub async fn send(
             return Err(crate::i18n::tf("{model} doesn't take this reasoning effort.", &[("model", &model)]));
         }
         let island = crate::island::WINDOW_LABEL;
+        // What the chat may do on this PC (assistant/tools.rs), each action
+        // confirmed by the user on a card.
+        let intent = crate::assistant::policy::new_id("chat");
+        let runner = |call: crate::assistant::tools::ToolCall| -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + '_>> {
+            let app = app.clone();
+            let intent = intent.clone();
+            Box::pin(async move { crate::assistant::tools::run(&app, &call, &intent).await })
+        };
         return chatgpt::send(
             chat,
             &model,
@@ -270,6 +278,7 @@ pub async fn send(
             || {
                 let _ = app.emit_to(island, "chatgpt-usage-limit", ());
             },
+            Some(&runner),
         )
         .await;
     }

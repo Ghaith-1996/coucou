@@ -867,6 +867,7 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(assistant::tools::ChatActions::default())
         .manage(ChatStop::default())
         .manage(shortcuts::Registry::default())
         .manage(recap::load())
@@ -963,6 +964,7 @@ pub fn run() {
             assistant::app::assistant_voice_hands_free,
             assistant::app::assistant_voice_converse,
             assistant::speech::speech_say,
+            assistant::tools::chat_action_answer,
             assistant::app::assistant_voice_stop,
             assistant::app::assistant_voice_cancel,
             assistant::app::assistant_voice_use,

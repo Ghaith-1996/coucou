@@ -4889,6 +4889,28 @@
    "pt-BR": "O limite de armazenamento de 400 mensagens foi atingido.",
    "ru": "Достигнут лимит хранения в 400 сообщений.",
    "id": "Batas penyimpanan 400 pesan telah tercapai."
+  },
+  "Reopened as text only": {
+   "zh-Hans": "已仅恢复文本",
+   "hi": "सिर्फ़ टेक्स्ट के रूप में फिर से खोला गया",
+   "es": "Reabierta solo como texto",
+   "ar": "أُعيد فتحها كنص فقط",
+   "fr": "Rouverte en texte seul",
+   "bn": "শুধু লেখা হিসেবে আবার খোলা হয়েছে",
+   "pt-BR": "Reaberta somente como texto",
+   "ru": "Открыт заново только текст",
+   "id": "Dibuka kembali sebagai teks saja"
+  },
+  "Original attachments are unavailable in this chat. Drop the file again to start a new chat with it.": {
+   "zh-Hans": "此对话中无法使用原始附件。请再次拖入文件，以开始包含该文件的新对话。",
+   "hi": "इस चैट में मूल अटैचमेंट उपलब्ध नहीं हैं। फ़ाइल के साथ नई चैट शुरू करने के लिए उसे फिर से ड्रॉप करें।",
+   "es": "Los archivos adjuntos originales no están disponibles en este chat. Vuelve a soltar el archivo para iniciar un nuevo chat con él.",
+   "ar": "المرفقات الأصلية غير متاحة في هذه المحادثة. أفلت الملف مرة أخرى لبدء محادثة جديدة به.",
+   "fr": "Les pièces jointes d’origine ne sont pas disponibles dans cette conversation. Déposez à nouveau le fichier pour démarrer une nouvelle conversation avec lui.",
+   "bn": "এই চ্যাটে মূল সংযুক্তিগুলি পাওয়া যাবে না। ফাইলটি নিয়ে নতুন চ্যাট শুরু করতে সেটি আবার ড্রপ করুন।",
+   "pt-BR": "Os anexos originais não estão disponíveis nesta conversa. Solte o arquivo novamente para iniciar uma nova conversa com ele.",
+   "ru": "Исходные вложения недоступны в этом чате. Перетащите файл ещё раз, чтобы начать с ним новый чат.",
+   "id": "Lampiran asli tidak tersedia dalam percakapan ini. Jatuhkan file lagi untuk memulai percakapan baru dengannya."
   }
  }
 }

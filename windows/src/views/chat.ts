@@ -63,6 +63,8 @@ const STRINGS = {
   notSaved: N_("Conversation not saved"),
   saveFailed: N_("Your latest messages are only available here. Copy them before leaving this conversation or closing Coucou. {error}"),
   historyFull: N_("The 400-message storage limit was reached."),
+  restoredTitle: N_("Reopened as text only"),
+  restoredBody: N_("Original attachments are unavailable in this chat. Drop the file again to start a new chat with it."),
   stopped: N_("Stopped"),
   welcomeTitle: N_("You're using your ChatGPT plan"),
   welcomeBody: N_("Eligible AI requests in Coucou use the usage included in your ChatGPT plan or credits balance."),
@@ -354,6 +356,8 @@ let chatSession = 0;
 /** Only the latest save may change the active conversation's warning. */
 let saveAttempt = 0;
 let saveFailure: { id: string; error: string } | null = null;
+/** Disk history has no attachment bytes, including records saved by older versions. */
+let reopenedChatId: string | null = null;
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
@@ -363,6 +367,7 @@ export function newConversation() {
   State.droppedFile = null;
   State.promptContext = null;
   saveFailure = null;
+  reopenedChatId = null;
   void Bridge.chatReset();
 }
 
@@ -476,6 +481,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       State.chatHistory = fromSaved(saved, nextId);
       nextId += saved.messages.length;
       State.chatId = saved.id;
+      reopenedChatId = saved.id;
       chatCreatedAt = saved.createdAt;
       chatTitle = saved.title;
       saveFailure = null;
@@ -570,6 +576,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   const modelRow = h("div", { class: "model-row" }, historyBtn, h("span", { class: "model-spacer" }), effort, modelBtn);
 
   const notice = h("div", { class: "chat-notice-slot" });
+  const restoredNotice = h("div", { class: "chat-notice-slot" });
   const body = h("div", { class: "chat-body" });
   const picker = buildPicker(() => {
     body.classList.toggle("picking", picker.isOpen || history.isOpen);
@@ -587,7 +594,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       input.focus();
     },
   );
-  body.append(chipRow, notice, log, picker.el, history.el, modelRow, bar);
+  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, modelRow, bar);
 
   const el = h("div", { class: "view" }, h("div", { class: "card wash chat-card" }, body));
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
@@ -601,6 +608,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   // A streaming provider answers token by token: where its text so far is shown.
   let live: HTMLElement | null = null;
   let liveText = "";
+  /** A file drop or reset can replace the transcript while IPC is pending. */
+  let answerIsCurrent: (() => boolean) | null = null;
   /** ChatGPT said its usage limit is reached: the notice offers "Manage usage". */
   let usageLimit = false;
   let effortKey = "";
@@ -655,6 +664,16 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   /** Save failures for every provider, or ChatGPT's welcome and usage limit. */
   function drawNotice() {
+    const restored = State.chatId !== null && State.chatId === reopenedChatId ? State.chatId : "";
+    if (restoredNotice.dataset.chat !== restored) {
+      restoredNotice.dataset.chat = restored;
+      clear(restoredNotice);
+      if (restored) restoredNotice.append(h("div", { class: "chat-notice chat-restored", role: "status" },
+        h("div", { class: "chat-notice-title", text: tl(STRINGS.restoredTitle) }),
+        h("div", { class: "chat-notice-body", text: tl(STRINGS.restoredBody) }),
+      ));
+      onHeightChange();
+    }
     const failure = saveFailure?.id === State.chatId ? saveFailure : null;
     let want = "";
     if (failure) want = `save:${failure.error}`;
@@ -733,7 +752,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   });
 
   void onEvent<string>("chat-delta", (text) => {
-    if (!sending || undoPending || !text) return; // no answer yet: the dots stay
+    if (!sending || undoPending || !answerIsCurrent?.() || !text) return; // no current answer yet: the dots stay
     liveText = text;
     if (!live) {
       live = h("div", { class: "reply" });
@@ -744,6 +763,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     log.scrollTop = log.scrollHeight;
   });
   void onEvent<null>("chatgpt-usage-limit", () => {
+    if (!answerIsCurrent?.()) return;
     usageLimit = true;
     drawNotice();
   });
@@ -759,6 +779,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     sending = true;
     stopRequested = false;
     liveText = "";
+    const messages = State.chatHistory;
+    const session = chatSession;
+    const isCurrent = () => State.chatHistory === messages && chatSession === session;
+    answerIsCurrent = isCurrent;
     drawModelButton();
     Sound.play("send");
 
@@ -777,17 +801,20 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     onHeightChange();
 
     const file = State.droppedFile;
-    const context: ChatContext | null =
-      State.chatHistory.length === 1 && file ? { kind: "file", name: file.name, path: file.path } : null;
+    // Stop/failure can leave visible messages without a committed native turn.
+    // Rust decides whether this candidate belongs on its first completed turn.
+    const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
 
     try {
       const reply = await Bridge.chatSend(query, context);
+      if (!isCurrent()) return;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text, ...answeredBy });
       State.stateOverride = null;
       usageLimit = false;
       Sound.play("finish");
       saveConversation();
     } catch (err) {
+      if (!isCurrent()) return;
       State.stateOverride = null;
       if (stopRequested) {
         // What arrived before Stop stays on screen, marked; the model never sees it again.
@@ -804,7 +831,11 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     } finally {
       sending = false;
       stopRequested = false;
+      // A reset can replace the transcript while this request still owns the
+      // thinking state. Release that state, but preserve any newer override.
+      if (State.stateOverride === "thinking") State.stateOverride = null;
       live = null;
+      answerIsCurrent = null;
       renderedCount = -1; // the finished answer replaces the streamed one
       drawModelButton();
       State.notify();

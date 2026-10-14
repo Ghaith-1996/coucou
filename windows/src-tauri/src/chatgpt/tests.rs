@@ -342,6 +342,41 @@ fn a_dropped_image_survives_the_next_native_turn_without_rereading_the_file() {
 }
 
 #[test]
+fn an_uncommitted_attempt_keeps_image_and_text_context_for_the_first_completed_turn() {
+    for extension in ["png", "txt"] {
+        let path = std::env::temp_dir().join(format!("coucou-chatgpt-retry-{}.{}", random(12), extension));
+        std::fs::write(&path, b"attachment fixture").unwrap();
+        let context = ChatContext::File { name: format!("file.{extension}"), path: path.to_string_lossy().into_owned() };
+        let chat = Chat::default();
+
+        // Neither Stop (with or without a visible delta) nor failure commits.
+        for _ in 0..3 {
+            let abandoned = chat.begin(PROVIDER);
+            assert!(abandoned.first);
+            assert_ne!(user_content(abandoned.first, Some(&context), "Describe it"), json!("Describe it"));
+        }
+        let retry = chat.begin(PROVIDER);
+        let user = user_content(retry.first, Some(&context), "Try again");
+        let first = request_body(SOL, "max", "x", &retry.history, user.clone());
+        if extension == "png" {
+            assert_eq!(first["input"][0]["content"][0]["type"], "input_image");
+        } else {
+            assert!(first["input"][0]["content"].as_str().unwrap().contains("attachment fixture"));
+        }
+        finish_turn(&chat, &retry, user, &chat::plain_question(retry.first, Some(&context), "Try again"), "An answer".into());
+        std::fs::remove_file(path).unwrap();
+
+        let next = chat.begin(PROVIDER);
+        assert!(!next.first);
+        let user = user_content(next.first, Some(&context), "What else?");
+        assert_eq!(user, json!("What else?"));
+        let body = request_body(SOL, "max", "x", &next.history, user);
+        assert_eq!(body["input"][0], first["input"][0], "the completed turn keeps its attachment without rereading it");
+        assert_eq!(body["input"].as_array().unwrap().len(), 3, "abandoned attempts are not replayed");
+    }
+}
+
+#[test]
 fn replayed_content_allows_only_supported_user_parts_and_plain_assistant_text() {
     let history = vec![
         json!({ "role": "user", "content": [

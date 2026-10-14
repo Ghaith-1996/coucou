@@ -18,6 +18,8 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const CURRENT = "c-0000000000000001";
 const OTHER = "c-0000000000000002";
 // Match the native validation boundary rather than inventing a mock limit.
+const MAX_LISTED = Number(readFileSync(new URL("../src-tauri/src/chat_store.rs", import.meta.url), "utf8")
+  .match(/pub const MAX_LISTED: usize = (\d+);/)[1]);
 const MAX_MESSAGES = Number(readFileSync(new URL("../src-tauri/src/chat_store.rs", import.meta.url), "utf8")
   .match(/pub const MAX_MESSAGES: usize = (\d+);/)[1]);
 let records;
@@ -42,7 +44,7 @@ internals.invoke = async (cmd, args) => {
   }
   if (cmd === "chat_undo_last") return true;
   if (cmd === "chat_history_list") {
-    return [...records.values()].map(({ id, title, updatedAt, messages }) => ({ id, title, updatedAt, count: messages.length }));
+    return historyPage(args?.before);
   }
   if (cmd === "chat_history_open") {
     const saved = structuredClone(records.get(args.id));
@@ -95,8 +97,7 @@ async function history() {
 
 async function open(id) {
   await history();
-  const index = [...records.keys()].indexOf(id);
-  view.el.find(".history-row")[index].fire("click");
+  historyRow(id).fire("click");
   await flush();
   view.sync();
 }
@@ -110,8 +111,7 @@ async function send(query = "What next?") {
 
 async function rename(id, title) {
   await history();
-  const index = [...records.keys()].indexOf(id);
-  const row = view.el.find(".history-row")[index];
+  const row = historyRow(id);
   row.find(".history-act")[0].fire("click");
   const input = row.querySelector(".history-rename");
   input.value = title;
@@ -218,7 +218,7 @@ for (const deleted of [CURRENT, OTHER]) {
     const messages = State.chatHistory;
     const transcript = $(".chat-log").textContent;
     await history();
-    const row = view.el.find(".history-row")[[...records.keys()].indexOf(deleted)];
+    const row = historyRow(deleted);
     const button = row.find(".history-act").find((b) => b.getAttribute("aria-label") === "Delete");
     button.fire("click");
     assert.equal(sent("chat_history_delete").length, 0, "the first click only asks for confirmation");
@@ -249,7 +249,7 @@ for (const deleted of [CURRENT, OTHER]) {
 // Native deletion is authoritative: neither errors nor older completions may
 // discard a transcript that the user can still read and continue.
 function deleteButton(id) {
-  const row = view.el.find(".history-row")[[...records.keys()].indexOf(id)];
+  const row = historyRow(id);
   return row.find(".history-act").find((button) => button.getAttribute("aria-label") === "Delete");
 }
 
@@ -936,5 +936,238 @@ for (const recovery of ["reset", "open"]) {
     assert.equal(sent("chat_send").length, 1);
     assert.deepEqual(sendHistories.at(-1), expected);
     assert.equal(State.chatHistory.at(-1).content, "An answer");
+  });
+}
+
+// Paging follows the native cursor contract; store.rs tests exercise real files.
+function historyPage(before = null) {
+  return [...records.values()]
+    .map(({ id, title, updatedAt, messages }) => ({ id, title, updatedAt, count: messages.length }))
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+    .filter((item) => !before || item.updatedAt < before.updatedAt || (item.updatedAt === before.updatedAt && item.id > before.id))
+    .slice(0, MAX_LISTED);
+}
+
+function historyRow(id) {
+  return view.el.find(".history-row").find((row) => row.getAttribute("data-id") === id);
+}
+
+function seedHistory(count) {
+  const ids = Array.from({ length: count }, (_, i) => `c-${(i + 1).toString(16).padStart(16, "0")}`);
+  // Reverse insertion so ties across page boundaries need the id ordering.
+  for (const id of [...ids].reverse()) seed(id, `Conversation ${id}`);
+  return ids;
+}
+
+async function moreHistory() {
+  assert.ok($(".history-more"), "older conversations remain reachable");
+  $(".history-more").fire("click");
+  await flush();
+}
+
+test("history paging reaches every saved conversation beyond 500 and opens the oldest", async () => {
+  const ids = seedHistory(MAX_LISTED * 2 + 3);
+  await history();
+  assert.equal(view.el.find(".history-row").length, MAX_LISTED);
+  assert.deepEqual(sent("chat_history_list"), [{ before: null }]);
+  await moreHistory();
+  assert.equal(view.el.find(".history-row").length, MAX_LISTED * 2);
+  assert.deepEqual(sent("chat_history_list").at(-1), { before: { id: ids[MAX_LISTED - 1], updatedAt: 456 } });
+  await moreHistory();
+  assert.deepEqual(view.el.find(".history-row").map((row) => row.getAttribute("data-id")), ids);
+  assert.equal($(".history-more"), null);
+  assert.equal(records.size, ids.length, "listing never removes saved files");
+  await open(ids.at(-1));
+  assert.equal(State.chatId, ids.at(-1));
+  assert.match($(".chat-log").textContent, /Plan my trip/);
+});
+
+test("history paging handles empty history and an exact full final page", async () => {
+  await history();
+  assert.match($(".history").textContent, /No saved conversations yet/);
+  assert.equal($(".history-more"), null);
+  $(".history-btn").fire("click");
+  seedHistory(MAX_LISTED);
+  await history();
+  await moreHistory();
+  assert.equal(view.el.find(".history-row").length, MAX_LISTED);
+  assert.equal($(".history-more"), null);
+});
+
+test("history paging retries first-page and later-page failures without losing rows", async () => {
+  const ids = seedHistory(MAX_LISTED + 1);
+  answers.chat_history_list = () => Promise.reject(new Error("Listing unavailable"));
+  await history();
+  assert.match($(".history").textContent, /Listing unavailable/);
+  assert.doesNotMatch($(".history").textContent, /No saved conversations yet/);
+  assert.equal($(".history-retry").textContent, "Retry");
+  delete answers.chat_history_list;
+  $(".history-retry").fire("click");
+  await flush();
+  assert.equal(view.el.find(".history-row").length, MAX_LISTED);
+  answers.chat_history_list = () => Promise.reject(new Error("Page unavailable"));
+  await moreHistory();
+  assert.equal(view.el.find(".history-row").length, MAX_LISTED);
+  assert.match($(".history").textContent, /Page unavailable/);
+  const failedArgs = sent("chat_history_list").at(-1);
+  delete answers.chat_history_list;
+  $(".history-retry").fire("click");
+  await flush();
+  assert.deepEqual(sent("chat_history_list").at(-1), failedArgs);
+  assert.ok(historyRow(ids.at(-1)));
+  assert.equal($(".history-retry"), null);
+  assert.equal($(".history-more"), null);
+});
+
+test("history paging reserves one request across repeated Load more clicks", async (t) => {
+  seedHistory(MAX_LISTED + 1);
+  await history();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve([]); await flush(); });
+  answers.chat_history_list = () => pending.promise;
+  const button = $(".history-more");
+  button.fire("click");
+  button.fire("click");
+  await flush();
+  assert.equal(sent("chat_history_list").length, 2);
+  assert.equal($(".history-more").disabled, true);
+});
+
+for (const outcome of ["resolves", "rejects"]) {
+  test(`history paging ignores an old page that ${outcome} after close and reopen`, async (t) => {
+    const ids = seedHistory(MAX_LISTED + 1);
+    await history();
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve([]); await flush(); });
+    answers.chat_history_list = () => pending.promise;
+    await moreHistory();
+    $(".history-btn").fire("click");
+    records.delete(ids[0]);
+    delete answers.chat_history_list;
+    await history();
+    assert.equal(view.el.find(".history-row").length, MAX_LISTED);
+    if (outcome === "resolves") pending.resolve([{ id: "c-ffffffffffffffff", title: "Stale page", updatedAt: 1, count: 2 }]);
+    else pending.reject(new Error("Old page failed"));
+    await flush();
+    assert.doesNotMatch($(".history").textContent, /Stale page|Old page failed/);
+    assert.equal(historyRow(ids[0]), undefined);
+    assert.ok(historyRow(ids.at(-1)));
+  });
+}
+
+test("history paging keeps older loaded rows through rename and delete, including its cursor row", async () => {
+  const ids = seedHistory(MAX_LISTED * 2 + 1);
+  await history();
+  await moreHistory();
+  await rename(ids[MAX_LISTED + 1], "An older renamed conversation");
+  assert.equal(view.el.find(".history-row").length, MAX_LISTED * 2);
+  assert.match(historyRow(ids[MAX_LISTED + 1]).textContent, /An older renamed conversation/);
+  const boundary = ids[MAX_LISTED * 2 - 1];
+  await confirmDelete(boundary);
+  assert.equal(historyRow(boundary), undefined);
+  assert.equal(view.el.find(".history-row").length, MAX_LISTED * 2 - 1);
+  await moreHistory();
+  assert.ok(historyRow(ids.at(-1)), "deleting the cursor cannot skip the next row");
+  assert.deepEqual(view.el.find(".history-row").map((row) => row.getAttribute("data-id")), ids.filter((id) => id !== boundary));
+});
+
+for (const mutation of ["rename", "delete"]) {
+  test(`history paging fences a pending page when ${mutation} completes`, async (t) => {
+    const ids = seedHistory(MAX_LISTED + 1);
+    await history();
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve([]); await flush(); });
+    answers.chat_history_list = () => pending.promise;
+    await moreHistory();
+    if (mutation === "rename") await rename(ids[0], "New title");
+    else await confirmDelete(ids[0]);
+    pending.resolve([{ id: ids[0], title: "Old title", updatedAt: 456, count: 2 }]);
+    await flush();
+    assert.doesNotMatch($(".history").textContent, /Old title/);
+    if (mutation === "rename") assert.match(historyRow(ids[0]).textContent, /New title/);
+    else assert.equal(historyRow(ids[0]), undefined);
+    delete answers.chat_history_list;
+    await moreHistory();
+    assert.ok(historyRow(ids.at(-1)));
+    assert.equal(new Set(view.el.find(".history-row").map((row) => row.getAttribute("data-id"))).size, records.size);
+  });
+}
+
+test("history paging does not skip older rows when a new save sorts before its cursor", async () => {
+  const ids = seedHistory(MAX_LISTED + 1);
+  await history();
+  const newest = "c-ffffffffffffffff";
+  seed(newest, "Saved while browsing");
+  records.get(newest).updatedAt = 999;
+  await moreHistory();
+  assert.deepEqual(view.el.find(".history-row").map((row) => row.getAttribute("data-id")), ids);
+  $(".history-btn").fire("click");
+  await history();
+  assert.equal(view.el.find(".history-row")[0].getAttribute("data-id"), newest);
+});
+
+test("history paging ignores an old page after New chat saves another conversation", async (t) => {
+  seedHistory(MAX_LISTED + 1);
+  await history();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve([]); await flush(); });
+  answers.chat_history_list = () => pending.promise;
+  await moreHistory();
+  $(".history-new").fire("click");
+  await send("A newer saved chat");
+  delete answers.chat_history_list;
+  await history();
+  const id = State.chatId;
+  assert.equal(view.el.find(".history-row")[0].getAttribute("data-id"), id);
+  pending.resolve([{ id: "c-ffffffffffffffff", title: "Stale page", updatedAt: 1, count: 2 }]);
+  await flush();
+  assert.doesNotMatch($(".history").textContent, /Stale page/);
+  assert.equal(State.chatId, id);
+});
+
+test("history paging cannot replace a newer failed conversation open", async (t) => {
+  const ids = seedHistory(MAX_LISTED + 1);
+  await history();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve([]); await flush(); });
+  answers.chat_history_list = () => pending.promise;
+  await moreHistory();
+  answers.chat_history_open = () => Promise.reject(new Error("Conversation unavailable"));
+  await open(ids[0]);
+  assert.match($(".history").textContent, /Conversation unavailable/);
+  pending.resolve(historyPage({ id: ids[MAX_LISTED - 1], updatedAt: 456 }));
+  await flush();
+  assert.match($(".history").textContent, /Conversation unavailable/);
+});
+
+for (const mutation of ["rename", "delete"]) {
+  test(`history paging restarts a first-page refresh interrupted by ${mutation}`, async (t) => {
+    seed(CURRENT, "Cached conversation");
+    await history();
+    assert.equal($(".history-more"), null, "the cached list was exhausted");
+    const changing = Promise.withResolvers();
+    const listing = Promise.withResolvers();
+    t.after(async () => { changing.resolve(); listing.resolve([]); await flush(); });
+    if (mutation === "rename") {
+      answers.chat_history_rename = async ({ id, title }) => { await changing.promise; records.get(id).title = title; };
+      await rename(CURRENT, "Renamed conversation");
+    } else {
+      answers.chat_history_delete = async ({ id }) => { await changing.promise; records.delete(id); };
+      await confirmDelete(CURRENT);
+    }
+    $(".history-btn").fire("click");
+    seed(OTHER, "Newly saved conversation");
+    const stale = historyPage();
+    answers.chat_history_list = () => listing.promise;
+    await history();
+    delete answers.chat_history_list;
+    changing.resolve();
+    await flush();
+    assert.ok(historyRow(OTHER), "the interrupted refresh must be retried so new saves remain reachable");
+    listing.resolve(stale);
+    await flush();
+    assert.ok(historyRow(OTHER));
+    if (mutation === "rename") assert.match(historyRow(CURRENT).textContent, /Renamed conversation/);
+    else assert.equal(historyRow(CURRENT), undefined, "an old refresh cannot resurrect the deleted row");
   });
 }

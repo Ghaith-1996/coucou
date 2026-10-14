@@ -21,6 +21,10 @@ export interface ConversationSummary {
   count: number;
 }
 
+/** chat_store.rs `MAX_LISTED` and `ListCursor`. A full page may have more. */
+export const CONVERSATION_PAGE_SIZE = 500;
+export type ConversationCursor = Pick<ConversationSummary, "updatedAt" | "id">;
+
 /** chat_store.rs `Conversation`. */
 export interface SavedConversation {
   id: string;
@@ -415,7 +419,8 @@ export const Bridge = {
   /** Regenerate: the last question and answer leave the model's history. */
   chatUndoLast: () => navigateChat(() => withChatContext(() => callOrThrow<boolean>("chat_undo_last"))),
   /** Saved conversations (chat_store.rs). */
-  chatHistoryList: () => call<ConversationSummary[]>("chat_history_list"),
+  chatHistoryList: (before: ConversationCursor | null = null) =>
+    IS_TAURI ? callOrThrow<ConversationSummary[]>("chat_history_list", { before }) : Promise.resolve([]),
   chatHistorySave: (conversation: SavedConversation) => callOrThrow<void>("chat_history_save", { conversation }),
   /** Reopens one: its messages, and its turns become the model's history. */
   chatHistoryOpen: (id: string) => navigateChat(async () => {

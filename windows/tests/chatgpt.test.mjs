@@ -10,7 +10,7 @@ import { installFakeDom } from "./fakedom.mjs";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 
 installFakeDom();
-const { buildPrompt } = await import("../src/views/chat.ts");
+const { buildPrompt, newConversation } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
 const { EFFORT_LABELS, LUNA, SOL, effortFor, effortsFor, withEffort } = await import("../src/core/chatgpt.ts");
 const { cleanTitle, fromSaved, newChatId, titleFor, toSaved } = await import("../src/core/conversations.ts");
@@ -97,6 +97,7 @@ beforeEach(async () => {
   State.chatHistory = [];
   State.chatId = null;
   State.stateOverride = null;
+  State.noteMessage = "";
   State.view = "prompt";
   State.droppedFile = null;
   view = buildPrompt(() => {});
@@ -237,6 +238,182 @@ test("the usage limit shows its notice with Manage usage, not an error page", as
   const manage = view.el.find(".picker-link").find((b) => b.textContent === "Manage usage");
   manage.fire("click");
   assert.deepEqual(sent("open_url").at(-1), { url: "https://chatgpt.com/#settings" });
+});
+
+const usageLimitReply = () => {
+  emit("chatgpt-usage-limit", null);
+  return Promise.reject(new Error("Usage limit reached. Review your plan or this app's limit in ChatGPT settings."));
+};
+
+async function sendQuestion(query = "try again") {
+  $(".chat-input").value = query;
+  $(".send-btn").fire("click");
+  await flush();
+  view.sync();
+}
+
+async function reachUsageLimit() {
+  answers.chat_send = usageLimitReply;
+  await sendQuestion("first question");
+  assert.equal(State.view, "prompt");
+  assert.equal($(".chat-notice-title").textContent, "Usage limit reached");
+}
+
+for (const [kind, message] of [
+  ["connectivity", "Could not connect to ChatGPT. Check your connection and try again."],
+  ["session", "ChatGPT didn't accept the sign-in. Reconnect in Settings."],
+  ["model", "This model isn't available on your ChatGPT account."],
+]) {
+  test(`a usage limit cannot hide the next ${kind} error`, async () => {
+    await reachUsageLimit();
+    answers.chat_send = new Error(message);
+    await sendQuestion();
+    assert.equal(State.view, "note", "only this request's limit event may suppress its error");
+    assert.equal(State.noteMessage, message);
+    assert.equal($(".chat-notice-title"), null, "the old usage warning is cleared");
+  });
+}
+
+test("a retry that reaches the usage limit again keeps Manage usage", async () => {
+  await reachUsageLimit();
+  await sendQuestion();
+  assert.equal(State.view, "prompt");
+  assert.equal(State.noteMessage, "");
+  assert.equal($(".chat-notice-title").textContent, "Usage limit reached");
+  assert.ok(view.el.find(".picker-link").some((button) => button.textContent === "Manage usage"));
+});
+
+test("a successful retry clears a usage limit and ignores a late limit event", async () => {
+  await reachUsageLimit();
+  answers.chat_send = { text: "Recovered" };
+  await sendQuestion();
+  emit("chatgpt-usage-limit", null);
+  view.sync();
+  assert.equal(State.view, "prompt");
+  assert.equal(State.chatHistory.at(-1).content, "Recovered");
+  assert.equal($(".chat-notice-title"), null, "a completed answer no longer owns usage events");
+});
+
+test("a retry clears the usage notice before its answer settles", async (t) => {
+  await reachUsageLimit();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Recovered" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  await sendQuestion();
+  assert.ok($(".send-btn").classList.contains("stop"));
+  assert.equal($(".chat-notice-title"), null, "the previous result cannot label an in-flight retry");
+});
+
+test("Stop after a usage limit keeps partial text and clears the old warning", async (t) => {
+  await reachUsageLimit();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  answers.chat_stop = () => pending.reject(new Error("Stopped."));
+  await sendQuestion();
+  emit("chat-delta", "Partial retry");
+  $(".send-btn").fire("click");
+  await flush();
+  view.sync();
+  assert.equal(State.view, "prompt");
+  assert.deepEqual([State.chatHistory.at(-1).content, State.chatHistory.at(-1).stopped], ["Partial retry", true]);
+  assert.equal($(".chat-notice-title"), null);
+});
+
+test("regenerating a stopped retry after a usage limit shows its own error", async (t) => {
+  await reachUsageLimit();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  answers.chat_stop = () => pending.reject(new Error("Stopped."));
+  await sendQuestion();
+  emit("chat-delta", "Partial retry");
+  $(".send-btn").fire("click");
+  await flush();
+  view.sync();
+  answers.chat_send = new Error("Regenerated request lost its connection.");
+  const regenerate = view.el.find(".md-copy").find((button) => button.title === "Regenerate" || String(button.getAttribute("aria-label")) === "Regenerate");
+  assert.ok(regenerate);
+  regenerate.fire("click");
+  await flush();
+  view.sync();
+  assert.equal(State.view, "note");
+  assert.equal(State.noteMessage, "Regenerated request lost its connection.");
+  assert.equal($(".chat-notice-title"), null);
+});
+
+for (const transition of ["new conversation", "provider round trip", "account switch"]) {
+  test(`a usage limit cannot hide a later error after ${transition}`, async () => {
+    await reachUsageLimit();
+    if (transition === "new conversation") newConversation();
+    else if (transition === "provider round trip") {
+      State.settings = { ...State.settings, chatProvider: "anthropic" };
+      view.sync();
+      State.settings = { ...State.settings, chatProvider: "chatgpt" };
+    } else {
+      const account = { ...CONNECTED, accountId: "new-account" };
+      answers.chatgpt_status = account;
+      emit("chatgpt-status", account);
+    }
+    answers.chat_send = new Error("This request failed for a different reason.");
+    await sendQuestion();
+    assert.equal(State.view, "note");
+    assert.equal(State.noteMessage, "This request failed for a different reason.");
+    assert.equal($(".chat-notice-title"), null);
+  });
+}
+
+test("a late ChatGPT usage event cannot attach to another provider's answer", async (t) => {
+  answers.chat_send = { text: "A completed ChatGPT answer" };
+  await sendQuestion();
+  State.settings = { ...State.settings, chatProvider: "anthropic" };
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  await sendQuestion();
+  // The request still belongs to Anthropic if settings change while IPC waits.
+  State.settings = { ...State.settings, chatProvider: "chatgpt" };
+  emit("chatgpt-usage-limit", null);
+  pending.reject(new Error("Anthropic connection failed."));
+  await flush();
+  assert.equal(State.view, "note");
+  assert.equal(State.noteMessage, "Anthropic connection failed.");
+  State.settings = { ...State.settings, chatProvider: "chatgpt" };
+  State.view = "prompt";
+  view.sync();
+  assert.equal($(".chat-notice-title"), null, "a different provider cannot acquire a ChatGPT usage warning");
+});
+
+test("a usage event after Stop cannot label the cancelled request as limited", async (t) => {
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  await sendQuestion();
+  emit("chat-delta", "Partial answer");
+  $(".send-btn").fire("click");
+  await flush();
+  emit("chatgpt-usage-limit", null);
+  pending.reject(new Error("Stopped."));
+  await flush();
+  view.sync();
+  assert.equal(State.view, "prompt");
+  assert.equal(State.chatHistory.at(-1).stopped, true);
+  assert.equal($(".chat-notice-title"), null);
+});
+
+test("usage events belong to the captured ChatGPT provider if settings change mid-answer", async (t) => {
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve({ text: "Unused" }); await flush(); });
+  answers.chat_send = () => pending.promise;
+  await sendQuestion();
+  State.settings = { ...State.settings, chatProvider: "anthropic" };
+  emit("chatgpt-usage-limit", null);
+  pending.reject(new Error("Usage limit reached."));
+  await flush();
+  assert.equal(State.view, "prompt", "the in-flight request still belongs to ChatGPT");
+  State.settings = { ...State.settings, chatProvider: "chatgpt" };
+  view.sync();
+  assert.equal($(".chat-notice-title").textContent, "Usage limit reached");
 });
 
 test("the first sign-in shows the plan notice once; Got it records it", async () => {

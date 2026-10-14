@@ -57,6 +57,14 @@ pub struct Summary {
     pub count: usize,
 }
 
+/// Continue after this ordering key, even if its conversation was deleted.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCursor {
+    pub updated_at: u64,
+    pub id: String,
+}
+
 pub fn dir() -> PathBuf {
     crate::settings::local_dir().join("conversations")
 }
@@ -142,22 +150,33 @@ fn load_locked(dir: &Path, id: &str) -> Result<Conversation, String> {
     Ok(c)
 }
 
-/// Every saved conversation, most recent first. Unreadable files are skipped.
-pub fn list(dir: &Path) -> Vec<Summary> {
-    let Ok(_guard) = STORE.lock() else { return Vec::new() };
-    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out: Vec<Summary> = read
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            let id = name.strip_suffix(".json")?;
-            let c = load_locked(dir, id).ok()?;
-            Some(Summary { id: c.id, title: c.title, updated_at: c.updated_at, count: c.messages.len() })
-        })
-        .collect();
+/// One page, newest first, then id for ties. Unreadable files are skipped;
+/// directory errors are returned so callers can retry without losing rows.
+pub fn list(dir: &Path, before: Option<&ListCursor>) -> Result<Vec<Summary>, String> {
+    if before.is_some_and(|cursor| !id_ok(&cursor.id)) {
+        return Err("bad conversation cursor".into());
+    }
+    let _guard = STORE.lock().map_err(|_| "conversation store unavailable")?;
+    let read = match std::fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut out = Vec::new();
+    for entry in read {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let Ok(name) = entry.file_name().into_string() else { continue };
+        let Some(id) = name.strip_suffix(".json") else { continue };
+        let Ok(c) = load_locked(dir, id) else { continue };
+        if before.is_some_and(|cursor| c.updated_at > cursor.updated_at
+            || (c.updated_at == cursor.updated_at && c.id <= cursor.id)) {
+            continue;
+        }
+        out.push(Summary { id: c.id, title: c.title, updated_at: c.updated_at, count: c.messages.len() });
+    }
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
     out.truncate(MAX_LISTED);
-    out
+    Ok(out)
 }
 
 pub fn rename(dir: &Path, id: &str, title: &str) -> Result<(), String> {
@@ -225,7 +244,7 @@ mod tests {
         let dir = scratch("life");
         save(&dir, &conv("c-0000000000000001", 10)).unwrap();
         save(&dir, &conv("c-0000000000000002", 20)).unwrap();
-        let ids: Vec<String> = list(&dir).into_iter().map(|s| s.id).collect();
+        let ids: Vec<String> = list(&dir, None).unwrap().into_iter().map(|s| s.id).collect();
         assert_eq!(ids, ["c-0000000000000002", "c-0000000000000001"], "most recent first");
         rename(&dir, "c-0000000000000001", "  Trip plans ").unwrap();
         let back = load(&dir, "c-0000000000000001").unwrap();
@@ -233,8 +252,72 @@ mod tests {
         assert_eq!(back.messages[1].model.as_deref(), Some("gpt-6.1-sol"), "which model answered is kept");
         delete(&dir, "c-0000000000000001").unwrap();
         delete(&dir, "c-0000000000000001").unwrap();
-        assert_eq!(list(&dir).len(), 1);
+        assert_eq!(list(&dir, None).unwrap().len(), 1);
         assert!(!dir.join("c-0000000000000001.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pages_reach_every_saved_file_in_stable_timestamp_and_id_order() {
+        let dir = scratch("pages");
+        let count = MAX_LISTED * 2 + 3;
+        for n in (0..count).rev() {
+            save(&dir, &conv(&format!("c-{n:016x}"), if n < 3 { 20 } else { 10 })).unwrap();
+        }
+        let mut ids = Vec::new();
+        let mut before = None;
+        loop {
+            let page = list(&dir, before.as_ref()).unwrap();
+            assert!(page.len() <= MAX_LISTED);
+            if page.is_empty() { break; }
+            let last = page.last().unwrap();
+            before = Some(ListCursor { updated_at: last.updated_at, id: last.id.clone() });
+            ids.extend(page.into_iter().map(|s| s.id));
+        }
+        assert_eq!(ids, (0..count).map(|n| format!("c-{n:016x}")).collect::<Vec<_>>());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), count, "listing never deletes files");
+        assert_eq!(load(&dir, ids.last().unwrap()).unwrap().messages.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cursor_survives_renaming_deletion_and_newer_saves_between_pages() {
+        let dir = scratch("page-mutations");
+        for n in 0..MAX_LISTED + 2 {
+            save(&dir, &conv(&format!("c-{n:016x}"), 10)).unwrap();
+        }
+        let first = list(&dir, None).unwrap();
+        let last = first.last().unwrap();
+        let before = ListCursor { updated_at: last.updated_at, id: last.id.clone() };
+        let older = format!("c-{:016x}", MAX_LISTED);
+        rename(&dir, &older, "An older title").unwrap();
+        delete(&dir, &before.id).unwrap();
+        delete(&dir, &first[0].id).unwrap();
+        save(&dir, &conv("c-ffffffffffffffff", 30)).unwrap();
+        let page = list(&dir, Some(&before)).unwrap();
+        assert_eq!(page.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            [older, format!("c-{:016x}", MAX_LISTED + 1)]);
+        assert_eq!(page[0].title, "An older title");
+        assert_eq!(list(&dir, None).unwrap()[0].id, "c-ffffffffffffffff");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_last_pages_and_failed_listing_remain_retryable() {
+        let dir = scratch("page-errors");
+        assert!(list(&dir, None).unwrap().is_empty(), "a missing folder is an empty history");
+        // A file where the directory should be fails on Windows and Unix.
+        std::fs::write(&dir, b"not a directory").unwrap();
+        assert!(list(&dir, None).is_err(), "listing failures are not empty history");
+        std::fs::remove_file(&dir).unwrap();
+        let c = conv("c-0000000000000001", 10);
+        save(&dir, &c).unwrap();
+        assert_eq!(list(&dir, None).unwrap().len(), 1, "retry succeeds");
+        let before = ListCursor { updated_at: c.updated_at, id: c.id.clone() };
+        assert!(list(&dir, Some(&before)).unwrap().is_empty());
+        let invalid = ListCursor { updated_at: 10, id: "../../other".into() };
+        assert!(list(&dir, Some(&invalid)).is_err());
+        assert_eq!(load(&dir, &c.id).unwrap(), c);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -260,7 +343,7 @@ mod tests {
         rename(&dir, &stale.id, "Lisbon holiday").unwrap();
         save(&dir, &reopened).unwrap();
         assert_eq!(load(&dir, &stale.id).unwrap().title, "Lisbon holiday");
-        assert_eq!(list(&dir)[0].title, "Lisbon holiday");
+        assert_eq!(list(&dir, None).unwrap()[0].title, "Lisbon holiday");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -320,7 +403,7 @@ mod tests {
             let dir = dir.clone();
             std::thread::spawn(move || {
                 ready.wait();
-                listed_tx.send(list(&dir)).unwrap();
+                listed_tx.send(list(&dir, None).unwrap()).unwrap();
             })
         };
         ready.wait();
@@ -349,7 +432,7 @@ mod tests {
         save(&dir, &opened).unwrap();
         rename(&dir, &latest.id, "Trip plans").unwrap();
         assert_eq!(load(&dir, &latest.id).unwrap().messages, latest.messages);
-        assert_eq!(list(&dir)[0].title, "Trip plans");
+        assert_eq!(list(&dir, None).unwrap()[0].title, "Trip plans");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -357,7 +440,7 @@ mod tests {
     fn store_errors_release_the_lock_and_preserve_the_saved_file() {
         let dir = scratch("store-errors");
         let saved = conv("c-0000000000000006", 10);
-        assert!(list(&dir).is_empty());
+        assert!(list(&dir, None).unwrap().is_empty());
         assert!(load(&dir, &saved.id).is_err());
         save(&dir, &saved).unwrap();
 
@@ -372,7 +455,7 @@ mod tests {
         latest.messages.push(msg("user", "New message"));
         assert!(save(&dir, &latest).is_err());
         assert_eq!(load(&dir, &saved.id).unwrap(), saved);
-        assert_eq!(list(&dir)[0].count, saved.messages.len());
+        assert_eq!(list(&dir, None).unwrap()[0].count, saved.messages.len());
         std::fs::remove_dir(&tmp).unwrap();
 
         let file = path(&dir, &saved.id).unwrap();
@@ -381,12 +464,12 @@ mod tests {
         assert!(save(&dir, &latest).is_err());
         assert!(rename(&dir, &saved.id, "Trip plans").is_err());
         assert_eq!(std::fs::read(&file).unwrap(), b"{ not json");
-        assert!(list(&dir).is_empty());
+        assert!(list(&dir, None).unwrap().is_empty());
 
         delete(&dir, &saved.id).unwrap();
         save(&dir, &latest).unwrap();
         assert_eq!(load(&dir, &saved.id).unwrap(), latest);
-        assert_eq!(list(&dir)[0].count, latest.messages.len());
+        assert_eq!(list(&dir, None).unwrap()[0].count, latest.messages.len());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -438,7 +521,7 @@ mod tests {
         save(&dir, &conv("c-00000000000000ac", 5)).unwrap();
         std::fs::write(dir.join("c-00000000000000ad.json"), b"{ not json").unwrap();
         std::fs::write(dir.join("notes.txt"), b"x").unwrap();
-        assert_eq!(list(&dir).len(), 1);
+        assert_eq!(list(&dir, None).unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

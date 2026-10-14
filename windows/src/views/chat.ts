@@ -16,7 +16,7 @@
 import { h, svg, clear } from "./dom";
 import { ICONS } from "./icons";
 import { copyButton, renderMarkdown } from "./markdown";
-import { Bridge, onEvent, type ChatContext, type ConversationSummary, type ModelInfo } from "../core/bridge";
+import { Bridge, CONVERSATION_PAGE_SIZE, onEvent, type ChatContext, type ConversationCursor, type ConversationSummary, type ModelInfo } from "../core/bridge";
 import {
   activeModel, pickModel, providerDef, visibleProviders, withModel, type ProviderDef,
 } from "../core/providers";
@@ -55,6 +55,9 @@ const STRINGS = {
   history: N_("Conversations"),
   newChat: N_("New chat"),
   noHistory: N_("No saved conversations yet."),
+  moreHistory: N_("Load more"),
+  historyLoading: N_("Loading…"),
+  retryHistory: N_("Retry"),
   rename: N_("Rename"),
   delete: N_("Delete"),
   confirmDelete: N_("Delete?"),
@@ -426,6 +429,11 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   const deleteFailures = new Map<string, string>();
   let summaries: ConversationSummary[] = [];
   let listRequest = 0;
+  let cursor: ConversationCursor | null = null;
+  let hasMore = false;
+  let listing = false;
+  let listingBefore: ConversationCursor | null = null;
+  let listFailure: { error: string; before: ConversationCursor | null } | null = null;
   let navigationAttempt = 0;
   let panelSession = 0;
   let pendingOpens = 0;
@@ -450,7 +458,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     const when = h("span", { class: "picker-tag", text: whenLabel(s.updatedAt) });
     const rename = h("button", { class: "history-act", title: tl(STRINGS.rename), "aria-label": tl(STRINGS.rename) }, svg(ICONS.pencil, 11));
     const del = h("button", { class: "history-act", title: tl(STRINGS.delete), "aria-label": tl(STRINGS.delete) }, svg(ICONS.trash, 11));
-    const line = h("div", { class: State.chatId === s.id ? "picker-model on history-row" : "picker-model history-row", role: "button", tabindex: "0" }, name, when, rename, del);
+    const line = h("div", { class: State.chatId === s.id ? "picker-model on history-row" : "picker-model history-row", "data-id": s.id, role: "button", tabindex: "0" }, name, when, rename, del);
 
     rename.disabled = del.disabled = pendingDeletes.has(s.id);
     line.addEventListener("click", () => void open_(s.id));
@@ -461,14 +469,20 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       name.replaceWith(input);
       input.focus();
       input.select();
+      let finished = false;
       const done = async (keep: boolean) => {
+        if (finished) return;
+        finished = true;
         const title = keep ? cleanTitle(input.value) : null;
         if (title && title !== s.title) {
           await Bridge.chatHistoryRename(s.id, title).then(() => {
             if (State.chatId === s.id) chatTitle = title;
+            const refresh = invalidateList();
+            summaries = summaries.map((item) => item.id === s.id ? { ...item, title } : item);
+            if (refresh) void draw();
           }).catch(() => {});
         }
-        void draw();
+        render();
       };
       input.addEventListener("click", (ev) => ev.stopPropagation());
       input.addEventListener("keydown", (ev) => {
@@ -508,6 +522,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       }
       pendingDeletes.delete(s.id);
       deleteFailures.delete(s.id);
+      const refresh = invalidateList();
       // Only the untouched conversation that was confirmed may be cleared.
       // Navigation, file drops and new messages can all happen during IPC.
       if (active && State.chatId === s.id && chatSession === session && navigationAttempt === navigation
@@ -515,7 +530,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       summaries = summaries.filter((item) => item.id !== s.id);
       render();
       if (isOpen) Sound.play("pop");
-      void draw();
+      if (refresh) void draw();
     });
     return line;
   }
@@ -523,27 +538,68 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   function render() {
     disarmDelete();
     clear(list);
-    if (!summaries.length) {
+    if (!summaries.length && !listing && !listFailure) {
       list.append(h("div", { class: "picker-status", text: t(STRINGS.noHistory) }));
-      return;
     }
     for (const summary of summaries) {
       list.append(row(summary));
       const error = deleteFailures.get(summary.id);
       if (error) list.append(h("div", { class: "picker-status history-error", role: "alert", text: error }));
     }
+    if (listFailure) {
+      const failed = listFailure;
+      list.append(h("div", { class: "picker-status history-error", role: "alert", text: failed.error }),
+        h("button", { class: "picker-link history-retry", text: tl(STRINGS.retryHistory), onclick: () => void draw(failed.before) }));
+    } else if (hasMore) {
+      const more = h("button", { class: "picker-link history-more", text: tl(listing ? STRINGS.historyLoading : STRINGS.moreHistory), onclick: () => void draw(cursor) });
+      more.disabled = listing;
+      list.append(more);
+    } else if (listing) {
+      list.append(h("div", { class: "picker-status", text: tl(STRINGS.historyLoading) }));
+    }
   }
 
-  async function draw() {
+  function invalidateList() {
+    const refresh = listing && listingBefore === null;
+    listRequest++;
+    listing = false;
+    return refresh;
+  }
+
+  async function draw(before: ConversationCursor | null = null) {
+    if (!isOpen || listing) return;
     const request = ++listRequest;
-    const items = await Bridge.chatHistoryList();
-    if (request !== listRequest || items === null) return;
-    summaries = items;
+    listing = true;
+    listingBefore = before;
+    listFailure = null;
     render();
+    try {
+      const items = await Bridge.chatHistoryList(before);
+      if (request !== listRequest || !isOpen) return;
+      if (before === null) summaries = items;
+      else {
+        const loaded = new Set(summaries.map((s) => s.id));
+        summaries.push(...items.filter((s) => !loaded.has(s.id)));
+      }
+      const last = items[items.length - 1];
+      if (last) cursor = { id: last.id, updatedAt: last.updatedAt };
+      else if (before === null) cursor = null;
+      hasMore = items.length === CONVERSATION_PAGE_SIZE;
+    } catch (err) {
+      if (request !== listRequest || !isOpen) return;
+      listFailure = { error: String(err).replace(/^Error:\s*/, ""), before };
+    } finally {
+      if (request === listRequest && isOpen) {
+        listing = false;
+        render();
+      }
+    }
   }
 
   async function open_(id: string) {
     if (pendingDeletes.has(id)) return;
+    // Selection owns the next result/error; an older page must not redraw it.
+    invalidateList();
     const attempt = ++navigationAttempt;
     const panel = panelSession;
     if (!openingContext || openingContext.messages !== State.chatHistory || openingContext.session !== chatSession) {
@@ -595,6 +651,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
 
   function close() {
     panelSession++;
+    invalidateList();
     isOpen = false;
     disarmDelete();
     el.classList.remove("on");
@@ -704,6 +761,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   let liveText = "";
   /** A file drop or reset can replace the transcript while IPC is pending. */
   let answerIsCurrent: (() => boolean) | null = null;
+  let answerProvider: string | null = null;
   /** ChatGPT said its usage limit is reached: the notice offers "Manage usage". */
   let usageLimit = false;
   let effortKey = "";
@@ -859,7 +917,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     log.scrollTop = log.scrollHeight;
   });
   void onEvent<null>("chatgpt-usage-limit", () => {
-    if (!answerIsCurrent?.()) return;
+    if (!sending || undoPending || stopRequested || answerProvider !== CHATGPT || !answerIsCurrent?.()) return;
     usageLimit = true;
     drawNotice();
   });
@@ -878,6 +936,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (history.isOpen) history.close();
     sending = true;
     stopRequested = false;
+    // A limit belongs to the previous request, not to its next retry's error.
+    usageLimit = false;
+    drawNotice();
     liveText = "";
     const messages = State.chatHistory;
     const session = chatSession;
@@ -888,6 +949,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     // Who answers, as picked now: recorded with the answer.
     const p = providerDef(State.settings.chatProvider);
+    answerProvider = p.id;
     const model = activeModel(State.settings);
     const answeredBy = {
       provider: p.id,
@@ -936,6 +998,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (State.stateOverride === "thinking") State.stateOverride = null;
       live = null;
       answerIsCurrent = null;
+      answerProvider = null;
       renderedCount = -1; // the finished answer replaces the streamed one
       drawModelButton();
       State.notify();

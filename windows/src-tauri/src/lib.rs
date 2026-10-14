@@ -584,8 +584,8 @@ struct ChatStop(std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
 // ── Saved conversations (chat_store.rs) ─────────────────────────────────────
 
 #[tauri::command]
-fn chat_history_list() -> Vec<chat_store::Summary> {
-    chat_store::list(&chat_store::dir())
+fn chat_history_list(before: Option<chat_store::ListCursor>) -> Result<Vec<chat_store::Summary>, String> {
+    chat_store::list(&chat_store::dir(), before.as_ref())
 }
 
 #[tauri::command]

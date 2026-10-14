@@ -5010,6 +5010,17 @@
    "pt-BR": "Conta do ChatGPT selecionada: {account}",
    "ru": "Выбранный аккаунт ChatGPT: {account}",
    "id": "Akun ChatGPT yang dipilih: {account}"
+  },
+  "Load more": {
+   "zh-Hans": "加载更多",
+   "hi": "और लोड करें",
+   "es": "Cargar más",
+   "ar": "تحميل المزيد",
+   "fr": "Charger plus",
+   "bn": "আরও লোড করুন",
+   "pt-BR": "Carregar mais",
+   "ru": "Загрузить ещё",
+   "id": "Muat lagi"
   }
  }
 }

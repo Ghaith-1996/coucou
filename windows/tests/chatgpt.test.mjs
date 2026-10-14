@@ -26,6 +26,19 @@ test("each model offers exactly the efforts Rust accepts (shared fixture)", () =
   assert.ok(!effortsFor(SOL).includes("none"), "GPT-6.1 Sol has no None");
 });
 
+test("saved efforts normalize like native send settings (shared fixture)", () => {
+  for (const [model, supported] of Object.entries(table.models)) {
+    for (const saved of table.savedEfforts) {
+      const chatEfforts = saved === null ? {} : { [model]: saved };
+      const original = { ...chatEfforts };
+      const settings = { ...DEFAULT_SETTINGS, chatModels: { chatgpt: model }, chatEfforts };
+      const expected = supported.includes(saved) ? saved : table.default;
+      assert.equal(effortFor(settings, model), expected, `${model}: ${JSON.stringify(saved)}`);
+      assert.deepEqual(settings.chatEfforts, original, "normalizing does not rewrite settings");
+    }
+  }
+});
+
 test("the effort is remembered per model, Medium by default, never an unsupported one", () => {
   const s = { ...DEFAULT_SETTINGS };
   assert.equal(effortFor(s, LUNA), "medium");

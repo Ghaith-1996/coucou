@@ -202,13 +202,16 @@ fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<W
     permitted()?;
     let pattern = check(field)?;
     let current = unsafe { pattern.CurrentValue() }.map_err(|_| Refusal::Gone)?.to_string();
-    let caret = caret(&field.element);
-    let next = spliced(&current, caret.as_ref().map(|(b, s)| (b.as_str(), s.as_str())), text);
+    let selection = caret(&field.element);
+    let expected_caret = selection.as_ref().map(|(before, selected)| (before.as_str(), selected.as_str()));
+    let next = spliced(&current, expected_caret, text);
     let next_value = BSTR::from(next.as_str());
     write_revalidated(
         &current,
+        expected_caret,
         || check(field),
         |pattern| unsafe { pattern.CurrentValue() }.map(|value| value.to_string()).map_err(|_| Refusal::Gone.into()),
+        || caret(&field.element),
         &permitted,
         |pattern| {
             if unsafe { pattern.SetValue(&next_value) }.is_err() {

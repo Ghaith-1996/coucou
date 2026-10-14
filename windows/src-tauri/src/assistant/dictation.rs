@@ -53,7 +53,7 @@ pub enum Refusal {
     Unsupported,
     /// The app didn't answer in time.
     Busy,
-    /// The field changed while UI Automation was reading it. Retry explicitly.
+    /// The value or selection changed during UIA reads. Retry explicitly.
     ValueChanged,
 }
 
@@ -392,25 +392,37 @@ impl WritePermit {
 /// Revalidate after the potentially slow value/selection reads used to build
 /// the insertion. The writer receives only the freshly checked pattern, and
 /// every blocking final read is followed by the cancellation/deadline gate.
-/// UIA has no atomic compare-and-set: another app can still change after its
-/// last answer. Refuse observed changes instead of overwriting stale text.
+/// Compare the complete value and raw optional selection used for the splice,
+/// including unavailable/invalid caret evidence that caused append fallback.
+/// These are sequential UIA observations, not an atomic compare-and-set: any
+/// component can still change after its last answer, even during another read.
+/// Refuse observed changes instead of recomputing or overwriting stale text.
 fn write_revalidated<P>(
     expected: &str,
+    expected_caret: Option<(&str, &str)>,
     mut check_target: impl FnMut() -> Result<P, Rejection>,
-    read_value: impl FnOnce(&P) -> Result<String, Rejection>,
+    mut read_value: impl FnMut(&P) -> Result<String, Rejection>,
+    read_caret: impl FnOnce() -> Option<(String, String)>,
     permitted: impl Fn() -> Result<(), Refusal>,
     write: impl FnOnce(P) -> Written,
 ) -> Result<Written, Rejection> {
     permitted()?;
     let pattern = check_target()?;
     permitted()?;
+    let before_caret = read_value(&pattern)?;
+    permitted()?;
+    let current_caret = read_caret();
+    permitted()?;
+    // Bound the rereads: selection can move during CurrentValue, and value
+    // can change during TextPattern. Keep both observed values as evidence.
     let current = read_value(&pattern)?;
     permitted()?;
-    // Read mutable safety facts after CurrentValue: it can block while the
-    // target becomes a password/read-only field, disappears or loses focus.
+    // Refresh safety facts after every blocking value/selection read: the
+    // field may become protected/read-only, disappear or lose focus meanwhile.
     let pattern = check_target()?;
     permitted()?;
-    if current != expected {
+    if before_caret != expected || current != expected
+        || current_caret.as_ref().map(|(before, selected)| (before.as_str(), selected.as_str())) != expected_caret {
         return Err(Refusal::ValueChanged.into());
     }
     // Comparing a large field can itself take time. No work that depends on

@@ -423,45 +423,52 @@ fn a_write_permit_expires_and_cancellation_is_shared_with_the_worker() {
 }
 
 #[test]
-fn a_target_that_changes_during_the_final_value_read_is_never_written() {
+fn a_target_that_changes_during_final_value_or_selection_reads_is_never_written() {
     use std::cell::Cell;
 
-    for changed in [
-        Facts { password: true, ..writable() },
-        Facts { value_read_only: Some(true), ..writable() },
-        Facts { enabled: false, ..writable() },
-        Facts { foreground: Foreground::Other, ..writable() },
-        Facts { window_alive: false, ..writable() },
-        Facts { element_alive: false, ..writable() },
-        Facts { value_read_only: None, ..writable() },
-    ] {
-        let current = Cell::new(writable());
-        let checks = Cell::new(0);
-        let writes = Cell::new(0);
-        let mut bound = Some(field());
-        let answer = write_bound(&mut bound, |_| true, |_| write_revalidated(
-            "Hello",
-            || {
-                checks.set(checks.get() + 1);
-                let facts = current.get();
-                match refusal(&facts) {
-                    Some(reason) => Err(Rejection::checked(reason, &facts)),
-                    None => Ok(checks.get()),
-                }
-            },
-            |pattern| {
-                assert_eq!(*pattern, 1, "reread uses a freshly obtained pattern");
-                current.set(changed);
-                Ok("Hello".into())
-            },
-            || Ok(()),
-            |_| { writes.set(writes.get() + 1); Written::Verified },
-        ));
-        let reason = refusal(&changed).unwrap();
-        assert_eq!(answer, Err(Rejection::checked(reason, &changed)));
-        assert_eq!(checks.get(), 2, "safety facts must be refreshed after the blocking reread");
-        assert_eq!(writes.get(), 0);
-        assert_eq!(bound, Some(field()), "a definitive pre-write refusal keeps the target");
+    for stage in ["value", "selection"] {
+        for changed in [
+            Facts { password: true, ..writable() },
+            Facts { value_read_only: Some(true), ..writable() },
+            Facts { enabled: false, ..writable() },
+            Facts { foreground: Foreground::Other, ..writable() },
+            Facts { window_alive: false, ..writable() },
+            Facts { element_alive: false, ..writable() },
+            Facts { value_read_only: None, ..writable() },
+        ] {
+            let current = Cell::new(writable());
+            let checks = Cell::new(0);
+            let writes = Cell::new(0);
+            let mut bound = Some(field());
+            let answer = write_bound(&mut bound, |_| true, |_| write_revalidated(
+                "Hello",
+                None,
+                || {
+                    checks.set(checks.get() + 1);
+                    let facts = current.get();
+                    match refusal(&facts) {
+                        Some(reason) => Err(Rejection::checked(reason, &facts)),
+                        None => Ok(checks.get()),
+                    }
+                },
+                |pattern| {
+                    assert_eq!(*pattern, 1, "reread uses a freshly obtained pattern");
+                    if stage == "value" { current.set(changed); }
+                    Ok("Hello".into())
+                },
+                || {
+                    if stage == "selection" { current.set(changed); }
+                    None
+                },
+                || Ok(()),
+                |_| { writes.set(writes.get() + 1); Written::Verified },
+            ));
+            let reason = refusal(&changed).unwrap();
+            assert_eq!(answer, Err(Rejection::checked(reason, &changed)));
+            assert_eq!(checks.get(), 2, "safety facts must be refreshed after the blocking reread");
+            assert_eq!(writes.get(), 0);
+            assert_eq!(bound, Some(field()), "a definitive pre-write refusal keeps the target");
+        }
     }
 }
 
@@ -474,8 +481,10 @@ fn a_changed_value_is_preserved_until_an_explicit_fresh_insertion() {
     let writes = Cell::new(0);
     let answer = write_bound(&mut bound, |_| true, |field| write_revalidated(
         "Hello", // The earlier CurrentValue/TextPattern snapshot.
+        None,
         || Ok(()),
         |_| Ok(field.value.borrow().clone()),
+        || None,
         || Ok(()),
         |_| { writes.set(writes.get() + 1); Written::Verified },
     ));
@@ -488,8 +497,10 @@ fn a_changed_value_is_preserved_until_an_explicit_fresh_insertion() {
         let next = spliced(&current, None, "world");
         write_revalidated(
             &current,
+            None,
             || Ok(()),
             |_| Ok(field.value.borrow().clone()),
+            || None,
             || Ok(()),
             |_| {
                 writes.set(writes.get() + 1);
@@ -511,8 +522,10 @@ fn a_revalidation_refusal_keeps_the_same_capture_and_original_deadline() {
     assert_eq!(bound.as_mut().unwrap().offer("cap-current", expires, now), Ok(&"original field"));
     let answer = write_bound(&mut bound, |target| target.capture == "cap-current", |_| write_revalidated(
         "Hello",
+        None,
         || Ok(()),
         |_| Ok("Changed by the app".into()),
+        || None,
         || Ok(()),
         |_| panic!("a changed field must be kept, never overwritten"),
     ));
@@ -534,8 +547,10 @@ fn unchanged_revalidation_writes_once_using_the_last_checked_pattern() {
         let writes = Cell::new(0);
         let answer = write_bound(&mut bound, |_| true, |_| write_revalidated(
             "Hello",
+            None,
             || { checks.set(checks.get() + 1); Ok(checks.get()) },
             |pattern| { assert_eq!(*pattern, 1); Ok("Hello".into()) },
+            || None,
             || Ok(()),
             |pattern| {
                 assert_eq!(pattern, 2, "SetValue must not use the earlier pattern");
@@ -550,13 +565,186 @@ fn unchanged_revalidation_writes_once_using_the_last_checked_pattern() {
 }
 
 #[test]
+fn changed_selection_with_unchanged_text_requires_an_explicit_fresh_insertion() {
+    use std::cell::Cell;
+
+    let value = "Hello cruel world";
+    for (before, after) in [
+        (None, Some(("Hello ", ""))),
+        (Some(("Hello ", "")), None),
+        (Some(("Hello ", "")), Some(("Hello cruel ", ""))),
+        (Some(("Hello ", "cruel")), Some(("Hello ", "cru"))),
+        (Some(("Hello ", "cruel")), Some(("Hello cruel ", "world"))),
+        (Some(("Hello ", "cruel")), Some(("Hello ", ""))),
+        (Some(("Hello ", "")), Some(("Hello ", "cruel"))),
+        (Some(("unmatched", "")), Some(("Hello ", ""))),
+        (Some(("unmatched", "")), Some(("other invalid prefix", ""))),
+    ] {
+        for stage in ["target-check", "value"] {
+            let now = Instant::now();
+            let expires = now + Duration::from_secs(120);
+            let mut bound = Some(Remembered::new("cap-current".into(), field()));
+            let target = bound.as_mut().unwrap();
+            target.offer("cap-current", expires, now).unwrap();
+            *target.field.as_ref().unwrap().value.borrow_mut() = value.into();
+            let selection = Cell::new(before);
+            let checks = Cell::new(0);
+            let selection_reads = Cell::new(0);
+            let writes = Cell::new(0);
+            let result = write_bound(&mut bound, |target| target.capture == "cap-current", |target| {
+                let field = target.field.as_ref().unwrap();
+                write_revalidated(
+                    value,
+                    before,
+                    || {
+                        checks.set(checks.get() + 1);
+                        if stage == "target-check" { selection.set(after); }
+                        Ok(())
+                    },
+                    |_| {
+                        if stage == "value" { selection.set(after); }
+                        Ok(field.value.borrow().clone())
+                    },
+                    || {
+                        selection_reads.set(selection_reads.get() + 1);
+                        selection.get().map(|(prefix, selected)| (prefix.into(), selected.into()))
+                    },
+                    || Ok(()),
+                    |_| { writes.set(writes.get() + 1); Written::Verified },
+                )
+            });
+            assert_eq!(result, Err(Refusal::ValueChanged.into()), "{before:?} → {after:?} during {stage}");
+            assert_eq!(checks.get(), 2, "the final safety check still follows selection/value reads");
+            assert_eq!(selection_reads.get(), 1, "a changed selection is not recomputed in a retry loop");
+            assert_eq!(writes.get(), 0);
+            let target = bound.as_ref().unwrap();
+            assert_eq!(target.capture, "cap-current");
+            assert_eq!(target.expires, Some(expires));
+            assert_eq!(*target.field.as_ref().unwrap().value.borrow(), value);
+            assert!(!result.unwrap_err().copy_allowed, "changed evidence never authorizes Copy");
+
+            // Only a later explicit insertion computes a new splice from the
+            // now-current selection. The original target deadline is retained.
+            let next = spliced(value, after, "kind");
+            assert_eq!(write_bound(&mut bound, |_| true, |target| {
+                let field = target.field.as_ref().unwrap();
+                write_revalidated(
+                    value,
+                    after,
+                    || Ok(()),
+                    |_| Ok(field.value.borrow().clone()),
+                    || selection.get().map(|(prefix, selected)| (prefix.into(), selected.into())),
+                    || target.expires.filter(|expiry| now < *expiry).map(|_| ()).ok_or(Refusal::Gone),
+                    |_| {
+                        writes.set(writes.get() + 1);
+                        *field.value.borrow_mut() = next.clone();
+                        assert_eq!(*field.value.borrow(), next);
+                        Written::Verified
+                    },
+                )
+            }), Ok(Written::Verified));
+            assert_eq!(writes.get(), 1);
+            assert!(bound.is_none(), "a successful retry is terminal");
+        }
+    }
+}
+
+#[test]
+fn stable_caret_selection_and_append_fallbacks_write_the_original_splice() {
+    use std::cell::{Cell, RefCell};
+
+    for (caret, expected) in [
+        (None, "Hello cruel world kind"),
+        (Some(("Hello ", "")), "Hello kind cruel world"),
+        (Some(("Hello ", "cruel")), "Hello kind world"),
+        (Some(("invalid prefix", "")), "Hello cruel world kind"),
+        (Some(("Hello ", "different selection")), "Hello cruel world kind"),
+    ] {
+        let value = "Hello cruel world";
+        let next = spliced(value, caret, "kind");
+        assert_eq!(next, expected);
+        let writes = Cell::new(0);
+        let checks = Cell::new(0);
+        let events = RefCell::new(Vec::new());
+        assert_eq!(write_revalidated(
+            value,
+            caret,
+            || {
+                checks.set(checks.get() + 1);
+                events.borrow_mut().push("facts");
+                Ok(checks.get())
+            },
+            |pattern| {
+                assert_eq!(*pattern, 1);
+                events.borrow_mut().push("value");
+                Ok(value.into())
+            },
+            || {
+                events.borrow_mut().push("selection");
+                caret.map(|(prefix, selected)| (prefix.into(), selected.into()))
+            },
+            || { events.borrow_mut().push("permit/reply"); Ok(()) },
+            |pattern| {
+                assert_eq!(pattern, 2, "write uses the last checked ValuePattern");
+                events.borrow_mut().push("write");
+                writes.set(writes.get() + 1);
+                assert_eq!(next, expected);
+                Written::Verified
+            },
+        ), Ok(Written::Verified));
+        assert_eq!(writes.get(), 1);
+        assert_eq!(*events.borrow(), vec![
+            "permit/reply", "facts", "permit/reply", "value", "permit/reply",
+            "selection", "permit/reply", "value", "permit/reply", "facts",
+            "permit/reply", "permit/reply", "write",
+        ]);
+    }
+}
+
+#[test]
+fn a_value_change_during_the_final_selection_read_is_never_overwritten() {
+    use std::cell::RefCell;
+
+    let value = RefCell::new(String::from("Hello world"));
+    assert_eq!(write_revalidated(
+        "Hello world",
+        Some(("Hello ", "")),
+        || Ok(()),
+        |_| Ok(value.borrow().clone()),
+        || {
+            *value.borrow_mut() = "Hello from the app".into();
+            Some(("Hello ".into(), "".into()))
+        },
+        || Ok(()),
+        |_| panic!("a matching caret cannot authorize a stale complete value"),
+    ), Err(Refusal::ValueChanged.into()));
+    assert_eq!(*value.borrow(), "Hello from the app");
+}
+
+#[test]
+fn a_value_that_changes_and_reverts_during_selection_is_still_refused() {
+    use std::cell::RefCell;
+
+    let value = RefCell::new(String::from("changed before the first reread"));
+    assert_eq!(write_revalidated(
+        "Hello world",
+        None,
+        || Ok(()),
+        |_| Ok(value.borrow().clone()),
+        || { *value.borrow_mut() = "Hello world".into(); None },
+        || Ok(()),
+        |_| panic!("all observed value evidence must agree, even if it later reverts"),
+    ), Err(Refusal::ValueChanged.into()));
+}
+
+#[test]
 fn cancellation_deadline_or_closed_reply_during_final_reads_prevents_the_effect() {
     use std::cell::{Cell, RefCell};
 
     // Each injection happens inside a read, with no sleep, live UIA, or wall
     // clock race. The same gate used in production follows every final read.
     for stop in ["cancel", "expiry", "reply-timeout"] {
-        for stage in ["initial-check", "value", "last-check"] {
+        for stage in ["initial-check", "value", "selection", "value-after-selection", "last-check"] {
             let permit = permit();
             let now = Cell::new(permit.expires - Duration::from_secs(1));
             let (reply, answer) = tokio::sync::oneshot::channel::<()>();
@@ -569,8 +757,10 @@ fn cancellation_deadline_or_closed_reply_during_final_reads_prevents_the_effect(
             };
             let checks = Cell::new(0);
             let writes = Cell::new(0);
+            let value_reads = Cell::new(0);
             let result = write_revalidated(
                 "Hello",
+                None,
                 || {
                     checks.set(checks.get() + 1);
                     if (stage == "initial-check" && checks.get() == 1) || (stage == "last-check" && checks.get() == 2) {
@@ -579,8 +769,16 @@ fn cancellation_deadline_or_closed_reply_during_final_reads_prevents_the_effect(
                     Ok(())
                 },
                 |_| {
-                    if stage == "value" { interrupt(); }
+                    value_reads.set(value_reads.get() + 1);
+                    if (stage == "value" && value_reads.get() == 1)
+                        || (stage == "value-after-selection" && value_reads.get() == 2) {
+                        interrupt();
+                    }
                     Ok("Hello".into())
+                },
+                || {
+                    if stage == "selection" { interrupt(); }
+                    None
                 },
                 || {
                     permit.check_at(now.get())?;
@@ -600,11 +798,83 @@ fn cancellation_deadline_or_closed_reply_during_final_reads_prevents_the_effect(
 fn an_unreadable_final_value_is_a_definitive_no_write_refusal() {
     assert_eq!(write_revalidated(
         "Hello",
+        None,
         || Ok(()),
         |_| Err(Refusal::Gone.into()),
+        || panic!("a failed value read must not start a selection read"),
         || Ok(()),
         |_| panic!("a failed reread must never call SetValue"),
     ), Err(Refusal::Gone.into()));
+}
+
+#[test]
+fn an_unreadable_value_after_selection_is_also_a_definitive_no_write_refusal() {
+    use std::cell::Cell;
+
+    let reads = Cell::new(0);
+    assert_eq!(write_revalidated(
+        "Hello",
+        None,
+        || Ok(()),
+        |_| {
+            reads.set(reads.get() + 1);
+            if reads.get() == 1 { Ok("Hello".into()) } else { Err(Refusal::Gone.into()) }
+        },
+        || None,
+        || Ok(()),
+        |_| panic!("the first matching value cannot cover a failed final reread"),
+    ), Err(Refusal::Gone.into()));
+    assert_eq!(reads.get(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_caller_timeout_during_final_selection_never_writes_when_the_worker_resumes() {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let (send, jobs) = mpsc::channel();
+    let dictation = Dictation::new(send);
+    let args = InsertTextArgs { text: "world".into(), target_window: 4242, target_pid: 77 };
+    let mut writing = Box::pin(dictation.write("cap-current", args, permit()));
+    std::future::poll_fn(|cx| {
+        assert!(writing.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    }).await;
+    let Job::Write(_, _, permit, reply) = jobs.try_recv().unwrap() else { panic!("expected a write job") };
+    let (started, selection_started) = tokio::sync::oneshot::channel();
+    let (resume, resumed) = mpsc::channel();
+    let (finished, worker_finished) = tokio::sync::oneshot::channel();
+    let worker = std::thread::spawn(move || {
+        let mut bound = Some(field());
+        let outcome = write_bound(&mut bound, |_| true, |field| write_revalidated(
+            "Hello",
+            Some(("Hello", "")),
+            || Ok(()),
+            |_| Ok(field.value.borrow().clone()),
+            || {
+                started.send(()).unwrap();
+                resumed.recv().unwrap(); // Block TextPattern until the real caller times out.
+                Some(("Hello".into(), "".into()))
+            },
+            || {
+                permit.check()?;
+                if reply.is_closed() { return Err(Refusal::Gone); }
+                Ok(())
+            },
+            |_| panic!("a late selection cannot authorize SetValue"),
+        ));
+        assert_eq!(outcome, Err(Refusal::Gone.into()));
+        assert_eq!(bound, Some(field()), "no effect consumed or changed the target");
+        assert!(reply.send(outcome).is_err(), "the late refusal cannot replace a terminal unknown result");
+        finished.send(()).unwrap();
+    });
+    selection_started.await.unwrap();
+    tokio::time::advance(REPLY_TIMEOUT).await;
+    assert_eq!(writing.await, Ok(Written::Unconfirmed));
+    resume.send(()).unwrap();
+    worker_finished.await.unwrap();
+    worker.join().unwrap();
+    assert!(jobs.try_recv().is_err(), "a timed-out insertion never queues a retry");
 }
 
 #[test]

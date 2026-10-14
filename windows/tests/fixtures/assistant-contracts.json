@@ -6,7 +6,7 @@
     { "kind": "chat-draft", "available": true, "idempotent": true },
     { "kind": "pill-set", "available": true, "idempotent": true },
     { "kind": "insert-text", "available": false, "idempotent": false },
-    { "kind": "launch-app", "available": false, "idempotent": false },
+    { "kind": "launch-app", "available": true, "idempotent": false },
     { "kind": "ask-region", "available": false, "idempotent": false }
   ],
   "voiceStates": ["idle", "listening", "processing", "preview", "speaking", "error"],
@@ -60,8 +60,23 @@
     },
     {
       "name": "a reserved kind is refused in this version",
-      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-8", "kind": "launch-app", "args": { "appId": "notepad" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-8", "kind": "insert-text", "args": { "text": "hi", "targetWindow": 1, "targetPid": 2 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "unavailable"
+    },
+    {
+      "name": "opening an app reaches outside Coucou: the user confirms it",
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-14", "kind": "launch-app", "args": { "appId": "figma-0a1b2c3d" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "ask"
+    },
+    {
+      "name": "an app id that is a path or a command is refused",
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-15", "kind": "launch-app", "args": { "appId": "C:\\Windows\\System32\\cmd.exe /c del" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
+    },
+    {
+      "name": "an app launch with anything besides its id is refused",
+      "action": { "v": 2, "domain": "desktop-assistant", "id": "act-16", "kind": "launch-app", "args": { "appId": "figma-0a1b2c3d", "arguments": "--evil" }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "a pill set is allowed: Coucou's own pills, as Settings would",

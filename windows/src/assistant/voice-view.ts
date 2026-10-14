@@ -7,7 +7,7 @@ import { btn, card, stack, type ViewHost } from "../views/views";
 import { State } from "../core/state";
 import { washRGBA, type Wash } from "../core/layout";
 import { N_, t, tl } from "../i18n/i18n";
-import { Voice, voiceCancel, voiceDo, voiceStop, voiceUse } from "./voice";
+import { Voice, voiceCancel, voiceDo, voiceOpen, voiceStop, voiceUse } from "./voice";
 import type { VoiceError } from "./contracts";
 
 const ERRORS: Record<VoiceError, string> = {
@@ -41,6 +41,8 @@ export function buildVoice(): ViewHost {
     useToo: btn(tl("Use in chat"), "secondary", () => void voiceUse()),
     // The pill command itself; its label is the change ("Add GitHub").
     act: btn("", "primary", () => void voiceDo(), "↵"),
+    // "Open <app>", named as the Start menu names it.
+    open: btn("", "primary", () => void voiceOpen(), "↵"),
     cancel: btn(tl("Cancel"), "secondary", voiceCancel, "Esc"),
     close: btn(tl("Close"), "secondary", voiceCancel, "Esc"),
   };
@@ -51,7 +53,10 @@ export function buildVoice(): ViewHost {
     if (State.view !== "voice" || State.mode !== "expanded" || !Voice.event) return;
     if (e.key === "Enter" && Voice.event.state === "preview") {
       e.preventDefault();
-      void (Voice.command?.ok ? voiceDo() : voiceUse());
+      const app = Voice.app;
+      // While the app is being looked up or opened, Enter waits.
+      if (app?.status === "finding" || app?.status === "opening") return;
+      void (app?.status === "ready" ? voiceOpen() : Voice.command?.ok ? voiceDo() : voiceUse());
     } else if (e.key === "Escape") {
       e.preventDefault();
       voiceCancel();
@@ -84,8 +89,11 @@ export function buildVoice(): ViewHost {
         case "preview": {
           title.textContent = event?.transcript ?? "";
           const command = Voice.command;
+          const app = Voice.app;
           detail.textContent = event?.simulated
             ? t("Simulated transcript — real speech recognition comes next.")
+            : app?.status === "finding" ? t("Looking for {name}…", { name: app.name })
+            : app?.status === "missing" ? t("No app called “{name}” in the Start menu.", { name: app.name })
             : command && !command.ok ? command.reason : "";
           break;
         }
@@ -100,10 +108,17 @@ export function buildVoice(): ViewHost {
 
       const command = state === "preview" && Voice.command?.ok ? Voice.command : null;
       if (command) buttons.act.querySelector("span")!.textContent = command.label;
+      const app = state === "preview" ? Voice.app : null;
+      const offered = app?.status === "ready" || app?.status === "opening" ? app : null;
+      if (offered) buttons.open.querySelector("span")!.textContent = t("Open {name}", { name: offered.label });
+      (buttons.open as HTMLButtonElement).disabled = app?.status === "opening";
       const want =
         state === "listening" ? "stop,cancel"
         : state === "processing" ? "cancel"
-        : state === "preview" ? (command ? "act,useToo,cancel" : "use,cancel")
+        : state === "preview"
+          ? offered ? "open,useToo,cancel"
+          : app?.status === "finding" ? "useToo,cancel"
+          : command ? "act,useToo,cancel" : "use,cancel"
         : "close";
       if (want !== shownButtons) {
         shownButtons = want;

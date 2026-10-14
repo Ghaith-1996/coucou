@@ -767,6 +767,8 @@ pub fn run() {
             assistant::app::assistant_voice_use,
             assistant::app::assistant_voice_act,
             assistant::app::assistant_action_receipt,
+            assistant::app::assistant_app_propose,
+            assistant::app::assistant_app_launch,
             assistant::app::voice_model_status,
             assistant::app::voice_model_download,
             assistant::app::voice_model_cancel,
@@ -802,7 +804,10 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             app.manage(phone_link::PhoneLink::new(handle.clone()));
-            app.manage(assistant::app::voice(&handle));
+            let voice = assistant::app::voice(&handle);
+            #[cfg(windows)]
+            assistant::voice::session::watch(voice.clone(), assistant::app::log);
+            app.manage(voice);
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
             create_settings_window(&handle);

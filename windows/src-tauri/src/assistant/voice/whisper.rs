@@ -6,7 +6,9 @@
 // one is picked. Each capture gets its own whisper state, so nothing of one
 // capture carries into the next.
 
+use std::ffi::c_void;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -45,15 +47,56 @@ impl Local {
 impl Local {
     /// Transcribes with the model in `model`, loading it first when another
     /// one (or none) is loaded.
-    pub fn transcribe_with(&self, model: &Path, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
-        let audio = resample(samples, sample_rate, WHISPER_RATE);
+    /// Skips preparation and model loading when already cancelled. During
+    /// inference, gives up at whisper.cpp's next check once `abort` is true:
+    /// after the encoder pass under way, or the next decoder step. (Its
+    /// scheduler does not pass the callback into a pass, so a pass is never
+    /// cut short.)
+    pub fn transcribe_with(
+        &self,
+        model: &Path,
+        samples: &[f32],
+        sample_rate: u32,
+        abort: &AtomicBool,
+    ) -> Result<Transcript, VoiceError> {
+        self.transcribe_using(
+            model,
+            abort,
+            || resample(samples, sample_rate, WHISPER_RATE),
+            || {
+                // The graphics card when this build has the Vulkan backend.
+                let params = WhisperContextParameters { use_gpu: cfg!(feature = "gpu-vulkan"), ..Default::default() };
+                WhisperContext::new_with_params(model, params).map_err(|_| VoiceError::Provider)
+            },
+        )
+    }
+
+    fn transcribe_using(
+        &self,
+        model: &Path,
+        abort: &AtomicBool,
+        prepare_audio: impl FnOnce() -> Vec<f32>,
+        load_model: impl FnOnce() -> Result<WhisperContext, VoiceError>,
+    ) -> Result<Transcript, VoiceError> {
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
+        }
+        let audio = prepare_audio();
         let mut guard = self.ctx.lock().unwrap();
+        // Cancellation may happen while resampling or waiting for the last
+        // capture. Do not evict its model or start another expensive load.
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
+        }
         if guard.as_ref().is_none_or(|(loaded, _)| loaded != model) {
             *guard = None;
-            // The graphics card when this build has the Vulkan backend.
-            let params = WhisperContextParameters { use_gpu: cfg!(feature = "gpu-vulkan"), ..Default::default() };
-            let ctx = WhisperContext::new_with_params(model, params).map_err(|_| VoiceError::Provider)?;
+            let ctx = load_model()?;
             *guard = Some((model.to_path_buf(), ctx));
+        }
+        // A load already under way cannot be interrupted; skip the state
+        // allocation and inference if cancellation arrived during it.
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
         }
         let (_, ctx) = guard.as_ref().ok_or(VoiceError::Provider)?;
         let mut state = ctx.create_state().map_err(|_| VoiceError::Provider)?;
@@ -70,6 +113,16 @@ impl Local {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
+        // Through the raw setter: whisper-rs 0.16's `set_abort_callback_safe`
+        // hands whisper.cpp a pointer of another type than its trampoline
+        // reads. `abort` outlives `full`, which is the only caller.
+        unsafe {
+            params.set_abort_callback(Some(aborted));
+            params.set_abort_callback_user_data(abort as *const AtomicBool as *mut c_void);
+        }
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
+        }
         state.full(params, &audio).map_err(|_| VoiceError::Provider)?;
 
         let segments: Vec<String> = state
@@ -78,6 +131,11 @@ impl Local {
             .collect();
         Ok(Transcript { text: clean(&segments), simulated: false })
     }
+}
+
+/// whisper.cpp's abort check: `data` is the `AtomicBool` given with it.
+unsafe extern "C" fn aborted(data: *mut c_void) -> bool {
+    !data.is_null() && unsafe { (*(data as *const AtomicBool)).load(Ordering::SeqCst) }
 }
 
 /// Half the cores, at least one and at most eight: fast, without taking the
@@ -126,6 +184,77 @@ pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_transcription_skips_preprocessing_and_model_loading() {
+        let local = Local { ctx: Mutex::new(None) };
+        // Even an unusable cache must be untouched by an already-cancelled call.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = local.ctx.lock().unwrap();
+            panic!("poison the model cache");
+        }));
+        assert!(local.ctx.is_poisoned());
+        let result = local.transcribe_using(
+            Path::new("unused-model.bin"),
+            &AtomicBool::new(true),
+            || panic!("cancelled audio must not be resampled"),
+            || panic!("cancelled capture must not load a model"),
+        );
+        assert_eq!(result, Err(VoiceError::Provider));
+    }
+
+    #[test]
+    fn cancellation_while_waiting_for_the_model_skips_loading() {
+        use std::sync::mpsc;
+
+        let local = Local { ctx: Mutex::new(None) };
+        let abort = AtomicBool::new(false);
+        let guard = local.ctx.lock().unwrap();
+        let (prepared, ready) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let local = &local;
+            let abort = &abort;
+            let worker = scope.spawn(move || {
+                local.transcribe_using(
+                    Path::new("unused-model.bin"),
+                    abort,
+                    || {
+                        prepared.send(()).unwrap();
+                        Vec::new()
+                    },
+                    || panic!("cancelled capture must not load a model"),
+                )
+            });
+            // The entry check has passed, but the context lock is still held.
+            // Cancel before releasing it, without depending on thread timing.
+            ready.recv().unwrap();
+            abort.store(true, Ordering::SeqCst);
+            drop(guard);
+            assert_eq!(worker.join().unwrap(), Err(VoiceError::Provider));
+        });
+    }
+
+    #[test]
+    fn active_transcription_reaches_preprocessing_and_model_loading() {
+        let local = Local { ctx: Mutex::new(None) };
+        let prepared = AtomicBool::new(false);
+        let loaded = AtomicBool::new(false);
+        let result = local.transcribe_using(
+            Path::new("unused-model.bin"),
+            &AtomicBool::new(false),
+            || {
+                prepared.store(true, Ordering::SeqCst);
+                Vec::new()
+            },
+            || {
+                assert!(prepared.load(Ordering::SeqCst));
+                loaded.store(true, Ordering::SeqCst);
+                Err(VoiceError::Provider)
+            },
+        );
+        assert_eq!(result, Err(VoiceError::Provider));
+        assert!(loaded.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn resampling_keeps_the_duration() {
@@ -229,7 +358,7 @@ mod tests {
             let (samples, rate) = read_wav(&std::fs::read(clip).unwrap());
             let seconds = samples.len() as f64 / rate as f64;
             let started = std::time::Instant::now();
-            let transcript = local.transcribe_with(&model::path(chosen), &samples, rate).unwrap();
+            let transcript = local.transcribe_with(&model::path(chosen), &samples, rate, &AtomicBool::new(false)).unwrap();
             let took = started.elapsed().as_secs_f64();
             let error = wer(&expected, &transcript.text);
             println!(
@@ -245,6 +374,44 @@ mod tests {
             }
         }
         assert!(too_many.is_empty(), "too many errors in {too_many:?}");
+    }
+
+    /// Cancelling stops the real model mid-way. Same setup as above; best
+    /// with a slow case (a large model on the CPU build).
+    #[test]
+    #[ignore]
+    fn real_speech_transcription_stops_when_cancelled() {
+        use super::super::model;
+        use std::sync::Arc;
+        let dir = std::env::var("COUCOU_SPEECH_DIR").expect("COUCOU_SPEECH_DIR");
+        let id = std::env::var("COUCOU_MODEL").unwrap_or_else(|_| model::DEFAULT_MODEL.into());
+        let chosen = model::find(&id).expect("unknown COUCOU_MODEL");
+        let clip = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|x| x == "wav"))
+            .expect("a clip");
+        let (samples, rate) = read_wav(&std::fs::read(clip).unwrap());
+        let local = Local::default();
+        let started = std::time::Instant::now();
+        local.transcribe_with(&model::path(chosen), &samples, rate, &AtomicBool::new(false)).unwrap();
+        let full = started.elapsed();
+
+        let abort = Arc::new(AtomicBool::new(false));
+        let flag = abort.clone();
+        let after = full / 5;
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            flag.store(true, Ordering::SeqCst);
+        });
+        let started = std::time::Instant::now();
+        let result = local.transcribe_with(&model::path(chosen), &samples, rate, &abort);
+        let cancelled = started.elapsed();
+        println!("{}: full {:.2} s; cancelled at {:.2} s, returned at {:.2} s ({result:?})", chosen.label, full.as_secs_f64(), after.as_secs_f64(), cancelled.as_secs_f64());
+        assert!(result.is_err(), "an aborted transcription gives no text");
+        // whisper.cpp checks between passes, not inside one: the encoder
+        // pass under way finishes first (most of the time on the CPU).
+        assert!(cancelled < full, "it stopped before the end");
     }
 
     #[test]

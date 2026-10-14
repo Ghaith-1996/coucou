@@ -18,13 +18,15 @@
 // until then the simulated transcriber stands in, labelled as such.
 
 pub mod model;
+#[cfg(windows)]
+pub mod session;
 pub mod simulated;
 #[cfg(windows)]
 pub mod wasapi;
 #[cfg(windows)]
 pub mod whisper;
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -45,6 +47,9 @@ pub const PREVIEW_TTL: Duration = Duration::from_secs(120);
 pub const SILENCE_RMS: f32 = 0.004;
 /// How long an action stays valid once the user pressed its button.
 pub const DRAFT_TTL_MS: u64 = 30_000;
+/// How long an action the card offers for confirmation stays valid: as long
+/// as the transcript it came from.
+pub const PROPOSAL_TTL_MS: u64 = 120_000;
 
 /// The app's transcriber: whisper.cpp with the picked model once it is
 /// installed, the simulated one until then (and again if it is deleted).
@@ -63,16 +68,16 @@ impl Default for Auto {
 }
 
 impl Transcriber for Auto {
-    fn transcribe(&self, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
+    fn transcribe(&self, samples: &[f32], sample_rate: u32, abort: &AtomicBool) -> Result<Transcript, VoiceError> {
         #[cfg(windows)]
         {
             if let Some(chosen) = model::active() {
-                return self.local.transcribe_with(&model::path(chosen), samples, sample_rate);
+                return self.local.transcribe_with(&model::path(chosen), samples, sample_rate, abort);
             }
             // Deleted while loaded: let the memory go too.
             self.local.unload();
         }
-        simulated::Transcriber.transcribe(samples, sample_rate)
+        simulated::Transcriber.transcribe(samples, sample_rate, abort)
     }
 }
 
@@ -101,7 +106,9 @@ pub struct Transcript {
 }
 
 pub trait Transcriber: Send + Sync + 'static {
-    fn transcribe(&self, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError>;
+    /// Should give up soon after `abort` turns true (the capture was
+    /// cancelled while it was being transcribed): its result is not wanted.
+    fn transcribe(&self, samples: &[f32], sample_rate: u32, abort: &AtomicBool) -> Result<Transcript, VoiceError>;
 }
 
 const RUN: u8 = 0;
@@ -111,7 +118,7 @@ const CANCEL: u8 = 2;
 enum Phase {
     Idle,
     Listening { id: String, signal: Arc<AtomicU8> },
-    Processing { id: String },
+    Processing { id: String, abort: Arc<AtomicBool> },
     Preview { id: String, transcript: Transcript, since: Instant },
     Error { id: String },
 }
@@ -120,7 +127,7 @@ impl Phase {
     fn id(&self) -> Option<&str> {
         match self {
             Phase::Idle => None,
-            Phase::Listening { id, .. } | Phase::Processing { id } | Phase::Preview { id, .. } | Phase::Error { id } => {
+            Phase::Listening { id, .. } | Phase::Processing { id, .. } | Phase::Preview { id, .. } | Phase::Error { id } => {
                 Some(id)
             }
         }
@@ -135,11 +142,20 @@ pub struct ChatDraft {
     pub text: String,
 }
 
+/// An action the card shows for the user to confirm (`launch-app`), and the
+/// capture it came from. At most one; Rust keeps it, the page only holds its
+/// grant.
+struct Proposal {
+    capture: String,
+    action: AssistantAction,
+}
+
 struct Inner {
     sink: Box<dyn Sink>,
     mic: Box<dyn Microphone>,
     stt: Box<dyn Transcriber>,
     phase: Mutex<Phase>,
+    proposal: Mutex<Option<Proposal>>,
     log: fn(String),
 }
 
@@ -154,6 +170,7 @@ impl Voice {
             mic: Box::new(mic),
             stt: Box::new(stt),
             phase: Mutex::new(Phase::Idle),
+            proposal: Mutex::new(None),
             log,
         }))
     }
@@ -164,13 +181,16 @@ impl Voice {
         let mut phase = self.0.phase.lock().unwrap();
         match &*phase {
             Phase::Listening { id, signal } => {
-                signal.store(STOP, Ordering::SeqCst);
+                // A pending cancellation is terminal, even before the capture
+                // thread has closed the microphone and left Listening.
+                let _ = signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst);
                 Some(id.clone())
             }
             // Busy turning the last one into text: a press waits for it.
             Phase::Processing { .. } => None,
             // Idle, or a transcript / error on screen: a fresh capture replaces it.
             _ => {
+                *self.0.proposal.lock().unwrap() = None;
                 let id = policy::new_id("cap");
                 let signal = Arc::new(AtomicU8::new(RUN));
                 *phase = Phase::Listening { id: id.clone(), signal: signal.clone() };
@@ -195,7 +215,7 @@ impl Voice {
     pub fn stop(&self, capture_id: &str) {
         if let Phase::Listening { id, signal } = &*self.0.phase.lock().unwrap() {
             if id == capture_id {
-                signal.store(STOP, Ordering::SeqCst);
+                let _ = signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst);
             }
         }
     }
@@ -208,10 +228,15 @@ impl Voice {
         if phase.id() != Some(capture_id) {
             return;
         }
+        *self.0.proposal.lock().unwrap() = None;
         if let Phase::Listening { signal, .. } = &*phase {
             // The capture thread closes the microphone and says idle.
             signal.store(CANCEL, Ordering::SeqCst);
             return;
+        }
+        if let Phase::Processing { abort, .. } = &*phase {
+            // The transcription stops too, instead of finishing for nothing.
+            abort.store(true, Ordering::SeqCst);
         }
         *phase = Phase::Idle;
         drop(phase);
@@ -240,6 +265,80 @@ impl Voice {
         Ok(self.decided(capture_id, kind, args, "pill set")?.id)
     }
 
+    /// An action that needs the user's confirmation (`launch-app`, with the
+    /// app the card names), for this capture's transcript. The policy must
+    /// say `ask`; Rust keeps the action and returns its grant, which the
+    /// card hands back on the user's click (`confirm`). A newer proposal
+    /// replaces it. The transcript stays on the card meanwhile.
+    pub fn propose(&self, capture_id: &str, kind: ActionKind, args: serde_json::Value) -> Result<policy::Grant, ErrorCode> {
+        if kind != ActionKind::LaunchApp {
+            return Err(ErrorCode::Unavailable);
+        }
+        let phase = self.0.phase.lock().unwrap();
+        match &*phase {
+            Phase::Preview { id, since, .. } if id == capture_id && since.elapsed() <= PREVIEW_TTL => {}
+            _ => return Err(ErrorCode::Expired),
+        }
+        let now = policy::now_ms();
+        let action = AssistantAction {
+            v: CONTRACT_VERSION,
+            domain: Domain::DesktopAssistant,
+            id: policy::new_id("act"),
+            kind,
+            args,
+            intent_id: capture_id.to_string(),
+            expires_at_ms: now + PROPOSAL_TTL_MS,
+        };
+        let Some(grant) = policy::grant_for(&action, now) else {
+            let code = policy::decide(&action, now).error.unwrap_or(ErrorCode::InvalidArgs);
+            drop(phase);
+            (self.0.log)(format!("voice: launch app refused ({})", code_name(code)));
+            return Err(code);
+        };
+        // Publish before releasing capture ownership, so a newer capture
+        // cannot be replaced by this request after its preview check.
+        *self.0.proposal.lock().unwrap() = Some(Proposal { capture: capture_id.to_string(), action });
+        drop(phase);
+        (self.0.log)(format!("voice: launch app {} proposed", grant.action_id));
+        Ok(grant)
+    }
+
+    /// The user's click on a proposal: its grant must be the one Rust gave
+    /// for the action it kept, for this capture, still in time. Everything
+    /// is decided again (policy::check_grant). This capture's proposal and
+    /// transcript are used once, whatever the answer; a stale capture cannot
+    /// consume a newer proposal. Returns the action id and its checked
+    /// arguments, for the caller to run.
+    pub fn confirm(&self, capture_id: &str, grant: &policy::Grant) -> Result<(String, ValidArgs), ErrorCode> {
+        let proposal = {
+            let mut proposal = self.0.proposal.lock().unwrap();
+            // A delayed click from a replaced card must leave the current
+            // card's proposal intact. Check and take under the same lock.
+            if proposal.as_ref().is_some_and(|p| p.capture != capture_id) {
+                return Err(ErrorCode::GrantMismatch);
+            }
+            proposal.take()
+        };
+        let result = match proposal {
+            Some(p) if p.capture == capture_id && p.action.id == grant.action_id => {
+                policy::check_grant(grant, &p.action, policy::now_ms()).map(|args| (p.action.id, args))
+            }
+            Some(_) => Err(ErrorCode::GrantMismatch),
+            None => Err(ErrorCode::Expired),
+        };
+        let preview = self.take_preview(capture_id);
+        match (result, preview) {
+            (Ok(done), Ok(_)) => {
+                (self.0.log)(format!("voice: {} confirmed", done.0));
+                Ok(done)
+            }
+            (Err(code), _) | (_, Err(code)) => {
+                (self.0.log)(format!("voice: confirmation refused ({})", code_name(code)));
+                Err(code)
+            }
+        }
+    }
+
     /// The transcript waiting on the island for this capture, taken off it:
     /// the card goes back to idle whatever comes next.
     fn take_preview(&self, capture_id: &str) -> Result<Transcript, ErrorCode> {
@@ -249,6 +348,14 @@ impl Voice {
         };
         if id != capture_id {
             return Err(ErrorCode::Expired);
+        }
+        // Whatever this transcript was offering goes with it. Keep capture
+        // ownership until both are consumed, in phase → proposal lock order.
+        {
+            let mut proposal = self.0.proposal.lock().unwrap();
+            if proposal.as_ref().is_some_and(|p| p.capture == capture_id) {
+                *proposal = None;
+            }
         }
         let stale = since.elapsed() > PREVIEW_TTL;
         let transcript = transcript.clone();
@@ -298,11 +405,30 @@ impl Voice {
         (self.0.log)(format!("assistant action {} {outcome}", receipt.action_id));
     }
 
-    /// The app is quitting: the microphone closes now.
+    /// The app is quitting: the microphone closes now, and a transcription
+    /// under way stops.
     pub fn shutdown(&self) {
-        if let Phase::Listening { signal, .. } = &*self.0.phase.lock().unwrap() {
-            signal.store(CANCEL, Ordering::SeqCst);
+        self.interrupt("app quitting");
+    }
+
+    /// The screen locked, the session went away or the PC is going to sleep
+    /// (session.rs): a capture listening is cancelled (its audio dropped) and
+    /// a transcription under way stops, as with Cancel. A transcript already
+    /// waiting stays until it expires. `why` names the event in the log.
+    pub fn interrupt(&self, why: &str) {
+        let mut phase = self.0.phase.lock().unwrap();
+        match &*phase {
+            Phase::Listening { signal, .. } => signal.store(CANCEL, Ordering::SeqCst),
+            Phase::Processing { id, abort } => {
+                abort.store(true, Ordering::SeqCst);
+                let id = id.clone();
+                *phase = Phase::Idle;
+                drop(phase);
+                self.emit(VoiceEvent::new(&id, VoiceState::Idle));
+            }
+            _ => return,
         }
+        (self.0.log)(format!("voice: interrupted ({why})"));
     }
 
     fn emit(&self, event: VoiceEvent) {
@@ -336,6 +462,7 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>) {
         }
     };
 
+    let abort = Arc::new(AtomicBool::new(false));
     let mut capture = match inner.mic.open() {
         Ok(c) => c,
         Err(error) => return fail(error),
@@ -392,7 +519,7 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>) {
             emit(VoiceEvent::new(&id, VoiceState::Idle));
             return;
         }
-        *phase = Phase::Processing { id: id.clone() };
+        *phase = Phase::Processing { id: id.clone(), abort: abort.clone() };
     }
     (inner.log)(format!("voice: captured {elapsed_ms} ms"));
     emit(VoiceEvent { elapsed_ms: Some(elapsed_ms), ..VoiceEvent::new(&id, VoiceState::Processing) });
@@ -402,7 +529,13 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>) {
     {
         Err(VoiceError::Silence)
     } else {
-        inner.stt.transcribe(&samples, rate)
+        let started = Instant::now();
+        let result = inner.stt.transcribe(&samples, rate, &abort);
+        // How long, never what: for the baseline (docs/hybrid/P1-BASELINE.md).
+        if result.is_ok() {
+            (inner.log)(format!("voice: transcribed in {} ms", started.elapsed().as_millis()));
+        }
+        result
     };
     // The audio goes as soon as it has been heard.
     drop(samples);

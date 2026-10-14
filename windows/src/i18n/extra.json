@@ -4207,6 +4207,28 @@
    "pt-BR": "Muito mais preciso, mas bem mais lento sem placa de vídeo.",
    "ru": "Гораздо точнее, но без видеокарты намного медленнее.",
    "id": "Jauh lebih akurat, tapi jauh lebih lambat tanpa kartu grafis."
+  },
+  "Looking for {name}…": {
+   "zh-Hans": "正在查找 {name}…",
+   "hi": "{name} ढूँढ रहे हैं…",
+   "es": "Buscando {name}…",
+   "ar": "جارٍ البحث عن {name}…",
+   "fr": "Recherche de {name}…",
+   "bn": "{name} খোঁজা হচ্ছে…",
+   "pt-BR": "Procurando {name}…",
+   "ru": "Ищу {name}…",
+   "id": "Mencari {name}…"
+  },
+  "No app called “{name}” in the Start menu.": {
+   "zh-Hans": "开始菜单中没有名为“{name}”的应用。",
+   "hi": "स्टार्ट मेनू में “{name}” नाम का कोई ऐप नहीं है।",
+   "es": "No hay ninguna app llamada «{name}» en el menú Inicio.",
+   "ar": "لا يوجد تطبيق باسم «{name}» في قائمة ابدأ.",
+   "fr": "Aucune app nommée « {name} » dans le menu Démarrer.",
+   "bn": "স্টার্ট মেনুতে “{name}” নামে কোনো অ্যাপ নেই।",
+   "pt-BR": "Nenhum app chamado “{name}” no menu Iniciar.",
+   "ru": "В меню «Пуск» нет приложения «{name}».",
+   "id": "Tidak ada aplikasi bernama “{name}” di menu Start."
   }
  }
 }

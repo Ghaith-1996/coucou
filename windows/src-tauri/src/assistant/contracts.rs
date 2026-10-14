@@ -42,7 +42,8 @@ pub enum ActionKind {
     PillSet,
     /// Type text into another app's focused field. Reserved for P2.
     InsertText,
-    /// Start an app from a list the user controls. Reserved for P2.
+    /// Start an app from the Start menu's own list (apps.rs), after the user
+    /// confirmed exactly that app.
     LaunchApp,
     /// Ask about a screen region the user picked. Reserved for P2.
     AskRegion,
@@ -60,7 +61,7 @@ impl ActionKind {
     /// Implemented in this version. A reserved kind is always refused, and its
     /// arguments may still change before it becomes available.
     pub fn available(self) -> bool {
-        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet)
+        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::LaunchApp)
     }
 
     /// Running it twice leaves the same result as running it once. Only
@@ -112,7 +113,7 @@ pub struct InsertTextArgs {
     pub target_pid: u32,
 }
 
-/// Reserved (P2). An id from the user's own list, never a path or a command.
+/// An id from the Start menu list (apps.rs), never a path or a command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LaunchAppArgs {

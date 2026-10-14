@@ -64,6 +64,7 @@ cd windows && npx tsc --noEmit && npm test               # JS tests
 | P0 | WebView2 args review, navigation guard, permission safety tests, closed action registry + policy + grants + receipts, voice capture (WASAPI) + preview + cancel | `P0-*.md` |
 | P1 | whisper.cpp local speech, model choice (base / large-v3-turbo q5_0 / large-v3 q5_0), opt-in Vulkan GPU (~0.4 s per clip on an RX 7800 XT), Mac pill commands port, cancel aborts Whisper, voice stops on lock/sleep, first baseline | `P1-*.md` |
 | UI | Island draggable anywhere (docks back near the top centre), Hide button (an agent's permission request brings it back) | `ISLAND-MOVE-HIDE.md` |
+| UI | Microphone button beside the chat Send arrow; the shortcut is optional, with the same voice preview and confirmation flow | `CHAT-VOICE-BUTTON.md` |
 | P2 (1/3) | "open <app>" by voice: Windows' All apps list, a confirmation bound by a grant, success only with a window as evidence | `P2-LAUNCH-APP.md` |
 
 ## Next (in order)

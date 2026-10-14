@@ -74,6 +74,7 @@ You can also [build it yourself](#build-it-yourself).
 | In the open island: `Ctrl+↓` `Ctrl+↑`, `Ctrl+O` | Walk the open GitHub list, open the highlighted row |
 | In the open island: `Ctrl+E` | Opens the latest edit's diff, or closes the diff |
 | In the open island: `Ctrl+Enter`, `Ctrl+K` | Send, start a new chat |
+| Click the microphone beside the chat's send arrow (Windows) | Starts voice capture without enabling a shortcut. Stop to preview the transcript, then use it in chat, apply a pill command, confirm an app launch, or cancel. Chat drafts are never sent automatically |
 | In the open island: `Ctrl+,`, `Ctrl+P` | Settings, keep the island open |
 
 ### Keyboard shortcuts

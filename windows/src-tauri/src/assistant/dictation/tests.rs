@@ -503,6 +503,154 @@ fn an_unreadable_final_value_is_a_definitive_no_write_refusal() {
     ), Err(Refusal::Gone.into()));
 }
 
+#[test]
+fn an_abandoned_write_skips_readback_and_focus_but_remains_terminal() {
+    for stop in ["cancel", "expiry", "closed-caller"] {
+        let permit = permit();
+        let now = if stop == "expiry" { permit.expires } else { Instant::now() };
+        let (reply, mut answer) = tokio::sync::oneshot::channel::<()>();
+        if stop == "cancel" { permit.cancelled.store(true, Ordering::SeqCst); }
+        if stop == "closed-caller" { answer.close(); }
+        let mut bound = Some(field());
+        let result = write_bound(&mut bound, |_| true, |_| Ok(finish_write(
+            77,
+            || panic!("an abandoned SetValue needs no more blocking UIA reads"),
+            || {
+                permit.check_at(now)?;
+                if reply.is_closed() { return Err(Refusal::Gone); }
+                Ok(())
+            },
+            || panic!("an abandoned write cannot restore focus"),
+            || panic!("an abandoned write cannot restore focus"),
+        )));
+        assert_eq!(result, Ok(Written::Unconfirmed), "{stop} cannot become a pre-write refusal");
+        assert!(bound.is_none());
+    }
+}
+
+#[test]
+fn abandonment_during_readback_or_window_checks_prevents_focus_without_changing_the_write() {
+    use std::cell::{Cell, RefCell};
+
+    for stop in ["cancel", "expiry", "closed-caller"] {
+        for stage in ["readback", "window-check"] {
+            for verified in [false, true] {
+                let permit = permit();
+                let now = Cell::new(permit.expires - Duration::from_secs(1));
+                let (reply, answer) = tokio::sync::oneshot::channel::<()>();
+                let answer = RefCell::new(answer);
+                let interrupt = || match stop {
+                    "cancel" => permit.cancelled.store(true, Ordering::SeqCst),
+                    "expiry" => now.set(permit.expires),
+                    "closed-caller" => answer.borrow_mut().close(),
+                    _ => unreachable!(),
+                };
+                let mut bound = Some(field());
+                let result = write_bound(&mut bound, |_| true, |_| Ok(finish_write(
+                    77,
+                    || { if stage == "readback" { interrupt(); } verified },
+                    || {
+                        permit.check_at(now.get())?;
+                        if reply.is_closed() { return Err(Refusal::Gone); }
+                        Ok(())
+                    },
+                    || {
+                        assert_eq!(stage, "window-check", "no window work after abandoned readback");
+                        interrupt();
+                        (Some(77), Foreground::Coucou)
+                    },
+                    || panic!("{stop} during {stage} must prevent the focus effect"),
+                )));
+                assert_eq!(result, Ok(if verified { Written::Verified } else { Written::Unconfirmed }));
+                assert!(bound.is_none(), "a completed SetValue must never be retryable");
+            }
+        }
+    }
+}
+
+#[test]
+fn focus_returns_only_from_coucou_to_the_still_owned_window_after_readback() {
+    use std::cell::Cell;
+
+    for (pid, foreground, should_restore) in [
+        (None, Foreground::Coucou, false), // Target window was destroyed.
+        (Some(78), Foreground::Coucou, false), // Handle reused by another process.
+        (Some(77), Foreground::Other, false), // User switched apps/windows.
+        (Some(77), Foreground::Target, false), // No handoff is needed.
+        (Some(77), Foreground::Coucou, true),
+    ] {
+        for verified in [false, true] {
+            for focus_succeeded in [false, true] {
+                let window = Cell::new((Some(77), Foreground::Coucou));
+                let restores = Cell::new(0);
+                let mut bound = Some(field());
+                let result = write_bound(&mut bound, |_| true, |_| Ok(finish_write(
+                    77,
+                    || { window.set((pid, foreground)); verified },
+                    || Ok(()),
+                    || window.get(),
+                    || { restores.set(restores.get() + 1); focus_succeeded },
+                )));
+                assert_eq!(restores.get(), usize::from(should_restore));
+                assert_eq!(result, Ok(if verified { Written::Verified } else { Written::Unconfirmed }),
+                    "an optional focus handoff cannot change the attempted write outcome");
+                assert!(bound.is_none());
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_caller_timeout_during_readback_never_restores_focus_when_the_worker_resumes() {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let (send, jobs) = mpsc::channel();
+    let dictation = Dictation { jobs: Mutex::new(send) };
+    let args = InsertTextArgs { text: "world".into(), target_window: 4242, target_pid: 77 };
+    let mut writing = Box::pin(dictation.write("cap-current", args, permit()));
+    std::future::poll_fn(|cx| {
+        assert!(writing.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    }).await;
+    let Job::Write(_, _, permit, reply) = jobs.try_recv().unwrap() else { panic!("expected a write job") };
+    let (started, readback_started) = tokio::sync::oneshot::channel();
+    let (resume, resumed) = mpsc::channel();
+    let (finished, worker_finished) = tokio::sync::oneshot::channel();
+    let worker = std::thread::spawn(move || {
+        let mut bound = Some(field());
+        let outcome = write_bound(&mut bound, |_| true, |field| {
+            *field.value.borrow_mut() = "Hello world".into(); // SetValue already applied.
+            Ok(finish_write(
+                77,
+                || {
+                    started.send(()).unwrap();
+                    resumed.recv().unwrap(); // A blocked CurrentValue, released after the caller times out.
+                    verified(&field.value.borrow(), "Hello world")
+                },
+                || {
+                    permit.check()?;
+                    if reply.is_closed() { return Err(Refusal::Gone); }
+                    Ok(())
+                },
+                || panic!("a timed-out caller no longer owns any focus handoff"),
+                || panic!("the late worker must not steal focus"),
+            ))
+        });
+        assert_eq!(outcome, Ok(Written::Verified));
+        assert!(bound.is_none());
+        assert!(reply.send(outcome).is_err(), "late evidence cannot replace the caller's unknown result");
+        finished.send(()).unwrap();
+    });
+    readback_started.await.unwrap();
+    tokio::time::advance(REPLY_TIMEOUT).await;
+    assert_eq!(writing.await, Ok(Written::Unconfirmed));
+    resume.send(()).unwrap();
+    worker_finished.await.unwrap();
+    worker.join().unwrap();
+    assert!(jobs.try_recv().is_err(), "a timed-out write cannot be retried automatically");
+}
+
 #[tokio::test]
 async fn an_offer_queues_the_exact_native_deadline_without_restarting_it() {
     use std::future::Future;

@@ -306,6 +306,29 @@ fn write_revalidated<P>(
     Ok(write(pattern))
 }
 
+/// SetValue already succeeded: losing the caller/permit can only skip the
+/// remaining work, never turn this attempt into a retryable refusal. Read-back
+/// may block past the reply timeout, so refresh ownership and cheap native
+/// window/process/foreground state before the optional focus handoff. No UIA
+/// calls belong between these final checks and restoring focus.
+fn finish_write(
+    target_pid: u32,
+    read_back: impl FnOnce() -> bool,
+    permitted: impl Fn() -> Result<(), Refusal>,
+    window_state: impl FnOnce() -> (Option<u32>, Foreground),
+    restore_focus: impl FnOnce() -> bool,
+) -> Written {
+    if permitted().is_err() { return Written::Unconfirmed; }
+    let written = if read_back() { Written::Verified } else { Written::Unconfirmed };
+    if permitted().is_ok() {
+        let (current_pid, foreground) = window_state();
+        if current_pid == Some(target_pid) && foreground == Foreground::Coucou && permitted().is_ok() {
+            let _ = restore_focus();
+        }
+    }
+    written
+}
+
 /// Ownership is checked before consuming anything. Only a definitive
 /// pre-write refusal retains the target; every attempted write is terminal.
 fn write_bound<T>(

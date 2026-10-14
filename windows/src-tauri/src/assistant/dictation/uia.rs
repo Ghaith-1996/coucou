@@ -156,7 +156,15 @@ fn facts(field: &Field) -> (Facts, Option<IUIAutomationValuePattern>) {
     let password = unsafe { el.CurrentIsPassword() }.map_or(true, |b| b.as_bool());
     // Query window/focus after the blocking provider reads, so their latency
     // cannot leave us relying on a foreground snapshot from before them.
-    let window_alive = unsafe { IsWindow(Some(field.window)) }.as_bool() && window_pid(field.window) == field.pid;
+    let (target_pid, foreground) = window_state(field);
+    let window_alive = target_pid == Some(field.pid);
+    (Facts { window_alive, foreground, element_alive, password, enabled, value_read_only }, pattern)
+}
+
+/// Native checks only: focus restoration must not wait on the UIA provider.
+/// None means the target window is gone; a different PID means it was reused.
+fn window_state(field: &Field) -> (Option<u32>, Foreground) {
+    let target_pid = unsafe { IsWindow(Some(field.window)) }.as_bool().then(|| window_pid(field.window));
     let foreground = unsafe { GetForegroundWindow() };
     let foreground = if foreground == field.window {
         Foreground::Target
@@ -165,7 +173,7 @@ fn facts(field: &Field) -> (Facts, Option<IUIAutomationValuePattern>) {
     } else {
         Foreground::Other
     };
-    (Facts { window_alive, foreground, element_alive, password, enabled, value_read_only }, pattern)
+    (target_pid, foreground)
 }
 
 fn check(field: &Field) -> Result<IUIAutomationValuePattern, Rejection> {
@@ -178,8 +186,12 @@ fn check(field: &Field) -> Result<IUIAutomationValuePattern, Rejection> {
 }
 
 fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<Written, Rejection>>) -> Result<Written, Rejection> {
-    permit.check()?;
-    if reply.is_closed() { return Err(Refusal::Gone.into()); }
+    let permitted = || {
+        permit.check()?;
+        if reply.is_closed() { return Err(Refusal::Gone); }
+        Ok(())
+    };
+    permitted()?;
     let pattern = check(field)?;
     let current = unsafe { pattern.CurrentValue() }.map_err(|_| Refusal::Gone)?.to_string();
     let caret = caret(&field.element);
@@ -189,20 +201,18 @@ fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<W
         &current,
         || check(field),
         |pattern| unsafe { pattern.CurrentValue() }.map(|value| value.to_string()).map_err(|_| Refusal::Gone.into()),
-        || {
-            permit.check()?;
-            if reply.is_closed() { return Err(Refusal::Gone); }
-            Ok(())
-        },
+        &permitted,
         |pattern| {
             if unsafe { pattern.SetValue(&next_value) }.is_err() {
                 return Written::Failed;
             }
-            let read_back = unsafe { pattern.CurrentValue() }.is_ok_and(|value| verified(&value.to_string(), &next));
-            // Give the keyboard back to the app the words went to. Coucou has
-            // it (the island's card), so Windows lets it pass it on.
-            let _ = unsafe { SetForegroundWindow(field.window) };
-            if read_back { Written::Verified } else { Written::Unconfirmed }
+            finish_write(
+                field.pid,
+                || unsafe { pattern.CurrentValue() }.is_ok_and(|value| verified(&value.to_string(), &next)),
+                &permitted,
+                || window_state(field),
+                || unsafe { SetForegroundWindow(field.window) }.as_bool(),
+            )
         },
     )
 }

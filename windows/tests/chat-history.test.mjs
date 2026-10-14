@@ -949,6 +949,251 @@ test("a pending save failure still warns if Regenerate fails in the same convers
 });
 
 
+// The file chip can outlive native attachment content after a provider switch.
+// Keep the policy visible without guessing whether an attempted turn committed.
+function droppedAttachment(name = "picture.png") {
+  State.droppedFile = { name, path: `/inbox/${name}` };
+  State.promptContext = { kind: "file", ...State.droppedFile };
+  view.sync();
+}
+
+function attachmentWarning() {
+  const warning = $(".chat-attachment");
+  assert.ok(warning, "file context must explain provider-switch attachment loss");
+  assert.equal(warning.parentElement, $(".chat-log"), "the policy scrolls with messages instead of clipping the composer");
+  assert.equal(view.el.find(".chat-attachment").length, 1, "redraws and streams cannot duplicate the policy");
+  assert.equal(warning.getAttribute("role"), "status");
+  assert.equal(warning.querySelector(".chat-notice-title"), null, "the policy stays compact in the fixed-height chat");
+  const body = warning.querySelector(".chat-notice-body").textContent;
+  assert.match(body, /Sending with another provider can discard attachments/);
+  assert.match(body, /even on failure or Stop/);
+  assert.match(body, /Switching back won't restore them/);
+  assert.match(body, /Drop the file again for a new chat/);
+  return warning;
+}
+
+test("a completed file turn explains provider changes before the next request, including after rebuilding the view", async () => {
+  assert.equal($(".chat-attachment"), null);
+  droppedAttachment();
+  assert.equal($(".chat-attachment"), null, "a fresh file has no committed context to lose yet");
+  assert.equal(sent("chat_send").length, 0);
+  assert.equal($(".chat-restored"), null, "a fresh file is not falsely described as already unavailable");
+  await send("Describe this file");
+  attachmentWarning();
+  view = buildPrompt(() => {});
+  await flush();
+  view.sync();
+  attachmentWarning();
+  State.settings = { ...State.settings, chatProvider: "chatgpt" };
+  view.sync();
+  attachmentWarning();
+});
+
+for (const outcome of ["failure", "Stop"]) {
+  test(`a first file turn ending in ${outcome} does not claim committed attachment context`, async () => {
+    droppedAttachment();
+    if (outcome === "failure") answers.chat_send = () => Promise.reject(new Error("Provider unavailable"));
+    else {
+      let reject;
+      answers.chat_send = () => new Promise((_, no) => { reject = no; });
+      answers.chat_stop = () => reject(new Error("Stopped."));
+    }
+    await send();
+    if (outcome === "Stop") {
+      emit("chat-delta", "Partial first answer");
+      $(".send-btn").fire("click");
+      await flush();
+    }
+    State.view = "prompt";
+    view.sync();
+    assert.equal($(".chat-attachment"), null);
+    delete answers.chat_send;
+    await send("Retry with the file");
+    attachmentWarning();
+  });
+}
+
+for (const outcome of ["reply", "failure", "Stop"]) {
+  test(`the attachment policy survives a provider switch ending in ${outcome} and switching back`, async () => {
+    State.settings = { ...State.settings, chatProvider: "chatgpt" };
+    droppedAttachment();
+    await send("Describe this file");
+    attachmentWarning();
+    State.settings = { ...State.settings, chatProvider: "openai" };
+    view.sync();
+    attachmentWarning();
+    if (outcome === "failure") answers.chat_send = () => Promise.reject(new Error("Provider unavailable"));
+    if (outcome === "Stop") {
+      let reject;
+      answers.chat_send = () => new Promise((_, no) => { reject = no; });
+      answers.chat_stop = () => reject(new Error("Stopped."));
+    }
+    await send("What else is in the file?");
+    attachmentWarning();
+    if (outcome === "Stop") {
+      emit("chat-delta", "A partial answer");
+      assert.equal($(".chat-log").children.at(-1), attachmentWarning(), "the policy remains after the live answer");
+      view.sync();
+      emit("chat-delta", "A longer partial answer");
+      assert.equal($(".chat-log").children.at(-1), attachmentWarning());
+      assert.match($(".chat-log").textContent, /A longer partial answer/);
+      $(".send-btn").fire("click");
+      await flush();
+      assert.equal(State.chatHistory.at(-1).stopped, true);
+    }
+    State.view = "prompt";
+    State.settings = { ...State.settings, chatProvider: "chatgpt" };
+    view.sync();
+    attachmentWarning();
+    assert.equal(State.droppedFile.name, "picture.png", "the policy does not change file/retry semantics");
+    delete answers.chat_send;
+    await send("Try again with the original provider");
+    attachmentWarning();
+  });
+}
+
+for (const outcome of ["reply", "failure", "Stop", "undo failure"]) {
+  test(`the attachment policy follows committed context after first-turn Regenerate ending in ${outcome}`, async () => {
+    droppedAttachment("notes.txt");
+    await send("Summarize the file");
+    State.settings = { ...State.settings, chatProvider: "chatgpt" };
+    if (outcome === "failure") answers.chat_send = () => Promise.reject(new Error("Provider unavailable"));
+    if (outcome === "undo failure") answers.chat_undo_last = () => Promise.reject(new Error("Undo unavailable"));
+    if (outcome === "Stop") {
+      let reject;
+      answers.chat_send = () => new Promise((_, no) => { reject = no; });
+      answers.chat_stop = () => reject(new Error("Stopped."));
+    }
+    view.el.find(".md-copy").find((button) => button.getAttribute("aria-label") === "Regenerate").fire("click");
+    await flush();
+    if (outcome === "Stop") {
+      emit("chat-delta", "A partial regenerated answer");
+      $(".send-btn").fire("click");
+      await flush();
+    }
+    State.view = "prompt";
+    view.sync();
+    if (outcome === "failure" || outcome === "Stop") assert.equal($(".chat-attachment"), null, "undo removed the only committed turn, so the file can attach again");
+    else attachmentWarning();
+    assert.equal(State.droppedFile.name, "notes.txt");
+  });
+}
+
+test("a later failed Regenerate retains the attachment policy for earlier completed turns", async () => {
+  droppedAttachment();
+  await send("Describe this file");
+  await send("What else?");
+  answers.chat_send = () => Promise.reject(new Error("Provider unavailable"));
+  view.el.find(".md-copy").find((button) => button.getAttribute("aria-label") === "Regenerate").fire("click");
+  await flush();
+  State.view = "prompt";
+  view.sync();
+  attachmentWarning();
+});
+
+test("closing the provider picker keeps one attachment policy before the next send", async () => {
+  droppedAttachment();
+  await send();
+  $(".model-btn").fire("click");
+  await flush();
+  view.el.find(".picker-chip").find((chip) => chip.textContent === "OpenAI").fire("click");
+  await flush();
+  $(".model-btn").fire("click");
+  view.sync();
+  assert.equal(State.settings.chatProvider, "openai");
+  assert.equal($(".chat-body").classList.contains("picking"), false);
+  attachmentWarning();
+});
+
+test("the attachment policy relabels in every supported language without rebuilding its state", async () => {
+  const { LANGUAGE_CODES, setLanguage, t } = await import("../src/i18n/i18n.ts");
+  droppedAttachment();
+  await send();
+  const warning = attachmentWarning();
+  const key = warning.querySelector(".chat-notice-body").textContent;
+  try {
+    for (const lang of LANGUAGE_CODES.filter((lang) => lang !== "en")) {
+      setLanguage(lang);
+      view.sync();
+      assert.equal($(".chat-attachment"), warning);
+      assert.equal(warning.querySelector(".chat-notice-body").textContent, t(key));
+      assert.notEqual(t(key), key, `${lang} needs a translated attachment policy`);
+    }
+  } finally {
+    setLanguage("en");
+  }
+});
+
+test("attachment policy and save failures stay visible together", async () => {
+  droppedAttachment();
+  answers.chat_history_save = () => Promise.reject(new Error("Disk full"));
+  await send();
+  attachmentWarning();
+  assert.match($(".chat-notice.warn").textContent, /Disk full/);
+});
+
+test("attachment policy and ChatGPT usage limits stay visible together", async () => {
+  State.settings = { ...State.settings, chatProvider: "chatgpt" };
+  droppedAttachment();
+  await send("Describe this file");
+  answers.chat_send = () => {
+    emit("chatgpt-usage-limit", null);
+    return Promise.reject(new Error("Usage limit"));
+  };
+  await send();
+  attachmentWarning();
+  assert.match($(".chat-notice.warn").textContent, /Usage limit reached/);
+});
+
+test("New chat and cancelling a drop clear the attachment policy without retaining old state", async (t) => {
+  observeView(t);
+  droppedAttachment();
+  await send();
+  newConversation();
+  assert.equal($(".chat-attachment"), null);
+  droppedAttachment("replacement.txt");
+  assert.equal($(".chat-attachment"), null);
+  await send();
+  attachmentWarning();
+  State.droppedFile = null;
+  State.promptContext = null;
+  State.notify();
+  assert.equal($(".chat-attachment"), null);
+});
+
+test("replacing a drop clears the old policy until the new file has a completed turn", async () => {
+  droppedAttachment("old.png");
+  await send();
+  State.chatHistory = [];
+  State.chatId = null;
+  await Bridge.chatReset();
+  droppedAttachment("new.txt");
+  assert.equal($(".chat-attachment"), null);
+  assert.equal(view.el.find(".chat-row").length, 0);
+  assert.match($(".chip").textContent, /new.txt/);
+  assert.doesNotMatch(view.el.textContent, /old.png/);
+  await send();
+  attachmentWarning();
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`history open ${outcome} replaces the attachment policy only if the file is actually cleared`, async () => {
+    droppedAttachment();
+    await send();
+    seed(OTHER, "Saved text");
+    if (outcome === "failure") answers.chat_history_open = () => Promise.reject(new Error("Open failed"));
+    await open(OTHER);
+    if (outcome === "success") {
+      assert.equal($(".chat-attachment"), null);
+      assert.ok($(".chat-restored"), "reopened text-only history keeps its distinct notice");
+      assert.equal(State.droppedFile, null);
+    } else {
+      attachmentWarning();
+      assert.equal(State.droppedFile.name, "picture.png");
+    }
+  });
+}
+
 // Opening restores native context, so delayed IPC must be ordered with every
 // reset as well as fenced from replacing a newer UI transcript.
 function deferredOpen(t, id) {

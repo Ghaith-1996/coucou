@@ -68,6 +68,7 @@ const STRINGS = {
   historyFull: N_("The 400-message storage limit was reached."),
   restoredTitle: N_("Reopened as text only"),
   restoredBody: N_("Original attachments are unavailable in this chat. Drop the file again to start a new chat with it."),
+  attachmentBody: N_("Sending with another provider can discard attachments, even on failure or Stop. Switching back won't restore them. Drop the file again for a new chat."),
   stopped: N_("Stopped"),
   welcomeTitle: N_("You're using your ChatGPT plan"),
   welcomeBody: N_("Eligible AI requests in Coucou use the usage included in your ChatGPT plan or credits balance."),
@@ -1008,7 +1009,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (!live) {
       live = h("div", { class: "reply" });
       log.querySelector(".typing")?.parentElement?.remove();
+      const attachmentNotice = log.querySelector(".chat-attachment");
+      attachmentNotice?.remove();
       log.append(h("div", { class: "chat-row" }, live));
+      if (attachmentNotice) log.append(attachmentNotice);
     }
     renderMarkdown(live, text);
     log.scrollTop = log.scrollHeight;
@@ -1205,12 +1209,21 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
       const thinking = State.stateOverride === "thinking";
       const count = State.chatHistory.length + (thinking ? 0.5 : 0);
-      if (count !== renderedCount && !live) {
+      // begin() can discard native attachments before a request fails or is
+      // stopped. The file chip is a retry candidate, not proof of retention.
+      // Warn after a completed turn; undoing the only one makes its file
+      // eligible to attach again. Keep this policy inside the scrollable log
+      // so it cannot push the composer out of the fixed-height chat card.
+      const attached = !!file && State.chatHistory.some((m) => m.role === "assistant" && !m.stopped);
+      if ((count !== renderedCount || !!log.querySelector(".chat-attachment") !== attached) && !live) {
         renderedCount = count;
         clear(log);
         const messages = State.chatHistory;
         messages.forEach((m, i) => log.append(bubble(m, i === messages.length - 1)));
         if (thinking) log.append(typingDots());
+        if (attached) log.append(h("div", { class: "chat-notice chat-attachment", role: "status" },
+          h("div", { class: "chat-notice-body", text: tl(STRINGS.attachmentBody) }),
+        ));
         log.scrollTop = log.scrollHeight;
       }
 

@@ -427,6 +427,36 @@ fn a_dropped_image_survives_the_next_native_turn_without_rereading_the_file() {
 }
 
 #[test]
+fn an_uncommitted_provider_switch_discards_native_image_and_text_attachments() {
+    // begin() converts history immediately, before any network request. A
+    // failed or stopped switch can therefore lose attachment content without
+    // ever committing an answer; switching back alone cannot recover it.
+    for extension in ["png", "txt"] {
+        let path = std::env::temp_dir().join(format!("coucou-chatgpt-switch-{}.{extension}", random(12)));
+        std::fs::write(&path, b"attachment fixture").unwrap();
+        let context = ChatContext::File { name: format!("file.{extension}"), path: path.to_string_lossy().into_owned() };
+        let chat = Chat::default();
+        let first = chat.begin(PROVIDER);
+        let user = user_content(first.first, Some(&context), "Describe it");
+        std::fs::remove_file(&path).unwrap();
+        let plain = chat::plain_question(first.first, Some(&context), "Describe it");
+        assert_ne!(user, json!(plain), "the native input includes actual file content");
+        finish_turn(&chat, &first, user.clone(), &plain, "An answer".into());
+
+        let same = chat.begin(PROVIDER);
+        assert_eq!(same.history[0]["content"], user, "same-provider retries retain attachment content without rereading the file");
+        let switched = chat.begin("openai");
+        assert_eq!(switched.history[0]["content"], json!(plain));
+        assert!(!switched.first);
+        // Deliberately do not commit: this models failure or Stop after begin.
+        let back = chat.begin(PROVIDER);
+        assert_eq!(back.history[0]["content"], json!(plain));
+        assert_eq!(back.history.len(), 2, "the abandoned switch added no answer");
+        assert!(!back.first, "the original attachment is not reattached on a later turn");
+    }
+}
+
+#[test]
 fn an_uncommitted_attempt_keeps_image_and_text_context_for_the_first_completed_turn() {
     for extension in ["png", "txt"] {
         let path = std::env::temp_dir().join(format!("coucou-chatgpt-retry-{}.{}", random(12), extension));

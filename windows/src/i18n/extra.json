@@ -4912,6 +4912,17 @@
    "ru": "Исходные вложения недоступны в этом чате. Перетащите файл ещё раз, чтобы начать с ним новый чат.",
    "id": "Lampiran asli tidak tersedia dalam percakapan ini. Jatuhkan file lagi untuk memulai percakapan baru dengannya."
   },
+  "Sending with another provider can discard attachments, even on failure or Stop. Switching back won't restore them. Drop the file again for a new chat.": {
+   "zh-Hans": "向其他服务商发送消息可能丢失附件，即使请求失败或被停止。切换回来也无法恢复。请再次拖入文件以开始新对话。",
+   "hi": "दूसरे प्रदाता को संदेश भेजने से अटैचमेंट हट सकते हैं, भले ही अनुरोध विफल हो या रोक दिया जाए। वापस बदलने से वे बहाल नहीं होंगे। नई चैट के लिए फ़ाइल फिर से ड्रॉप करें।",
+   "es": "Enviar con otro proveedor puede descartar los adjuntos, incluso si falla o se detiene. Volver al anterior no los recupera. Suelta el archivo de nuevo para iniciar un nuevo chat.",
+   "ar": "قد يؤدي الإرسال عبر مزوّد آخر إلى فقدان المرفقات، حتى عند الفشل أو الإيقاف. العودة إلى المزوّد السابق لا تستعيدها. أفلت الملف مجددًا لبدء محادثة جديدة.",
+   "fr": "Envoyer avec un autre fournisseur peut faire perdre les pièces jointes, même en cas d’échec ou d’arrêt. Revenir au précédent ne les restaure pas. Redéposez le fichier pour une nouvelle conversation.",
+   "bn": "অন্য প্রদানকারীর মাধ্যমে পাঠালে সংযুক্তি হারিয়ে যেতে পারে, এমনকি ব্যর্থ হলে বা থামানো হলেও। ফিরে গেলে সেগুলি ফিরবে না। নতুন চ্যাটের জন্য ফাইলটি আবার ড্রপ করুন।",
+   "pt-BR": "Enviar com outro provedor pode descartar os anexos, mesmo em caso de falha ou interrupção. Voltar ao anterior não os restaura. Solte o arquivo novamente para iniciar uma nova conversa.",
+   "ru": "Отправка другому провайдеру может привести к потере вложений, даже при ошибке или остановке. Возврат их не восстановит. Перетащите файл ещё раз для нового чата.",
+   "id": "Mengirim dengan penyedia lain dapat menghilangkan lampiran, meski gagal atau dihentikan. Beralih kembali tidak memulihkannya. Jatuhkan file lagi untuk percakapan baru."
+  },
   "Use a different ChatGPT account": {
    "zh-Hans": "使用其他 ChatGPT 账户",
    "hi": "दूसरे ChatGPT खाते का उपयोग करें",

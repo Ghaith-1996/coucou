@@ -82,18 +82,7 @@ pub fn ingest(source: &str) -> Result<DroppedFile, String> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".into());
 
-    let mut dest = dir.join(&name);
-    if dest.exists() {
-        let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let ext = src.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
-        for i in 2..1000 {
-            let candidate = dir.join(format!("{stem} ({i}){ext}"));
-            if !candidate.exists() {
-                dest = candidate;
-                break;
-            }
-        }
-    }
+    let dest = free_path(&dir, &name);
 
     std::fs::copy(src, &dest).map_err(|e| crate::i18n::tf("Cannot copy: {error}", &[("error", &e.to_string())]))?;
     // CopyFileEx carries the source's timestamps across, so a file last edited
@@ -108,6 +97,39 @@ pub fn ingest(source: &str) -> Result<DroppedFile, String> {
         name,
         path: dest.to_string_lossy().to_string(),
         size: meta.len(),
+    })
+}
+
+/// `name` in `dir`, or "stem (2).ext", "stem (3).ext"… when it is taken.
+fn free_path(dir: &Path, name: &str) -> PathBuf {
+    let dest = dir.join(name);
+    if !dest.exists() {
+        return dest;
+    }
+    let path = Path::new(name);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = path.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+    (2..1000)
+        .map(|i| dir.join(format!("{stem} ({i}){ext}")))
+        .find(|candidate| !candidate.exists())
+        .unwrap_or(dest)
+}
+
+/// A file Coucou made itself for the chat (a screen region the user picked),
+/// written into the inbox like a dropped file's copy: the chat may send it,
+/// and the sweep deletes it after a week. Never overwrites.
+pub fn store(name: &str, bytes: &[u8]) -> Result<DroppedFile, String> {
+    let dir = inbox_dir();
+    crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = free_path(&dir, name);
+    let mut file = std::fs::File::options().write(true).create_new(true).open(&dest).map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut file, bytes).map_err(|e| e.to_string())?;
+    sweep(&dir);
+    Ok(DroppedFile {
+        name: dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| name.to_string()),
+        path: dest.to_string_lossy().to_string(),
+        size: bytes.len() as u64,
     })
 }
 

@@ -32,9 +32,10 @@ cd windows && npx tsc --noEmit && npm test               # JS tests
   exe is locked while it runs.
 - GPU builds need the Vulkan SDK (`C:\VulkanSDK`) and a short target folder
   (`D:\cv`). `vs-env.cmd` sets both up.
-- The owner's exe is built from a local branch, `local/all`: the top of the
-  stack merged with `hybrid/island-move-hide`. Expect the trivial
-  `src/i18n/extra.json` conflict described below.
+- The owner's exe is built from a local branch, `local/all`: the open PR
+  branches merged together (today `hybrid/chatgpt-plan` + `hybrid/p2-dictation`).
+  Expect trivial conflicts in `src/i18n/extra.json` and `src/core/bridge.ts`
+  imports: keep both sides.
 - Logs: `%LOCALAPPDATA%\Coucou\coucou.log`. Settings:
   `%APPDATA%\Coucou\settings.json`.
 
@@ -60,22 +61,13 @@ cd windows && npx tsc --noEmit && npm test               # JS tests
 
 ## Next (in order)
 
-1. **P2: global dictation (`insert-text`).** Reserved in the contracts
-   (`InsertTextArgs { text, targetWindow, targetPid }`, policy says `ask`).
-   - Remember the focused window, process and UIA element when the capture
-     starts.
-   - Re-check them before writing. If the focus moved or the field is
-     protected (password), keep the draft and stop.
-   - Insert through UI Automation (ValuePattern), never simulated keystrokes
-     to an unknown target. Never send automatically.
-   - Evidence: the field's value now contains the text.
-2. **P2: ask about a screen region (`ask-region`).** The user picks the region;
+1. **P2: ask about a screen region (`ask-region`).** The user picks the region;
    show a preview with masking and a clear destination (Coucou's chat). No
    continuous capture. Test multi-monitor and mixed DPI.
-3. **P3:** editable memory, durable routines (time zone, DST, late policy),
+2. **P3:** editable memory, durable routines (time zone, DST, late policy),
    tasks, opt-in encrypted clipboard history, with migrations, export and
    delete.
-4. **P4:** accessibility, packaging (bundle `vulkan-1.dll`, release workflow),
+3. **P4:** accessibility, packaging (bundle `vulkan-1.dll`, release workflow),
    original name, character, icons and sounds before any distribution,
    user guide.
 
@@ -84,6 +76,9 @@ Settings → Voice.
 
 ## Not verified yet
 
+- Dictation by voice into a real app in the running Coucou (Notepad, a
+  browser field). Each step is tested, including a live UI Automation write
+  into a separate process's text box.
 - A spoken command through the live microphone, end to end in the running app
   ("open <app>", pill commands). Each step is tested separately, and the owner
   has used dictation to chat live.

@@ -25,7 +25,9 @@ export type IslandViewName =
   | "recap"
   | "wardrobe"
   /** The assistant's voice capture (src/assistant/voice-view.ts). */
-  | "voice";
+  | "voice"
+  /** A screen region to ask about (src/assistant/region-view.ts). */
+  | "region";
 
 export type BotStateName =
   | "idle"
@@ -96,6 +98,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   recap: { height: 184, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   wardrobe: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "none" },
   voice: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "none" },
+  // Room for the picture above the line and the buttons.
+  region: { height: 300, botX: 0, botY: null, botDiameter: 0, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually

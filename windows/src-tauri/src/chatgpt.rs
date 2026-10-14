@@ -803,6 +803,83 @@ pub fn as_model_infos(models: &[CatalogModel]) -> Vec<ModelInfo> {
     models.iter().filter(|m| m.available).map(|m| ModelInfo { id: m.id.clone(), label: m.label.clone() }).collect()
 }
 
+// ── Speech (audio mode's voice) ──────────────────────────────────────────────
+//
+// Sign in with ChatGPT documents the Responses API and the model list; it
+// rules out audio input and transcription, and says nothing of speech out.
+// Audio mode asks for OpenAI's voice once in a while: when the account may
+// use it, replies are read by it, on the plan like everything else here;
+// when it may not, the first refusal is remembered for this run and Windows'
+// own voices read instead. Never an API key, never another billing.
+
+const SPEECH: &str = "https://api.openai.com/v1/audio/speech";
+/// OpenAI's speech model and voice.
+pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
+pub const SPEECH_VOICE: &str = "marin";
+const SPEECH_STYLE: &str = "Speak naturally and warmly, like a friendly assistant in a relaxed conversation. Match the language of the text.";
+
+/// Set once the account was refused speech: not asked again until restart.
+static SPEECH_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn speech_body(text: &str) -> Value {
+    json!({
+        "model": SPEECH_MODEL,
+        "voice": SPEECH_VOICE,
+        "input": text,
+        "instructions": SPEECH_STYLE,
+        "response_format": "mp3",
+    })
+}
+
+/// True when OpenAI's voice may be tried: signed in with plan usage and not
+/// refused earlier in this run.
+pub fn speech_available() -> bool {
+    !SPEECH_REFUSED.load(std::sync::atomic::Ordering::SeqCst) && plan_ready().is_ok()
+}
+
+/// `text` read by OpenAI's voice, as MP3 bytes. Err when it can't be
+/// (refused, offline, signed out): the caller reads it another way.
+pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
+    plan_ready()?;
+    if SPEECH_REFUSED.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("refused earlier".into());
+    }
+    let body = speech_body(text);
+    let mut token = access_token(false).await?;
+    for attempt in 0..2 {
+        let reply = http(Duration::from_secs(30))?
+            .post(SPEECH)
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| t("ChatGPT can't be reached."))?;
+        let status = reply.status().as_u16();
+        if status == 401 && attempt == 0 {
+            token = access_token(true).await?;
+            continue;
+        }
+        if !reply.status().is_success() {
+            let body: Value = reply.json().await.unwrap_or(Value::Null);
+            let code = body.pointer("/error/code").and_then(Value::as_str).unwrap_or("");
+            // A refusal of this kind of request, not a passing failure.
+            if matches!(status, 400 | 401 | 403 | 404) {
+                SPEECH_REFUSED.store(true, std::sync::atomic::Ordering::SeqCst);
+                crate::log::line(format!("chatgpt: speech not available on this sign-in (HTTP {status} {code})"));
+            } else {
+                crate::log::line(format!("chatgpt: speech HTTP {status} {code}"));
+            }
+            return Err(error_message(status, &body).text);
+        }
+        let bytes = reply.bytes().await.map_err(|_| t("ChatGPT can't be reached."))?;
+        if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+            return Err("empty or oversized audio".into());
+        }
+        return Ok(bytes.to_vec());
+    }
+    Err(t("ChatGPT didn't accept the sign-in. Reconnect in Settings."))
+}
+
 fn plan_ready() -> Result<(), String> {
     let s = status();
     if !s.connected {

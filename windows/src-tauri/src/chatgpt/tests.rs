@@ -543,3 +543,14 @@ fn disconnect_result_serializes_only_the_two_outcomes() {
         "localCleanupSucceeded": false,
     }));
 }
+
+#[test]
+fn speech_asks_for_openais_voice_and_nothing_else() {
+    let body = speech_body("Bonjour, ça va ?");
+    assert_eq!(body["model"], SPEECH_MODEL);
+    assert_eq!(body["voice"], SPEECH_VOICE);
+    assert_eq!(body["input"], "Bonjour, ça va ?");
+    assert_eq!(body["response_format"], "mp3");
+    let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["model", "voice", "input", "instructions", "response_format"]);
+}

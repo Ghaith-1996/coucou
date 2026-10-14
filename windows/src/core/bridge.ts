@@ -423,7 +423,7 @@ export const Bridge = {
   voiceConverse: (captureId: string) => callOrThrow<string>("assistant_voice_converse", { captureId }),
   /** Audio mode: `text` read aloud by a Windows voice, as a WAV data URL. */
   speechSay: (text: string) =>
-    callOrThrow<{ audio: string; language: string; matched: boolean }>("speech_say", { text }),
+    callOrThrow<{ audio: string; language: string; matched: boolean; voice: "chatgpt" | "windows" }>("speech_say", { text }),
   /** Ends the capture and drops its audio or transcript. Never an action. */
   voiceCancel: (captureId: string) => call<void>("assistant_voice_cancel", { captureId }),
   /** The transcript as a chat draft Rust's policy allowed; throws with the refusal code. */

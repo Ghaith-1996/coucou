@@ -13,6 +13,9 @@ use serde::Serialize;
 /// Longest text read in one go; the island sends sentences, far shorter.
 pub const MAX_CHARS: usize = 1500;
 
+/// Logged once: OpenAI's voice was used.
+static OPENAI_USED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// French or English, from common words: enough to pick a voice.
 pub fn language_of(text: &str) -> &'static str {
     const FRENCH: &[&str] = &[
@@ -68,6 +71,8 @@ pub struct Clip {
     pub language: String,
     /// False when Windows has no voice of that language and another read it.
     pub matched: bool,
+    /// Who read it: "chatgpt" (OpenAI's voice) or "windows".
+    pub voice: String,
 }
 
 #[cfg(windows)]
@@ -137,6 +142,7 @@ mod windows_voices {
                 audio: format!("data:audio/wav;base64,{}", crate::claude::base64_for(&wav)),
                 language: language.into(),
                 matched,
+                voice: "windows".into(),
             })
         })
     }
@@ -150,12 +156,35 @@ pub use windows_voices::voices;
 
 /// Reads `text` aloud into a clip for the island to play. Only the island asks.
 #[tauri::command]
-pub async fn speech_say(webview: tauri::Webview, text: String) -> Result<Clip, String> {
+pub async fn speech_say(
+    webview: tauri::Webview,
+    shared: tauri::State<'_, crate::Shared>,
+    text: String,
+) -> Result<Clip, String> {
     if webview.label() != crate::island::WINDOW_LABEL {
         return Err("only from the island".into());
     }
     if text.trim().is_empty() {
         return Err("nothing to say".into());
+    }
+    // OpenAI's voice when the chat is on ChatGPT and the sign-in allows it.
+    let on_chatgpt = shared.settings.lock().unwrap().chat_provider == crate::chatgpt::PROVIDER;
+    if on_chatgpt && crate::chatgpt::speech_available() {
+        let text: String = text.chars().take(MAX_CHARS).collect();
+        match crate::chatgpt::speak(&text).await {
+            Ok(mp3) => {
+                if !OPENAI_USED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    crate::log::line("speech: ChatGPT's voice in use".to_string());
+                }
+                return Ok(Clip {
+                    audio: format!("data:audio/mpeg;base64,{}", crate::claude::base64_for(&mp3)),
+                    language: language_of(&text).into(),
+                    matched: true,
+                    voice: "chatgpt".into(),
+                });
+            }
+            Err(_) => {} // Windows' voice reads it instead.
+        }
     }
     #[cfg(windows)]
     {

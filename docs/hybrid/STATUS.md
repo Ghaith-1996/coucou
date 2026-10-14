@@ -68,16 +68,14 @@ cd windows && npx tsc --noEmit && npm test               # JS tests
 | UI | Microphone button beside the chat Send arrow; the shortcut is optional, with the same voice preview and confirmation flow | `CHAT-VOICE-BUTTON.md` |
 | P2 (1/3) | "open <app>" by voice: Windows' All apps list, a confirmation bound by a grant, success only with a window as evidence | `P2-LAUNCH-APP.md` |
 | P2 (2/3) | Dictation into another app's field (`insert-text`, PR open): the field is remembered when the capture starts, re-checked before writing (focus, password, read-only), written with UI Automation at the caret, read back as evidence; never keystrokes, never Enter | `P2-DICTATION.md` |
+| P2 (3/3) | Ask about a screen region (`ask-region`, PR open, stacked on dictation): one overlay per monitor, one GDI copy of the picked rectangle without Coucou's windows, a preview with black-out masks and the destination, attached to the chat only on the click | `P2-ASK-REGION.md` |
 
 ## Next (in order)
 
-1. **P2: ask about a screen region (`ask-region`).** The user picks the region;
-   show a preview with masking and a clear destination (Coucou's chat). No
-   continuous capture. Test multi-monitor and mixed DPI.
-2. **P3:** editable memory, durable routines (time zone, DST, late policy),
+1. **P3:** editable memory, durable routines (time zone, DST, late policy),
    tasks, opt-in encrypted clipboard history, with migrations, export and
    delete.
-3. **P4:** accessibility, packaging (bundle `vulkan-1.dll`, release workflow),
+2. **P4:** accessibility, packaging (bundle `vulkan-1.dll`, release workflow),
    original name, character, icons and sounds before any distribution,
    user guide.
 
@@ -86,6 +84,8 @@ Settings → Voice.
 
 ## Not verified yet
 
+- Ask about a screen region by hand in the running app, on one and on two
+  monitors with different scales.
 - Dictation by voice into a real app in the running Coucou (Notepad, a
   browser field). Each step is tested, including a live UI Automation write
   into a separate process's text box.

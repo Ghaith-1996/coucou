@@ -849,18 +849,74 @@ fn a_refresh_credential_write_failure_keeps_the_new_identity_recoverable_without
     assert_eq!(request["client_id"], "oaiapp_new", "retry reuses the now-validated registration");
 }
 
+fn sign_in_scope_cases() -> [(Option<&'static str>, bool); 6] {
+    [
+        (None, true),
+        (Some(""), false),
+        (Some("openid profile email offline_access resource.invoke"), false),
+        (Some(SCOPE), true),
+        (Some("openid chatgpt.tokens.use.direct.extra"), false),
+        (Some("openid CHATGPT.TOKENS.USE.DIRECT"), false),
+    ]
+}
+
 #[test]
-fn a_new_account_without_plan_scope_cannot_inherit_old_plan_or_welcome_flags() {
-    let original = Account { explicitly_disconnected: true, ..registered_account() };
-    let candidate = Account { host_id: original.host_id.clone(), client_id: Some("oaiapp_new".into()), ..Default::default() };
-    let mut tokens = new_account_tokens(); tokens.scope = Some("openid profile email offline_access".into());
-    let mut claims = new_account_claims(); claims.email = None;
-    let next = store_verified_sign_in(&original, &candidate, "oaiapp_new", &claims, &tokens, true,
-        |_| Ok(()), |_, _| Ok(()), |_| {}).unwrap();
-    assert_eq!(next.email, None, "no stale email from the previous registration");
-    assert!(!next.plan_enabled && !next.welcomed);
-    assert!(!status_for(&next, true, true).show_welcome);
-    assert_eq!(next.saved_accounts[0].email, original.email, "the old metadata stays with its own registration");
+fn a_new_sign_in_uses_omitted_scope_without_inheriting_another_accounts_flags() {
+    for (scope, granted) in sign_in_scope_cases() {
+        for previous_plan in [false, true] {
+            let original = Account { plan_enabled: previous_plan, explicitly_disconnected: true, ..registered_account() };
+            let candidate = Account { host_id: original.host_id.clone(), client_id: Some("oaiapp_new".into()), ..Default::default() };
+            // Deserialize the wire shape as well: an absent field differs from
+            // an explicitly empty or reduced grant.
+            let mut response = json!({ "access_token": "new-access", "refresh_token": "new-refresh",
+                "id_token": "new-id-hint", "expires_in": 3600 });
+            if let Some(scope) = scope { response["scope"] = json!(scope); }
+            let tokens: Tokens = serde_json::from_value(response).unwrap();
+            let mut claims = new_account_claims(); claims.email = None;
+            let mut saved = None;
+            let next = store_verified_sign_in(&original, &candidate, "oaiapp_new", &claims, &tokens, true,
+                |record| { saved = Some(record.clone()); Ok(()) }, |_, _| Ok(()), |_| {}).unwrap();
+            assert_eq!(saved.as_ref(), Some(&next));
+            assert_eq!(next.client_id, candidate.client_id);
+            assert_eq!(next.sub.as_deref(), Some("new-user"));
+            assert_eq!(next.email, None, "no stale email from the previous registration");
+            assert_eq!(next.plan_enabled, granted, "scope={scope:?}, previous_plan={previous_plan}");
+            assert!(!next.welcomed, "another account's welcome cannot carry over");
+            assert_eq!(status_for(&next, true, true).show_welcome, granted);
+            assert_eq!(require_selected_client(&next, "oaiapp_new").is_ok(), granted);
+            assert_eq!(next.saved_accounts, vec![original.registration().unwrap()],
+                "the old flags and identity stay with their own registration");
+        }
+    }
+}
+
+#[test]
+fn reconnect_uses_the_new_scope_result_and_preserves_only_its_own_welcome() {
+    for (scope, granted) in sign_in_scope_cases() {
+        for previous_plan in [false, true] {
+            for welcomed in [false, true] {
+                let mut original = Account { plan_enabled: previous_plan, welcomed, ..registered_account() };
+                let other = Registration { client_id: "oaiapp_other".into(), sub: Some("other-user".into()),
+                    email: None, plan_enabled: !previous_plan, welcomed: !welcomed };
+                original.saved_accounts.push(other.clone());
+                let request = query(&authorize_url(&original, &Attempt::new(1455), None));
+                assert_eq!(request["scope"], SCOPE);
+                assert_eq!(request.get("prompt").map(String::as_str), (!previous_plan).then_some("consent"));
+                let mut tokens = new_account_tokens(); tokens.scope = scope.map(str::to_string);
+                let mut claims = new_account_claims();
+                claims.aud = json!("oaiapp_original"); claims.sub = "original-user".into();
+                let next = store_verified_sign_in(&original, &original, "oaiapp_original", &claims, &tokens, false,
+                    |_| Ok(()), |_, _| Ok(()), |_| {}).unwrap();
+                assert_eq!(next.client_id, original.client_id);
+                assert_eq!(next.sub, original.sub);
+                assert_eq!(next.plan_enabled, granted, "scope={scope:?}, previous_plan={previous_plan}");
+                assert_eq!(next.welcomed, welcomed);
+                assert_eq!(status_for(&next, true, true).show_welcome, granted && !welcomed);
+                assert_eq!(require_selected_client(&next, "oaiapp_original").is_ok(), granted);
+                assert_eq!(next.saved_accounts, vec![other]);
+            }
+        }
+    }
 }
 
 #[test]

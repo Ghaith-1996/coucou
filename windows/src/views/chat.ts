@@ -408,6 +408,7 @@ function saveConversation() {
 }
 
 interface HistoryPanel {
+  readonly isOpening: boolean;
   el: HTMLElement;
   open(): void;
   close(): void;
@@ -426,6 +427,11 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   let summaries: ConversationSummary[] = [];
   let listRequest = 0;
   let navigationAttempt = 0;
+  let panelSession = 0;
+  let pendingOpens = 0;
+  // Successful queued opens advance this shared snapshot in selection order.
+  // A reset/file drop replaces it, invalidating the whole older group.
+  let openingContext: { messages: ChatMessage[]; session: number } | null = null;
 
   function disarmDelete() {
     armedDelete = null;
@@ -538,11 +544,23 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
 
   async function open_(id: string) {
     if (pendingDeletes.has(id)) return;
-    navigationAttempt++;
+    const attempt = ++navigationAttempt;
+    const panel = panelSession;
+    if (!openingContext || openingContext.messages !== State.chatHistory || openingContext.session !== chatSession) {
+      openingContext = { messages: State.chatHistory, session: chatSession };
+    }
+    const context = openingContext;
+    const isCurrent = () => context.messages === State.chatHistory && context.session === chatSession;
+    pendingOpens++;
+    onChange();
+    State.notify();
     try {
       const saved = await Bridge.chatHistoryOpen(id);
+      if (!isCurrent()) return;
       chatSession++;
       State.chatHistory = fromSaved(saved, nextId);
+      context.messages = State.chatHistory;
+      context.session = chatSession;
       nextId += saved.messages.length;
       State.chatId = saved.id;
       reopenedChatId = saved.id;
@@ -552,15 +570,22 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       State.droppedFile = null;
       State.promptContext = null;
       Sound.play("blip");
-      close();
+      if (attempt === navigationAttempt) close();
       onOpened();
     } catch (err) {
+      if (!isCurrent() || attempt !== navigationAttempt || panel !== panelSession || !isOpen) return;
       clear(list);
       list.append(h("div", { class: "picker-status", text: String(err).replace(/^Error:\s*/, "") }));
+    } finally {
+      pendingOpens--;
+      if (!pendingOpens) openingContext = null;
+      onChange();
+      State.notify();
     }
   }
 
   function open() {
+    panelSession++;
     isOpen = true;
     disarmDelete();
     el.classList.add("on");
@@ -569,6 +594,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   }
 
   function close() {
+    panelSession++;
     isOpen = false;
     disarmDelete();
     el.classList.remove("on");
@@ -581,6 +607,9 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     close,
     get isOpen() {
       return isOpen;
+    },
+    get isOpening() {
+      return pendingOpens > 0;
     },
   };
 }
@@ -716,9 +745,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.classList.toggle("open", history.isOpen);
     modelBtn.disabled = sending;
     historyBtn.disabled = sending;
-    if (voice) voice.disabled = sending || startingVoice;
+    if (voice) voice.disabled = sending || startingVoice || history.isOpening;
     // While an answer comes, the send button is Stop.
-    send.disabled = startingVoice || undoPending;
+    send.disabled = startingVoice || undoPending || history.isOpening;
     send.classList.toggle("stop", sending);
     const label = t(sending ? STRINGS.stop : STRINGS.send);
     send.title = label;
@@ -917,14 +946,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   async function submit() {
     const query = input.value.trim();
-    if (!query || sending || startingVoice) return;
+    if (!query || sending || startingVoice || history.isOpening) return;
     input.value = "";
     await ask(query);
   }
 
   /** The last answer again, with the model and effort picked now. */
   async function regenerate() {
-    if (sending || startingVoice) return;
+    if (sending || startingVoice || history.isOpening) return;
     const messages = State.chatHistory;
     const answer = messages[messages.length - 1];
     const question = messages[messages.length - 2];
@@ -972,7 +1001,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     void submit();
   });
   voice?.addEventListener("click", async () => {
-    if (sending || startingVoice) return;
+    if (sending || startingVoice || history.isOpening) return;
     startingVoice = true;
     if (picker.isOpen) picker.close();
     drawModelButton();
@@ -1034,7 +1063,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       drawNotice();
 
       input.placeholder = t(State.chatHistory.length === 0 ? STRINGS.placeholderFirst : STRINGS.placeholderNext);
-      input.disabled = sending;
+      input.disabled = sending || history.isOpening;
     },
     focus() {
       input.focus();

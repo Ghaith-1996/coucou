@@ -8,9 +8,11 @@ import { installFakeDom } from "./fakedom.mjs";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 
 installFakeDom();
-const { buildPrompt } = await import("../src/views/chat.ts");
+Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent: "Windows" } });
+const { buildPrompt, newConversation } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
 const { Sound } = await import("../src/core/sound.ts");
+const { Bridge } = await import("../src/core/bridge.ts");
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const CURRENT = "c-0000000000000001";
@@ -21,10 +23,19 @@ const MAX_MESSAGES = Number(readFileSync(new URL("../src-tauri/src/chat_store.rs
 let records;
 let answers;
 let view;
+let nativeHistory;
+let sendHistories;
 const nativeInvoke = internals.invoke;
 internals.invoke = async (cmd, args) => {
   const result = await nativeInvoke(cmd, args);
-  if (cmd in answers) return answers[cmd](args);
+  if (cmd === "chat_send") sendHistories.push(structuredClone(nativeHistory));
+  if (cmd in answers) {
+    const answer = await answers[cmd](args);
+    if (cmd === "chat_history_open") nativeHistory = structuredClone(answer.messages);
+    if (cmd === "chat_reset") nativeHistory = [];
+    return answer;
+  }
+  if (cmd === "chat_reset") nativeHistory = [];
   if (cmd === "chat_history_save") {
     if (args.conversation.messages.length > MAX_MESSAGES) throw new Error("too many messages");
     records.set(args.conversation.id, structuredClone(args.conversation));
@@ -33,7 +44,11 @@ internals.invoke = async (cmd, args) => {
   if (cmd === "chat_history_list") {
     return [...records.values()].map(({ id, title, updatedAt, messages }) => ({ id, title, updatedAt, count: messages.length }));
   }
-  if (cmd === "chat_history_open") return structuredClone(records.get(args.id));
+  if (cmd === "chat_history_open") {
+    const saved = structuredClone(records.get(args.id));
+    nativeHistory = structuredClone(saved.messages);
+    return saved;
+  }
   if (cmd === "chat_history_rename") records.get(args.id).title = args.title;
   if (cmd === "chat_history_delete") records.delete(args.id);
   if (cmd === "chat_send") return { text: "An answer" };
@@ -41,9 +56,12 @@ internals.invoke = async (cmd, args) => {
 };
 
 beforeEach(async () => {
-  calls.length = 0;
   records = new Map();
   answers = {};
+  nativeHistory = [];
+  sendHistories = [];
+  await Bridge.chatReset();
+  calls.length = 0;
   State.settings = { ...DEFAULT_SETTINGS, chatModels: {} };
   State.chatHistory = [];
   State.chatId = null;
@@ -621,3 +639,302 @@ test("a pending save failure still warns if Regenerate fails in the same convers
   assert.equal(records.get(State.chatId).messages.length, 2);
   assert.match($(".chat-notice-body")?.textContent ?? "", /Disk full/);
 });
+
+
+// Opening restores native context, so delayed IPC must be ordered with every
+// reset as well as fenced from replacing a newer UI transcript.
+function deferredOpen(t, id) {
+  const pending = Promise.withResolvers();
+  const saved = structuredClone(records.get(id));
+  t.after(async () => { pending.resolve(saved); await flush(); });
+  return { ...pending, saved };
+}
+
+for (const first of [CURRENT, OTHER]) {
+  test(`two pending history opens finish in selection order from ${first}`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip", "Lisbon question");
+    seed(OTHER, "Paris trip", "Paris question");
+    await open(CURRENT);
+    const last = first === CURRENT ? OTHER : CURRENT;
+    const expected = structuredClone(records.get(last).messages);
+    const pending = deferredOpen(t, first);
+    answers.chat_history_open = ({ id }) => id === first ? pending.promise : structuredClone(records.get(id));
+    await open(first);
+    await open(last);
+    assert.deepEqual(sent("chat_history_open").slice(1), [{ id: first }], "the second restore waits for the first reply");
+    pending.resolve(pending.saved);
+    await flush();
+    assert.equal(State.chatId, last);
+    assert.deepEqual(State.chatHistory.map(({ content }) => content), expected.map(({ content }) => content));
+    assert.deepEqual(nativeHistory, expected);
+    assert.equal($(".chat-input").disabled, false);
+    await send("Continue the last selected chat");
+    assert.deepEqual(sendHistories.at(-1), expected);
+  });
+}
+
+test("New chat immediately replaces a pending open and resets native context before sending", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = () => pending.promise;
+  await open(CURRENT);
+  $(".history-new").fire("click");
+  assert.deepEqual(State.chatHistory, []);
+  assert.equal(State.chatId, null);
+  assert.equal($(".chat-log").textContent, "");
+  assert.equal(sent("chat_reset").length, 0, "reset waits for the already-started native restoration");
+  await send("Keep this draft");
+  assert.equal(sent("chat_send").length, 0);
+  assert.equal($(".chat-input").value, "Keep this draft");
+  pending.resolve(pending.saved);
+  await flush();
+  assert.deepEqual(State.chatHistory, []);
+  assert.equal(State.chatId, null);
+  assert.equal($(".chat-restored"), null);
+  assert.deepEqual(nativeHistory, []);
+  assert.equal(sent("chat_reset").length, 1);
+  await send("A new beginning");
+  assert.deepEqual(sendHistories.at(-1), []);
+  assert.notEqual(State.chatId, CURRENT);
+});
+
+test("a file-drop reset supersedes every already-selected history open", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  seed(OTHER, "Paris trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = ({ id }) => id === CURRENT ? pending.promise : structuredClone(records.get(id));
+  await open(CURRENT);
+  await open(OTHER);
+  State.chatHistory = [];
+  State.chatId = null;
+  State.droppedFile = { name: "new.txt", path: "/inbox/new.txt" };
+  State.promptContext = { kind: "file", ...State.droppedFile };
+  void Bridge.chatReset();
+  State.view = "uploading";
+  State.notify();
+  const messages = State.chatHistory;
+  const file = State.droppedFile;
+  const context = State.promptContext;
+  pending.resolve(pending.saved);
+  await flush();
+  assert.equal(State.chatHistory, messages);
+  assert.equal(State.chatId, null);
+  assert.equal(State.droppedFile, file);
+  assert.equal(State.promptContext, context);
+  assert.equal(State.view, "uploading");
+  assert.deepEqual(nativeHistory, []);
+  State.view = "prompt";
+  State.notify();
+  await send("Read the new file");
+  assert.deepEqual(sendHistories.at(-1), []);
+  assert.deepEqual(sent("chat_send").at(-1).context, context);
+});
+
+test("a failed later open keeps the last successfully restored conversation in UI and native context", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  seed(OTHER, "Paris trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = ({ id }) => id === CURRENT ? pending.promise : Promise.reject(new Error("Paris unavailable"));
+  await open(CURRENT);
+  await open(OTHER);
+  pending.resolve(pending.saved);
+  await flush();
+  assert.equal(State.chatId, CURRENT);
+  assert.deepEqual(nativeHistory, pending.saved.messages);
+  assert.match($(".history").textContent, /Paris unavailable/);
+  assert.equal($(".chat-input").disabled, false);
+  await send("Continue Lisbon");
+  assert.deepEqual(sendHistories.at(-1), pending.saved.messages);
+  delete answers.chat_history_open;
+  await open(OTHER);
+  assert.equal(State.chatId, OTHER, "retry remains available after a failed queued open");
+});
+
+test("a failed older open cannot replace the newer selected history row with its error", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  seed(OTHER, "Paris trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = ({ id }) => id === CURRENT ? pending.promise : structuredClone(records.get(id));
+  await open(CURRENT);
+  await open(OTHER);
+  pending.reject(new Error("Old open failed"));
+  await flush();
+  assert.equal(State.chatId, OTHER);
+  assert.deepEqual(nativeHistory, records.get(OTHER).messages);
+  assert.doesNotMatch($(".history").textContent, /Old open failed/);
+  assert.equal($(".chat-input").disabled, false);
+});
+
+test("closing and reopening history retains the open reservation and fences its old error", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  await open(CURRENT);
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = () => pending.promise;
+  await open(CURRENT);
+  $(".history-btn").fire("click");
+  await history();
+  assert.equal($(".chat-input").disabled, true);
+  assert.equal($(".send-btn").disabled, true);
+  $(".chat-input").value = "Keep my draft";
+  $(".send-btn").fire("click");
+  for (const listener of $(".chat-input").listeners.get("keydown") ?? []) {
+    listener({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+  }
+  view.el.find(".md-copy").find((button) => button.getAttribute("aria-label") === "Regenerate").fire("click");
+  $(".voice-btn").fire("click");
+  await flush();
+  assert.equal(sent("chat_send").length, 0);
+  assert.equal(sent("chat_undo_last").length, 0);
+  assert.equal(sent("assistant_voice_toggle").length, 0);
+  assert.equal($(".chat-input").value, "Keep my draft");
+  pending.reject(new Error("Dismissed open failed"));
+  await flush();
+  assert.doesNotMatch($(".history").textContent, /Dismissed open failed/);
+  assert.equal(view.el.find(".history-row").length, 1);
+  assert.equal($(".chat-input").disabled, false);
+  assert.equal($(".send-btn").disabled, false);
+  assert.equal(State.chatId, CURRENT);
+});
+
+
+test("Send waits for a delayed reset before starting a native turn", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  await open(CURRENT);
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve(); await flush(); });
+  answers.chat_reset = () => pending.promise;
+  newConversation();
+  await send("A new beginning");
+  assert.equal(sent("chat_send").length, 0);
+  assert.equal(State.chatHistory.at(-1).content, "A new beginning");
+  pending.resolve();
+  await flush();
+  assert.equal(sent("chat_send").length, 1);
+  assert.deepEqual(sendHistories.at(-1), []);
+  assert.equal(State.chatHistory.at(-1).content, "An answer");
+});
+
+for (const cancellation of ["another reset", "Stop"]) {
+  test(`${cancellation} cancels a Send that is still waiting for native reset`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    await open(CURRENT);
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(); await flush(); });
+    answers.chat_reset = () => pending.promise;
+    newConversation();
+    await send("Do not send this after cancellation");
+    assert.equal(sent("chat_send").length, 0);
+    if (cancellation === "another reset") newConversation();
+    else {
+      $(".send-btn").fire("click");
+      assert.equal(sent("chat_stop").length, 1, "Stop bypasses the navigation queue");
+    }
+    pending.resolve();
+    await flush();
+    assert.equal(sent("chat_send").length, 0);
+    assert.deepEqual(nativeHistory, []);
+    assert.equal(State.view, "prompt");
+    assert.equal(State.stateOverride, null);
+    assert.equal($(".chat-input").disabled, false);
+    await send("Now send this");
+    assert.equal(sent("chat_send").length, 1);
+    assert.deepEqual(sendHistories.at(-1), []);
+  });
+}
+
+for (const outcome of ["success", "failure"]) {
+  test(`a reset during pending undo waits for its ${outcome} without reviving the old turn`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    await open(CURRENT);
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(true); await flush(); });
+    answers.chat_undo_last = () => pending.promise;
+    view.el.find(".md-copy").find((button) => button.getAttribute("aria-label") === "Regenerate").fire("click");
+    await flush();
+    newConversation();
+    assert.equal(sent("chat_reset").length, 0);
+    if (outcome === "failure") pending.reject(new Error("Undo unavailable"));
+    else pending.resolve(true);
+    await flush();
+    assert.equal(sent("chat_reset").length, 1);
+    assert.equal(sent("chat_send").length, 0);
+    assert.deepEqual(State.chatHistory, []);
+    assert.deepEqual(nativeHistory, []);
+    assert.equal(State.stateOverride, null);
+    await send("Fresh question");
+    assert.deepEqual(sendHistories.at(-1), []);
+  });
+}
+
+test("an open selected after New chat still runs after the superseded open and reset", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  seed(OTHER, "Paris trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = ({ id }) => id === CURRENT ? pending.promise : structuredClone(records.get(id));
+  await open(CURRENT);
+  $(".history-new").fire("click");
+  await open(OTHER);
+  pending.resolve(pending.saved);
+  await flush();
+  assert.equal(State.chatId, OTHER);
+  assert.deepEqual(nativeHistory, records.get(OTHER).messages);
+  assert.deepEqual(calls.filter(([name]) => name === "chat_history_open" || name === "chat_reset"), [
+    ["chat_history_open", { id: CURRENT }], ["chat_reset", {}], ["chat_history_open", { id: OTHER }],
+  ]);
+  assert.equal($(".chat-input").disabled, false);
+});
+
+
+for (const recovery of ["reset", "open"]) {
+  test(`failed reset blocks queued and future turns until a successful ${recovery}`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    seed(OTHER, "Paris trip");
+    await open(CURRENT);
+    const oldContext = structuredClone(nativeHistory);
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(); await flush(); });
+    const errors = t.mock.method(console, "error", () => {});
+    answers.chat_reset = () => pending.promise;
+    newConversation();
+    await send("A new question, never for Lisbon");
+    pending.reject(new Error("Native reset unavailable"));
+    await flush();
+    assert.equal(sent("chat_send").length, 0, "a failed reset must not send using the old context");
+    assert.deepEqual(nativeHistory, oldContext);
+    assert.equal(State.view, "note");
+    assert.match(State.noteMessage, /Native reset unavailable/);
+    assert.equal(errors.mock.callCount(), 1, "reset keeps its nonthrowing, logged failure behavior");
+    State.view = "prompt";
+    await send("Retry while context is still stale");
+    assert.equal(sent("chat_send").length, 0);
+    await assert.rejects(Bridge.chatUndoLast(), /Native reset unavailable/);
+    assert.equal(sent("chat_undo_last").length, 0);
+    answers.chat_history_open = () => Promise.reject(new Error("Open unavailable"));
+    await assert.rejects(Bridge.chatHistoryOpen(OTHER), /Open unavailable/);
+    await assert.rejects(Bridge.chatSend("Still stale", null), /Native reset unavailable/);
+    assert.equal(sent("chat_send").length, 0, "a failed open does not certify native context");
+    delete answers.chat_history_open;
+    delete answers.chat_reset;
+    State.view = "prompt";
+    if (recovery === "reset") {
+      newConversation();
+      await flush();
+    } else await open(OTHER);
+    const expected = recovery === "reset" ? [] : structuredClone(records.get(OTHER).messages);
+    await send("After successful recovery");
+    assert.equal(sent("chat_send").length, 1);
+    assert.deepEqual(sendHistories.at(-1), expected);
+    assert.equal(State.chatHistory.at(-1).content, "An answer");
+  });
+}

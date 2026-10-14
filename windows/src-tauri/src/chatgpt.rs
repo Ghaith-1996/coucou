@@ -768,7 +768,11 @@ fn store_verified_sign_in(
     }
     let refresh = tokens.refresh_token.as_deref().ok_or_else(|| t("ChatGPT sign-in failed."))?;
     let id_token = tokens.id_token.as_deref().ok_or_else(|| t("ChatGPT sign-in failed."))?;
-    let granted = tokens.scope.as_deref().unwrap_or("").split_whitespace().any(|s| s == PLAN_SCOPE);
+    // This is an authorization-code response for authorize_url's SCOPE.
+    // RFC 6749 §5.1: omitted scope means the requested scopes were granted;
+    // an explicit (even empty or reduced) scope must be honored instead.
+    // https://www.rfc-editor.org/rfc/rfc6749#section-5.1
+    let granted = tokens.scope.as_deref().unwrap_or(SCOPE).split_whitespace().any(|s| s == PLAN_SCOPE);
     let registration = Registration {
         client_id: client_id.to_string(), email: claims.email.clone(), sub: Some(claims.sub.clone()),
         plan_enabled: granted, welcomed: candidate.welcomed,

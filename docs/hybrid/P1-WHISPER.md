@@ -9,7 +9,7 @@ island keeps showing the labelled simulated transcript.
 
 | File | Role |
 |---|---|
-| `assistant/voice/whisper.rs` | `Local` transcriber: resamples to 16 kHz mono, loads the model once (CPU, half the cores, max 8), detects the language (`auto`, so the app's 10 languages work), fresh whisper state per capture, drops non-speech markers (`[BLANK_AUDIO]`, `(music)`). whisper.cpp's own logging is silenced so decoded text never reaches stderr. |
+| `assistant/voice/whisper.rs` | `Local` transcriber: resamples to 16 kHz mono, loads the model once (CPU, half the cores, max 8), detects the language among **French and English only** (whisper's language probabilities narrowed to `fr`/`en`, French on a tie; owner's choice, 2026-10-14), fresh whisper state per capture, drops non-speech markers (`[BLANK_AUDIO]`, `(music)`). whisper.cpp's own logging is silenced so decoded text never reaches stderr. |
 | `assistant/voice/model.rs` | The model: `ggml-base.bin` (multilingual, 147,951,465 bytes, SHA-256 `60ed5bc3…2efe`, pinned) from `huggingface.co/ggerganov/whisper.cpp`. Streamed to `<file>.part`, size-capped while receiving, size + SHA-256 checked, then renamed into place. A mismatch, error or cancel deletes the partial file. One download at a time. |
 | `assistant/voice/mod.rs` `Auto` | Whisper when the model is installed, simulated otherwise. A deleted model is also unloaded from memory. |
 | `assistant/app.rs` | `voice_model_status / download / cancel / delete`. Download, cancel and delete are refused unless they come from the **settings window**. Progress goes out as `voice-model` events, about one per MB. |

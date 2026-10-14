@@ -88,7 +88,17 @@ fn internal_entry(key: &str) -> Result<Entry, String> {
 }
 
 pub fn get_internal(key: &str) -> Option<String> {
-    internal_entry(key).ok()?.get_password().ok().filter(|v| !v.is_empty())
+    read_internal(key).ok().flatten()
+}
+
+/// Unlike a convenience presence check, an unavailable keystore is not empty.
+/// Account switching relies on positively confirming that credentials are gone.
+pub fn read_internal(key: &str) -> Result<Option<String>, String> {
+    match internal_entry(key)?.get_password() {
+        Ok(value) => Ok((!value.is_empty()).then_some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 pub fn set_internal(key: &str, value: &str) -> Result<(), String> {

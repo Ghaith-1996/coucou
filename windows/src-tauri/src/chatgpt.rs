@@ -22,7 +22,7 @@
 // `reasoning.effort`. Nothing ever falls back to another billing path: a
 // failure is reported, with the ChatGPT error's own meaning.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -155,38 +155,119 @@ pub struct Account {
     pub client_id: Option<String>,
     pub email: Option<String>,
     pub sub: Option<String>,
-    /// The sign-in granted `chatgpt.tokens.use.direct`.
+    /// The current token grant permits `chatgpt.tokens.use.direct`.
     pub plan_enabled: bool,
     /// "You're using your ChatGPT plan" was shown once.
     pub welcomed: bool,
+    /// Switching is allowed only after explicit, fully persisted cleanup.
+    pub explicitly_disconnected: bool,
+    /// The session was rejected, or a refresh/credential replacement has not
+    /// completed safely. Persisted so a crash or failed cleanup reconnects.
+    pub session_needs_reconnect: bool,
+    /// Inactive registrations have no credentials: only one session is live.
+    pub saved_accounts: Vec<Registration>,
+    /// Retain an issued client even if a new account's exchange/checks fail.
+    pub pending_account: Option<Registration>,
+}
+
+/// Non-secret account/client mapping. Never mix registrations by email.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Registration {
+    pub client_id: String,
+    pub email: Option<String>,
+    pub sub: Option<String>,
+    pub plan_enabled: bool,
+    pub welcomed: bool,
+}
+
+impl Account {
+    fn registration(&self) -> Option<Registration> {
+        Some(Registration {
+            client_id: self.client_id.clone()?, email: self.email.clone(), sub: self.sub.clone(),
+            plan_enabled: self.plan_enabled, welcomed: self.welcomed,
+        })
+    }
+
+    fn select_registration(&self, selected: &Registration) -> Self {
+        let mut next = self.clone();
+        next.saved_accounts.retain(|r| r.client_id != selected.client_id);
+        if let Some(previous) = self.registration().filter(|r| r.client_id != selected.client_id) {
+            next.saved_accounts.retain(|r| r.client_id != previous.client_id);
+            next.saved_accounts.push(previous);
+        }
+        next.client_id = Some(selected.client_id.clone());
+        next.email = selected.email.clone();
+        next.sub = selected.sub.clone();
+        next.plan_enabled = selected.plan_enabled;
+        next.welcomed = selected.welcomed;
+        next
+    }
 }
 
 fn account_path() -> PathBuf {
     crate::settings::config_dir().join("chatgpt.json")
 }
 
-pub fn load_account() -> Account {
-    std::fs::read(account_path())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+fn read_account_from(path: &Path) -> Result<Account, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Account::default()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn save_account(account: &Account) -> Result<(), String> {
-    let path = account_path();
+    save_account_to(&account_path(), account)
+}
+
+fn save_account_to(path: &Path, account: &Account) -> Result<(), String> {
+    use std::io::Write;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        crate::platform::ensure_private_dir(dir).map_err(|e| e.to_string())?;
     }
     let text = serde_json::to_vec_pretty(account).map_err(|e| e.to_string())?;
-    std::fs::write(path, text).map_err(|e| e.to_string())
+    // All mutations share REFRESHING. A failed write must leave the previous
+    // client/identity mapping intact, including when disconnect is retried.
+    let temp = path.with_extension("json.tmp");
+    // Replace a stale temp entry, never follow a symlink or reuse a publicly
+    // readable inode that another user might still have open.
+    if let Err(error) = std::fs::remove_file(&temp) {
+        if error.kind() != std::io::ErrorKind::NotFound { return Err(error.to_string()); }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    // Only clean up an entry this attempt created; create_new can fail if
+    // another entry appeared, and that entry must remain untouched.
+    let mut file = options.open(&temp).map_err(|e| e.to_string())?;
+    let result = file.write_all(&text).and_then(|()| file.sync_all());
+    drop(file);
+    let result = result.and_then(|()| std::fs::rename(&temp, path));
+    if result.is_err() { let _ = std::fs::remove_file(&temp); }
+    result.map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SavedAccount {
+    pub id: String,
+    pub email: Option<String>,
 }
 
 /// What the island and Settings may know: never a token.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    pub account_id: Option<String>,
+    pub can_switch_accounts: bool,
+    pub saved_accounts: Vec<SavedAccount>,
+    pub has_pending_account: bool,
+    /// Fences retry/replacement against the unfinished registration shown.
+    pub pending_account_id: Option<String>,
     pub connected: bool,
-    /// Either saved credential remains, including an orphaned sign-in hint.
+    /// Either saved credential remains (including an orphaned hint), or the
+    /// keystore could not confirm their absence. Cleanup stays available.
     pub has_saved_credentials: bool,
     pub email: Option<String>,
     pub plan_enabled: bool,
@@ -198,30 +279,165 @@ pub struct Status {
 }
 
 pub fn status() -> Status {
-    let account = load_account();
-    status_for(
-        &account,
-        secrets::get_internal(REFRESH_TOKEN_KEY).is_some(),
-        secrets::get_internal(ID_TOKEN_KEY).is_some(),
-    )
+    let active = ACTIVE_REFRESH.lock().unwrap();
+    status_from_storage(read_account_from(&account_path()), credential_presence(), active.as_deref(), REJECTED_SESSION.lock().unwrap().as_deref())
 }
 
-fn status_for(account: &Account, connected: bool, has_id_token: bool) -> Status {
+fn status_from_storage(account: Result<Account, String>, credentials: Result<(bool, bool), String>, active_refresh: Option<&str>, rejected_client: Option<&str>) -> Status {
+    let unreadable = account.is_err() || credentials.is_err();
+    let mut account = account.unwrap_or_default();
+    // The durable guard is provisional only while this process is refreshing
+    // this same, previously usable session. Do not flicker to disconnected or
+    // wait behind a browser sign-in. Failed reads always remain fail-closed.
+    if !unreadable && active_refresh.is_some() && active_refresh == account.client_id.as_deref() {
+        account.session_needs_reconnect = false;
+    }
+    apply_session_rejection(&mut account, rejected_client);
+    // A locked/unreadable keystore is not proof that cleanup succeeded.
+    let (refresh, id) = credentials.unwrap_or((true, true));
+    let mut status = status_for(&account, refresh, id);
+    if unreadable {
+        status.connected = false;
+        status.can_switch_accounts = false;
+        status.needs_reconnect = true;
+        status.show_welcome = false;
+    }
+    status
+}
+
+fn apply_session_rejection(account: &mut Account, rejected_client: Option<&str>) {
+    if rejected_client.is_some() && rejected_client == account.client_id.as_deref() {
+        account.session_needs_reconnect = true;
+    }
+}
+
+fn status_for(account: &Account, has_refresh: bool, has_id_token: bool) -> Status {
+    let connected = has_refresh && account.client_id.is_some()
+        && !account.explicitly_disconnected && !account.session_needs_reconnect;
     Status {
+        account_id: account.client_id.clone(),
+        can_switch_accounts: account.explicitly_disconnected && !has_refresh && !has_id_token,
+        saved_accounts: account.saved_accounts.iter().map(|r| SavedAccount { id: r.client_id.clone(), email: r.email.clone() }).collect(),
+        has_pending_account: account.pending_account.is_some(),
+        pending_account_id: account.pending_account.as_ref().map(|r| r.client_id.clone()),
         connected,
-        has_saved_credentials: connected || has_id_token,
+        has_saved_credentials: has_refresh || has_id_token,
         email: account.email.clone(),
         plan_enabled: account.plan_enabled,
-        needs_reconnect: !connected && account.client_id.is_some() && account.email.is_some(),
+        needs_reconnect: !connected && account.client_id.is_some(),
         show_welcome: connected && account.plan_enabled && !account.welcomed,
         manage_usage_url: MANAGE_USAGE_URL,
     }
 }
 
-pub fn mark_welcomed() -> Result<(), String> {
-    let mut account = load_account();
-    account.welcomed = true;
-    save_account(&account)
+pub async fn mark_welcomed(client_id: Option<&str>) -> Result<(), String> {
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    let account = read_account_from(&account_path())?;
+    mark_welcomed_for(&account, client_id, secrets::get_internal(REFRESH_TOKEN_KEY).is_some(), save_account)
+}
+
+fn mark_welcomed_for(account: &Account, client_id: Option<&str>, connected: bool, persist: impl FnOnce(&Account) -> Result<(), String>) -> Result<(), String> {
+    // An old window's acknowledgement must never mark a different account.
+    if client_id.is_none() || client_id != account.client_id.as_deref() || !status_for(account, connected, false).show_welcome {
+        return Ok(());
+    }
+    let mut next = account.clone();
+    next.welcomed = true;
+    persist(&next)
+}
+
+fn credential_presence() -> Result<(bool, bool), String> {
+    let refresh = secrets::read_internal(REFRESH_TOKEN_KEY);
+    let id = secrets::read_internal(ID_TOKEN_KEY);
+    match (refresh, id) {
+        (Ok(refresh), Ok(id)) => Ok((refresh.is_some(), id.is_some())),
+        _ => Err(t("Couldn't check saved ChatGPT credentials. Try again.")),
+    }
+}
+
+fn require_signed_out(account: &Account, credentials: Result<(bool, bool), String>) -> Result<(), String> {
+    require_empty_credentials(credentials)?;
+    if !account.explicitly_disconnected {
+        return Err(t("Disconnect ChatGPT successfully before switching accounts."));
+    }
+    Ok(())
+}
+
+fn require_empty_credentials(credentials: Result<(bool, bool), String>) -> Result<(), String> {
+    let (refresh, id) = credentials?;
+    if refresh || id {
+        return Err(t("Disconnect ChatGPT successfully before switching accounts."));
+    }
+    Ok(())
+}
+
+fn new_account_candidate(account: &Account) -> Account {
+    let blank = Account { host_id: account.host_id.clone(), ..Default::default() };
+    account.pending_account.as_ref().map_or_else(|| blank.clone(), |pending| blank.select_registration(pending))
+}
+
+fn retain_pending_account(account: &mut Account, candidate: &Account, persist: impl FnOnce(&Account) -> Result<(), String>) -> Result<(), String> {
+    let registration = candidate.registration().ok_or_else(|| t("ChatGPT sign-in failed."))?;
+    if account.pending_account.is_some()
+        || account.client_id.as_deref() == Some(registration.client_id.as_str())
+        || account.saved_accounts.iter().any(|r| r.client_id == registration.client_id) {
+        return Err(t("ChatGPT sign-in failed."));
+    }
+    let mut next = account.clone();
+    next.pending_account = Some(registration);
+    persist(&next)?;
+    *account = next;
+    Ok(())
+}
+
+/// Only an explicit start-another action may set the unfinished sign-in
+/// aside. Keep its issued client and identity recoverable in the saved picker.
+/// The displayed pending ID is also checked for retries: a stale click must
+/// not continue a different registration or create a new one after removal.
+fn prepare_new_account(
+    account: &Account,
+    pending_account_id: Option<&str>,
+    start_another: bool,
+    credentials: Result<(bool, bool), String>,
+    persist: impl FnOnce(&Account) -> Result<(), String>,
+) -> Result<Account, String> {
+    require_signed_out(account, credentials)?;
+    if account.pending_account.as_ref().map(|r| r.client_id.as_str()) != pending_account_id
+        || (start_another && pending_account_id.is_none()) {
+        return Err(t("The unfinished ChatGPT sign-in changed. Try again."));
+    }
+    if !start_another { return Ok(account.clone()); }
+    let pending = account.pending_account.as_ref().ok_or_else(|| t("ChatGPT sign-in failed."))?;
+    if account.client_id.as_deref() == Some(pending.client_id.as_str())
+        || account.saved_accounts.iter().any(|r| r.client_id == pending.client_id) {
+        return Err(t("ChatGPT sign-in failed."));
+    }
+    let mut next = account.clone();
+    next.saved_accounts.push(pending.clone());
+    next.pending_account = None;
+    // Do not launch a new flow or lose the retry path if this write fails.
+    persist(&next)?;
+    Ok(next)
+}
+
+/// Browser sign-ins must not queue behind another operation. Otherwise a
+/// duplicate click could open a second browser after the first attempt ends.
+fn try_sign_in_lock(serial: &tokio::sync::Mutex<()>) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+    serial.try_lock().map_err(|_| t("Another ChatGPT operation is in progress. Try again."))
+}
+
+/// Selecting saved metadata never grants access; Reconnect still validates
+/// that registration's subject. The shared credential slots must be empty.
+pub async fn select_account(client_id: &str) -> Result<Status, String> {
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    let account = read_account_from(&account_path())?;
+    require_signed_out(&account, credential_presence())?;
+    let selected = account.saved_accounts.iter().find(|r| r.client_id == client_id)
+        .ok_or_else(|| t("ChatGPT sign-in failed."))?;
+    let next = account.select_registration(selected);
+    save_account(&next)?;
+    invalidate_session();
+    Ok(status_for(&next, false, false))
 }
 
 // ── Encoding helpers ─────────────────────────────────────────────────────────
@@ -420,6 +636,7 @@ struct Tokens {
     refresh_token: Option<String>,
     id_token: Option<String>,
     expires_in: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     scope: Option<String>,
 }
 
@@ -427,6 +644,8 @@ struct Tokens {
 pub struct IdClaims {
     pub iss: String,
     pub aud: Value,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    pub azp: Option<String>,
     pub exp: u64,
     pub sub: String,
     #[serde(default)]
@@ -435,17 +654,26 @@ pub struct IdClaims {
     pub email: Option<String>,
 }
 
+fn deserialize_optional_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    // Omission is allowed; a supplied scope or azp must be a string. Explicit
+    // null must not silently acquire an omitted field's authorization meaning.
+    String::deserialize(deserializer).map(Some)
+}
+
 /// The ID token's claims, decoded without checking anything.
 pub fn decode_claims(token: &str) -> Option<IdClaims> {
     let payload = token.split('.').nth(1)?;
     serde_json::from_slice(&b64url_decode(payload)?).ok()
 }
 
-/// Issuer, audience, expiry and nonce (the signature is `verify_signature`).
+/// Issuer, audience, authorized party, expiry and nonce (signature checked separately).
 pub fn check_claims(claims: &IdClaims, client_id: &str, nonce: &str, now: u64) -> Result<(), String> {
+    // OIDC Core 3.1.3.7 requires rejecting untrusted additional audiences.
+    // Coucou trusts only this registration's client ID, never the API resource
+    // or another saved registration, and every array element must be a string.
     let aud_ok = match &claims.aud {
         Value::String(a) => a == client_id,
-        Value::Array(list) => list.iter().any(|a| a.as_str() == Some(client_id)),
+        Value::Array(list) => !list.is_empty() && list.iter().all(|a| a.as_str() == Some(client_id)),
         _ => false,
     };
     if claims.iss != ISSUER {
@@ -453,6 +681,14 @@ pub fn check_claims(claims: &IdClaims, client_id: &str, nonce: &str, now: u64) -
     }
     if !aud_ok {
         return Err("audience".into());
+    }
+    // Conservative client policy: any supplied authorized party must be us;
+    // multi-entry arrays also need it, even when they repeat our audience.
+    let multiple = claims.aud.as_array().is_some_and(|list| list.len() > 1);
+    match claims.azp.as_deref() {
+        Some(azp) if azp != client_id => return Err("authorized party".into()),
+        None if multiple => return Err("authorized party".into()),
+        _ => {}
     }
     if claims.exp <= now {
         return Err("expired".into());
@@ -535,13 +771,26 @@ async fn wait_for_callback(listener: tokio::net::TcpListener) -> Result<String, 
 
 /// The whole sign-in: listener, browser, callback, code exchange, checks.
 /// `open` opens the authorize URL in the system browser.
-pub async fn connect(open: impl Fn(&str)) -> Result<Status, String> {
-    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
-    let mut account = load_account();
-    if account.host_id.is_empty() {
-        account.host_id = new_host_id();
-        save_account(&account)?;
+pub async fn connect(open: impl Fn(&str), new_account: bool, pending_account_id: Option<&str>, start_another: bool) -> Result<Status, String> {
+    let _serial = try_sign_in_lock(REFRESHING.get_or_init(Default::default))?;
+    let mut selected = read_account_from(&account_path())?;
+    if new_account {
+        selected = prepare_new_account(&selected, pending_account_id, start_another, credential_presence(), save_account)?;
+    } else if start_another || pending_account_id.is_some() {
+        return Err(t("ChatGPT sign-in failed."));
+    } else if selected.client_id.is_none() {
+        // A config reset may leave OS credentials behind. Even a seemingly
+        // first registration cannot reuse those slots until they are empty.
+        require_empty_credentials(credential_presence())?;
     }
+    if selected.host_id.is_empty() {
+        selected.host_id = new_host_id();
+        save_account(&selected)?;
+    }
+    // An add attempt stays separate until its issued identity is verified.
+    // Reconnect always keeps the selected registration and subject binding.
+    let mut account = if new_account { new_account_candidate(&selected) } else { selected.clone() };
+    invalidate_session();
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).await {
         Ok(l) => l,
         // Only the port may change between sign-ins.
@@ -549,13 +798,15 @@ pub async fn connect(open: impl Fn(&str)) -> Result<Status, String> {
     };
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let attempt = Attempt::new(port);
-    let hint = account.client_id.as_ref().and_then(|_| secrets::get_internal(ID_TOKEN_KEY));
+    let hint = (!new_account).then(|| account.client_id.as_ref().and_then(|_| secrets::get_internal(ID_TOKEN_KEY))).flatten();
     open(&authorize_url(&account, &attempt, hint.as_deref()));
 
     let target = tokio::time::timeout(SIGN_IN_TIMEOUT, wait_for_callback(listener))
         .await
         .map_err(|_| t("The sign-in took too long. Try again."))??;
-    let (code, client_id) = prepare_code_exchange(&mut account, &attempt, &target, save_account)?;
+    let (code, client_id) = prepare_code_exchange(&mut account, &attempt, &target, |candidate| {
+        if new_account { retain_pending_account(&mut selected, candidate, save_account) } else { save_account(candidate) }
+    })?;
 
     let reply = http(Duration::from_secs(30))?
         .post(TOKEN)
@@ -592,25 +843,58 @@ pub async fn connect(open: impl Fn(&str)) -> Result<Status, String> {
         crate::log::line(format!("chatgpt: ID token refused ({why})"));
         return Err(t("ChatGPT sign-in failed."));
     }
-    // A returning account must be the same person.
-    if account.sub.as_ref().is_some_and(|s| *s != claims.sub) && account.client_id.as_deref() == Some(client_id.as_str()) {
+    store_verified_sign_in(&selected, &account, &client_id, &claims, &tokens, new_account,
+        save_account, secrets::set_internal, |tokens| {
+            remember(&client_id, tokens);
+            *REJECTED_SESSION.lock().unwrap() = None;
+        })?;
+    crate::log::line("chatgpt: connected".to_string());
+    Ok(status())
+}
+
+/// Only called after signature, issuer, audience, expiry and nonce checks.
+/// Persist the validated mapping before writing credentials. A failed file
+/// write can never pair another registration's tokens with the old identity.
+fn store_verified_sign_in(
+    selected: &Account,
+    candidate: &Account,
+    client_id: &str,
+    claims: &IdClaims,
+    tokens: &Tokens,
+    new_account: bool,
+    mut persist: impl FnMut(&Account) -> Result<(), String>,
+    mut store: impl FnMut(&str, &str) -> Result<(), String>,
+    remember: impl FnOnce(&Tokens),
+) -> Result<Account, String> {
+    if candidate.sub.as_ref().is_some_and(|s| *s != claims.sub) && candidate.client_id.as_deref() == Some(client_id) {
         return Err(t("That's another ChatGPT account than the one connected before."));
     }
-    let refresh = tokens.refresh_token.clone().ok_or_else(|| t("ChatGPT sign-in failed."))?;
-    let granted = tokens.scope.as_deref().unwrap_or("").split_whitespace().any(|s| s == PLAN_SCOPE);
-
-    secrets::set_internal(REFRESH_TOKEN_KEY, &refresh)?;
+    let refresh = tokens.refresh_token.as_deref().ok_or_else(|| t("ChatGPT sign-in failed."))?;
+    let id_token = tokens.id_token.as_deref().ok_or_else(|| t("ChatGPT sign-in failed."))?;
+    // This is an authorization-code response for authorize_url's SCOPE.
+    // RFC 6749 §5.1: omitted scope means the requested scopes were granted;
+    // an explicit (even empty or reduced) scope must be honored instead.
+    // https://www.rfc-editor.org/rfc/rfc6749#section-5.1
+    let granted = tokens.scope.as_deref().unwrap_or(SCOPE).split_whitespace().any(|s| s == PLAN_SCOPE);
+    let registration = Registration {
+        client_id: client_id.to_string(), email: claims.email.clone(), sub: Some(claims.sub.clone()),
+        plan_enabled: granted, welcomed: candidate.welcomed,
+    };
+    let mut next = if new_account { selected.select_registration(&registration) } else { candidate.select_registration(&registration) };
+    if new_account { next.pending_account = None; }
+    next.explicitly_disconnected = false;
+    // A failed overwrite can leave an unusable previous refresh token. Do not
+    // declare the session usable until both credential and metadata commits.
+    next.session_needs_reconnect = true;
+    persist(&next)?;
+    store(REFRESH_TOKEN_KEY, refresh)?;
     // The ID token is only a hint for the next sign-in; too long for the
     // Credential Manager means no hint.
-    let _ = secrets::set_internal(ID_TOKEN_KEY, &id_token);
-    account.client_id = Some(client_id);
-    account.email = claims.email.clone();
-    account.sub = Some(claims.sub.clone());
-    account.plan_enabled = granted;
-    save_account(&account)?;
-    remember(&tokens);
-    crate::log::line(format!("chatgpt: connected (plan usage {})", if granted { "enabled" } else { "not granted" }));
-    Ok(status())
+    let _ = store(ID_TOKEN_KEY, id_token);
+    next.session_needs_reconnect = false;
+    persist(&next)?;
+    remember(tokens);
+    Ok(next)
 }
 
 /// Remote revocation and local cleanup are independent outcomes. No secrets
@@ -624,18 +908,28 @@ pub struct DisconnectResult {
 }
 
 /// Sign out: try revocation, then always attempt both local deletions and
-/// clear the in-memory access token. Client and host ids stay for next time.
+/// clear the in-memory access token. Account/client mapping and host id stay
+/// for reconnect. Only a fully persisted cleanup enables switching accounts.
 pub async fn disconnect() -> DisconnectResult {
     let _serial = REFRESHING.get_or_init(Default::default).lock().await;
-    let account = load_account();
-    let refresh = secrets::get_internal(REFRESH_TOKEN_KEY);
-    let result = disconnect_with(
-        refresh.as_deref(),
-        account.client_id.as_deref(),
+    invalidate_session();
+    let loaded = read_account_from(&account_path());
+    let account = loaded.clone().unwrap_or_default();
+    let refresh = secrets::read_internal(REFRESH_TOKEN_KEY);
+    let mut result = disconnect_with(
+        refresh.as_ref().ok().and_then(|token| token.as_deref()),
+        &account,
         revoke,
         |key| secrets::set_internal(key, ""),
         || *ACCESS.lock().unwrap() = None,
+        |next| {
+            // Even an unreadable account must not prevent token cleanup, but
+            // never overwrite an account/client mapping we could not load.
+            loaded.as_ref().map_err(Clone::clone)?;
+            save_account(next)
+        },
     ).await;
+    if refresh.is_err() { result.revocation_confirmed = Some(false); }
     crate::log::line(format!(
         "chatgpt: disconnect (revocation {}, local cleanup {})",
         match result.revocation_confirmed {
@@ -651,12 +945,13 @@ pub async fn disconnect() -> DisconnectResult {
 /// Keep the cleanup orchestration testable without OAuth or a real keystore.
 async fn disconnect_with<'a, F: std::future::Future<Output = bool>>(
     refresh: Option<&'a str>,
-    client: Option<&'a str>,
+    account: &'a Account,
     revoke: impl FnOnce(&'a str, &'a str) -> F,
     mut forget: impl FnMut(&str) -> Result<(), String>,
     clear_access: impl FnOnce(),
+    persist: impl FnOnce(&Account) -> Result<(), String>,
 ) -> DisconnectResult {
-    let revocation_confirmed = match (refresh, client) {
+    let revocation_confirmed = match (refresh, account.client_id.as_deref()) {
         (Some(refresh), Some(client)) => Some(revoke(refresh, client).await),
         (Some(_), None) => Some(false),
         (None, _) => None,
@@ -665,9 +960,14 @@ async fn disconnect_with<'a, F: std::future::Future<Output = bool>>(
     let refresh_deleted = forget(REFRESH_TOKEN_KEY).is_ok();
     let id_deleted = forget(ID_TOKEN_KEY).is_ok();
     clear_access();
+    let account_saved = if refresh_deleted && id_deleted {
+        let mut next = account.clone();
+        next.explicitly_disconnected = true;
+        persist(&next).is_ok()
+    } else { false };
     DisconnectResult {
         revocation_confirmed,
-        local_cleanup_succeeded: refresh_deleted && id_deleted,
+        local_cleanup_succeeded: refresh_deleted && id_deleted && account_saved,
     }
 }
 
@@ -694,26 +994,79 @@ async fn revoke(refresh: &str, client_id: &str) -> bool {
 // ── The access token ─────────────────────────────────────────────────────────
 
 struct Access {
+    client_id: String,
+    generation: u64,
     token: String,
     until: Instant,
 }
 
+impl Access {
+    fn matches_rejection(&self, request: &RequestAccount, token: &str) -> bool {
+        self.client_id == request.client_id && self.generation == request.generation && self.token == token
+    }
+
+    fn fresh_for(&self, request: &RequestAccount) -> Option<String> {
+        (self.client_id == request.client_id && self.generation == request.generation
+            && self.until > Instant::now() + REFRESH_MARGIN).then(|| self.token.clone())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RequestAccount {
+    client_id: String,
+    generation: u64,
+}
+
 static ACCESS: std::sync::Mutex<Option<Access>> = std::sync::Mutex::new(None);
+static ACTIVE_REFRESH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Keep a known rejection fail-closed even when both persistent stores fail.
+/// Only a fully committed verified sign-in clears this process-local guard.
+static REJECTED_SESSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SESSION_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// One refresh at a time: the refresh token rotates.
 static REFRESHING: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
-fn remember(tokens: &Tokens) {
-    let ttl = Duration::from_secs(tokens.expires_in.unwrap_or(3600));
-    *ACCESS.lock().unwrap() = Some(Access { token: tokens.access_token.clone(), until: Instant::now() + ttl });
+fn session_generation() -> u64 {
+    SESSION_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-fn fresh_access() -> Option<String> {
+/// Called with REFRESHING held, before disconnect/reconnect can await work.
+fn invalidate_session() {
+    SESSION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    *ACCESS.lock().unwrap() = None;
+}
+
+fn check_session_generation(request: &RequestAccount, current: u64) -> Result<(), String> {
+    if request.generation != current {
+        return Err(t("The selected ChatGPT account changed. Try again."));
+    }
+    Ok(())
+}
+
+fn remember(client_id: &str, tokens: &Tokens) {
+    let ttl = Duration::from_secs(tokens.expires_in.unwrap_or(3600));
+    *ACCESS.lock().unwrap() = Some(Access { client_id: client_id.to_string(), generation: session_generation(), token: tokens.access_token.clone(), until: Instant::now() + ttl });
+}
+
+fn fresh_access(request: &RequestAccount) -> Option<String> {
     ACCESS
         .lock()
         .unwrap()
         .as_ref()
-        .filter(|a| a.until > Instant::now() + REFRESH_MARGIN)
-        .map(|a| a.token.clone())
+        .and_then(|a| a.fresh_for(request))
+}
+
+fn require_selected_client(account: &Account, client_id: &str) -> Result<(), String> {
+    if account.client_id.as_deref() != Some(client_id) {
+        return Err(t("The selected ChatGPT account changed. Try again."));
+    }
+    if account.explicitly_disconnected || account.session_needs_reconnect {
+        return Err(t("Your ChatGPT session ended. Reconnect in Settings."));
+    }
+    if !account.plan_enabled {
+        return Err(t("Plan usage wasn't allowed at sign-in. Reconnect and allow it to chat on your ChatGPT plan."));
+    }
+    Ok(())
 }
 
 /// Refresh errors after which the token set is useless (errors-and-recovery).
@@ -724,75 +1077,229 @@ fn terminal_refresh_error(code: &str) -> bool {
     )
 }
 
-/// A valid access token: the one in memory, or a refreshed one. `force`
-/// refreshes even a token that looks valid (after a 401).
-async fn access_token(force: bool) -> Result<String, String> {
-    if !force {
-        if let Some(token) = fresh_access() {
-            return Ok(token);
-        }
+enum RefreshFailure {
+    Rejected { status: u16, code: String },
+    Unreachable,
+    /// A successful exchange may already have rotated the refresh token.
+    InvalidResponse,
+}
+
+struct ActiveRefresh<'a>(&'a std::sync::Mutex<Option<String>>);
+
+impl<'a> ActiveRefresh<'a> {
+    fn new(active: &'a std::sync::Mutex<Option<String>>, client: &str) -> Self {
+        *active.lock().unwrap() = Some(client.to_string());
+        Self(active)
     }
-    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
-    // Another call may have refreshed while this one waited.
-    if !force {
-        if let Some(token) = fresh_access() {
-            return Ok(token);
-        }
+}
+
+impl Drop for ActiveRefresh<'_> {
+    fn drop(&mut self) { *self.0.lock().unwrap() = None; }
+}
+
+/// If Stop drops an in-flight refresh, its outcome (including rotation) is
+/// unknown. Keep the persisted guard and invalidate the old session on drop.
+struct PendingRefresh<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> Drop for PendingRefresh<F> {
+    fn drop(&mut self) {
+        if let Some(invalidate) = self.0.take() { invalidate(); }
     }
-    let account = load_account();
-    let (Some(refresh), Some(client)) = (secrets::get_internal(REFRESH_TOKEN_KEY), account.client_id.clone()) else {
-        return Err(t("Connect your ChatGPT account first."));
-    };
-    let reply = http(Duration::from_secs(30))?
+}
+
+async fn exchange_refresh(refresh: &str, client: &str) -> Result<Tokens, RefreshFailure> {
+    let reply = http(Duration::from_secs(30)).map_err(|_| RefreshFailure::Unreachable)?
         .post(TOKEN)
-        .form(&[("grant_type", "refresh_token"), ("client_id", client.as_str()), ("refresh_token", refresh.as_str()), ("resource", RESOURCE)])
+        .form(&[("grant_type", "refresh_token"), ("client_id", client), ("refresh_token", refresh), ("resource", RESOURCE)])
         .send()
         .await
-        .map_err(|_| t("ChatGPT can't be reached."))?;
+        .map_err(|_| RefreshFailure::Unreachable)?;
     let status = reply.status();
     if !status.is_success() {
         let body: Value = reply.json().await.unwrap_or(Value::Null);
-        let code = body["error"].as_str().or_else(|| body.pointer("/error/code").and_then(Value::as_str)).unwrap_or("");
-        if terminal_refresh_error(code) {
-            // The session is over: forget it, keep the account for "Reconnect".
-            let _ = secrets::set_internal(REFRESH_TOKEN_KEY, "");
-            *ACCESS.lock().unwrap() = None;
-            crate::log::line(format!("chatgpt: session ended ({code})"));
-            return Err(t("Your ChatGPT session ended. Reconnect in Settings."));
+        let code = body["error"].as_str().or_else(|| body.pointer("/error/code").and_then(Value::as_str)).unwrap_or("").to_string();
+        return Err(RefreshFailure::Rejected { status: status.as_u16(), code });
+    }
+    reply.json().await.map_err(|_| RefreshFailure::InvalidResponse)
+}
+
+/// The durable guard must precede the network request: after a terminal
+/// response both the disk and keystore may fail, or the process may exit.
+/// Inject the effects to test those paths without OAuth or real credentials.
+async fn refresh_with<F: std::future::Future<Output = Result<Tokens, RefreshFailure>>>(
+    active: &std::sync::Mutex<Option<String>>,
+    account: &Account,
+    exchange: impl FnOnce() -> F,
+    mut persist: impl FnMut(&Account) -> Result<(), String>,
+    mut store: impl FnMut(&str, &str) -> Result<(), String>,
+    invalidate: impl FnOnce(),
+    remember: impl FnOnce(&Tokens),
+) -> Result<String, String> {
+    let client = account.client_id.as_deref().ok_or_else(|| t("Connect your ChatGPT account first."))?;
+    require_selected_client(account, client)?;
+    let _active = ActiveRefresh::new(active, client);
+    let mut guarded = account.clone();
+    guarded.session_needs_reconnect = true;
+    persist(&guarded)?;
+    let mut pending = PendingRefresh(Some(invalidate));
+    match exchange().await {
+        Err(RefreshFailure::Rejected { code, .. }) if terminal_refresh_error(&code) => {
+            let deleted = store(REFRESH_TOKEN_KEY, "").is_ok();
+            crate::log::line(format!("chatgpt: session ended ({code}, credential cleanup {})", if deleted { "succeeded" } else { "failed" }));
+            Err(t("Your ChatGPT session ended. Reconnect in Settings."))
         }
-        crate::log::line(format!("chatgpt: refresh HTTP {}", status.as_u16()));
-        return Err(t("ChatGPT can't be reached."));
+        Err(RefreshFailure::InvalidResponse) => {
+            Err(t("ChatGPT didn't accept the sign-in. Reconnect in Settings."))
+        }
+        Err(error) => {
+            // Transient/nonterminal errors do not end a session. If restoring
+            // its metadata fails, the durable guard remains authoritative.
+            persist(account)?;
+            pending.0 = None;
+            if let RefreshFailure::Rejected { status, .. } = error {
+                crate::log::line(format!("chatgpt: refresh HTTP {status}"));
+            }
+            Err(t("ChatGPT can't be reached."))
+        }
+        Ok(tokens) => {
+            // RFC 6749 §§5.1, 6: omitted refresh scope retains the prior grant;
+            // explicit scope can reduce it, never authorize a new permission.
+            let mut next = account.clone();
+            next.plan_enabled &= tokens.scope.as_deref().is_none_or(|scope| scope.split_whitespace().any(|s| s == PLAN_SCOPE));
+            if !next.plan_enabled {
+                // Fence in-flight models/Responses and erase cached access as
+                // soon as permission is lost, even if either store now fails.
+                if let Some(invalidate) = pending.0.take() { invalidate(); }
+            }
+            let committed = (|| {
+                if let Some(next) = &tokens.refresh_token {
+                    store(REFRESH_TOKEN_KEY, next)?;
+                }
+                persist(&next)
+            })();
+            committed?;
+            // Save rotation and the reduced grant for same-account recovery,
+            // but never return/cache this token for the triggering request.
+            require_selected_client(&next, client)?;
+            pending.0 = None;
+            remember(&tokens);
+            Ok(tokens.access_token)
+        }
     }
-    let tokens: Tokens = reply.json().await.map_err(|e| e.to_string())?;
-    if let Some(next) = &tokens.refresh_token {
-        secrets::set_internal(REFRESH_TOKEN_KEY, next)?;
+}
+
+/// Called with REFRESHING held. A delayed 401 may only end the session and
+/// exact access token that issued it, never a newer refresh or sign-in.
+fn reject_session_with(
+    request: &RequestAccount,
+    current_generation: u64,
+    owns_token: bool,
+    account: Result<Account, String>,
+    rejected: &std::sync::Mutex<Option<String>>,
+    persist: impl FnOnce(&Account) -> Result<(), String>,
+    store: impl FnOnce(&str, &str) -> Result<(), String>,
+    invalidate: impl FnOnce(),
+) -> Result<(), String> {
+    check_session_generation(request, current_generation)?;
+    if !owns_token || account.as_ref().is_ok_and(|a| a.client_id.as_deref() != Some(request.client_id.as_str())) {
+        return Err(t("The selected ChatGPT account changed. Try again."));
     }
-    remember(&tokens);
-    Ok(tokens.access_token)
+    // No await after ownership verification: Stop cannot lose the known
+    // rejection while reading an error body or performing local recovery.
+    *rejected.lock().unwrap() = Some(request.client_id.clone());
+    invalidate();
+    let saved = account.and_then(|mut account| {
+        account.session_needs_reconnect = true;
+        persist(&account)
+    });
+    // Independent cleanup makes a failed metadata write recoverable after
+    // restart if the keystore remains writable. Retain the ID hint/client.
+    let deleted = store(REFRESH_TOKEN_KEY, "").is_ok();
+    crate::log::line(format!("chatgpt: refreshed token rejected (metadata {}, credential cleanup {})",
+        if saved.is_ok() { "saved" } else { "failed" }, if deleted { "succeeded" } else { "failed" }));
+    saved
+}
+
+async fn reject_session(request: &RequestAccount, token: &str) -> Result<(), String> {
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    let owns_token = ACCESS.lock().unwrap().as_ref().is_some_and(|access| access.matches_rejection(request, token));
+    reject_session_with(request, session_generation(), owns_token, read_account_from(&account_path()),
+        &REJECTED_SESSION, save_account, secrets::set_internal, invalidate_session)
+}
+
+/// Share the one-refresh-then-reconnect policy between models and Responses.
+/// Authentication attempts are independent of Responses' transient backoff.
+async fn recover_authentication_with<
+    F: std::future::Future<Output = Result<String, String>>,
+    R: std::future::Future<Output = Result<(), String>>,
+>(
+    status: u16,
+    refreshed: &mut bool,
+    refresh: impl FnOnce() -> F,
+    reject: impl FnOnce() -> R,
+) -> Result<Option<String>, String> {
+    if status != 401 { return Ok(None); }
+    if !*refreshed {
+        *refreshed = true;
+        return refresh().await.map(Some);
+    }
+    reject().await?;
+    Err(t("Your ChatGPT session ended. Reconnect in Settings."))
+}
+
+/// A valid access token: the one in memory, or a refreshed one. `force`
+/// refreshes even a token that looks valid (after a 401).
+async fn access_token(force: bool, request: &RequestAccount) -> Result<String, String> {
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    // A request, including a late 401 retry, stays with its starting account.
+    let mut account = read_account_from(&account_path())?;
+    check_session_generation(request, session_generation())?;
+    apply_session_rejection(&mut account, REJECTED_SESSION.lock().unwrap().as_deref());
+    require_selected_client(&account, &request.client_id)?;
+    // Another call may have refreshed while this one waited.
+    if !force {
+        if let Some(token) = fresh_access(request) {
+            return Ok(token);
+        }
+    }
+    let (Some(refresh), Some(client)) = (secrets::get_internal(REFRESH_TOKEN_KEY), account.client_id.clone()) else {
+        return Err(t("Connect your ChatGPT account first."));
+    };
+    refresh_with(&ACTIVE_REFRESH, &account, || exchange_refresh(&refresh, &client), save_account,
+        secrets::set_internal, invalidate_session, |tokens| remember(&client, tokens)).await
 }
 
 // ── Models ───────────────────────────────────────────────────────────────────
 
 pub async fn models() -> Result<Vec<CatalogModel>, String> {
-    plan_ready()?;
-    let mut token = access_token(false).await?;
-    for attempt in 0..2 {
+    let account = plan_ready().await?;
+    let mut token = access_token(false, &account).await?;
+    let mut refreshed = false;
+    for _ in 0..2 {
+        check_session_generation(&account, session_generation())?;
         let reply = http(Duration::from_secs(30))?
             .get(MODELS)
             .bearer_auth(&token)
             .send()
             .await
             .map_err(|_| t("ChatGPT can't be reached."))?;
-        if reply.status().as_u16() == 401 && attempt == 0 {
-            token = access_token(true).await?;
+        check_session_generation(&account, session_generation())?;
+        if let Some(next) = recover_authentication_with(reply.status().as_u16(), &mut refreshed,
+            || access_token(true, &account), || reject_session(&account, &token),
+        ).await? {
+            token = next;
             continue;
         }
         if !reply.status().is_success() {
             let status = reply.status().as_u16();
             let body: Value = reply.json().await.unwrap_or(Value::Null);
+            let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+            check_session_generation(&account, session_generation())?;
             return Err(error_message(status, &body).text);
         }
         let body: Value = reply.json().await.map_err(|e| e.to_string())?;
+        let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+        check_session_generation(&account, session_generation())?;
         return Ok(catalog(&body));
     }
     Err(t("ChatGPT didn't accept the sign-in. Reconnect in Settings."))
@@ -809,7 +1316,7 @@ pub fn as_model_infos(models: &[CatalogModel]) -> Vec<ModelInfo> {
 // rules out audio input and transcription, and says nothing of speech out.
 // Audio mode asks for OpenAI's voice once in a while: when the account may
 // use it, replies are read by it, on the plan like everything else here;
-// when it may not, the first refusal is remembered for this run and Windows'
+// when it may not, the first refusal is remembered for that session and Windows'
 // own voices read instead. Never an API key, never another billing.
 
 const SPEECH: &str = "https://api.openai.com/v1/audio/speech";
@@ -818,8 +1325,17 @@ pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
 pub const SPEECH_VOICE: &str = "marin";
 const SPEECH_STYLE: &str = "Speak naturally and warmly, like a friendly assistant in a relaxed conversation. Match the language of the text.";
 
-/// Set once the account was refused speech: not asked again until restart.
-static SPEECH_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A refusal belongs to the account session that issued it. Reconnecting or
+/// switching accounts may allow speech and must not inherit an old refusal.
+static SPEECH_REFUSED: std::sync::Mutex<Option<RequestAccount>> = std::sync::Mutex::new(None);
+
+fn check_speech_session(request: &RequestAccount, current_generation: u64, refused: Option<&RequestAccount>) -> Result<(), String> {
+    check_session_generation(request, current_generation)?;
+    if refused == Some(request) {
+        return Err("refused earlier".into());
+    }
+    Ok(())
+}
 
 pub fn speech_body(text: &str) -> Value {
     json!({
@@ -832,21 +1348,21 @@ pub fn speech_body(text: &str) -> Value {
 }
 
 /// True when OpenAI's voice may be tried: signed in with plan usage and not
-/// refused earlier in this run.
-pub fn speech_available() -> bool {
-    !SPEECH_REFUSED.load(std::sync::atomic::Ordering::SeqCst) && plan_ready().is_ok()
+/// refused earlier in this account session.
+pub async fn speech_available() -> bool {
+    let Ok(account) = plan_ready().await else { return false };
+    check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref()).is_ok()
 }
 
 /// `text` read by OpenAI's voice, as MP3 bytes. Err when it can't be
 /// (refused, offline, signed out): the caller reads it another way.
 pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
-    plan_ready()?;
-    if SPEECH_REFUSED.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("refused earlier".into());
-    }
+    let account = plan_ready().await?;
+    check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref())?;
     let body = speech_body(text);
-    let mut token = access_token(false).await?;
+    let mut token = access_token(false, &account).await?;
     for attempt in 0..2 {
+        check_session_generation(&account, session_generation())?;
         let reply = http(Duration::from_secs(30))?
             .post(SPEECH)
             .bearer_auth(&token)
@@ -854,17 +1370,22 @@ pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
             .send()
             .await
             .map_err(|_| t("ChatGPT can't be reached."))?;
+        check_session_generation(&account, session_generation())?;
         let status = reply.status().as_u16();
+        // Speech is optional on this sign-in. An endpoint-specific refusal
+        // falls back to Windows; it must not expire an otherwise valid chat.
         if status == 401 && attempt == 0 {
-            token = access_token(true).await?;
+            token = access_token(true, &account).await?;
             continue;
         }
         if !reply.status().is_success() {
             let body: Value = reply.json().await.unwrap_or(Value::Null);
+            let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+            check_session_generation(&account, session_generation())?;
             let code = body.pointer("/error/code").and_then(Value::as_str).unwrap_or("");
             // A refusal of this kind of request, not a passing failure.
             if matches!(status, 400 | 401 | 403 | 404) {
-                SPEECH_REFUSED.store(true, std::sync::atomic::Ordering::SeqCst);
+                *SPEECH_REFUSED.lock().unwrap() = Some(account.clone());
                 crate::log::line(format!("chatgpt: speech not available on this sign-in (HTTP {status} {code})"));
             } else {
                 crate::log::line(format!("chatgpt: speech HTTP {status} {code}"));
@@ -872,6 +1393,8 @@ pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
             return Err(error_message(status, &body).text);
         }
         let bytes = reply.bytes().await.map_err(|_| t("ChatGPT can't be reached."))?;
+        let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+        check_session_generation(&account, session_generation())?;
         if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
             return Err("empty or oversized audio".into());
         }
@@ -880,15 +1403,21 @@ pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
     Err(t("ChatGPT didn't accept the sign-in. Reconnect in Settings."))
 }
 
-fn plan_ready() -> Result<(), String> {
+async fn plan_ready() -> Result<RequestAccount, String> {
+    // Capture identity and epoch together; even same-account reconnects must
+    // not adopt a request that started in the previous session.
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
     let s = status();
     if !s.connected {
-        return Err(t("Connect your ChatGPT account first."));
+        return Err(t(if s.needs_reconnect { "Your ChatGPT session ended. Reconnect in Settings." } else { "Connect your ChatGPT account first." }));
     }
     if !s.plan_enabled {
         return Err(t("Plan usage wasn't allowed at sign-in. Reconnect and allow it to chat on your ChatGPT plan."));
     }
-    Ok(())
+    Ok(RequestAccount {
+        client_id: s.account_id.ok_or_else(|| t("Connect your ChatGPT account first."))?,
+        generation: session_generation(),
+    })
 }
 
 // ── Inference ────────────────────────────────────────────────────────────────
@@ -1039,7 +1568,7 @@ fn failure(status: u16, code: &str, param: &str) -> Failure {
         }
         "subscription_sharing_invalid_user" => plain(t("ChatGPT didn't accept the sign-in. Reconnect in Settings.")),
         "subscription_sharing_route_not_supported" | "chatpass_v2_scope_not_authorized" | "chatpass_v2_invalid_authorization_context" => {
-            plain(t("ChatGPT refused this app's request. Reconnect in Settings."))
+            plain(t("ChatGPT refused this app's request. Check the app's configuration and permissions."))
         }
         "model_not_found" => plain(t("This model isn't available on your ChatGPT account.")),
         _ => match status {
@@ -1075,7 +1604,7 @@ pub async fn send(
     mut on_delta: impl FnMut(String),
     on_usage_limit: impl Fn(),
 ) -> Result<ChatReply, String> {
-    plan_ready()?;
+    let account = plan_ready().await?;
     if !effort_ok(model, effort) {
         return Err(tf("{model} doesn't take this reasoning effort.", &[("model", model)]));
     }
@@ -1083,9 +1612,11 @@ pub async fn send(
     let user = user_content(turn.first, context.as_ref(), &query);
     let body = request_body(model, effort, &chat::system_prompt(false), &turn.history, user.clone());
 
-    let mut token = access_token(false).await?;
+    let mut token = access_token(false, &account).await?;
     let mut tries = 0;
+    let mut refreshed = false;
     let reply = loop {
+        check_session_generation(&account, session_generation())?;
         tries += 1;
         let reply = http(Duration::from_secs(600))?
             .post(RESPONSES)
@@ -1094,21 +1625,27 @@ pub async fn send(
             .send()
             .await
             .map_err(|_| t("ChatGPT can't be reached."))?;
+        check_session_generation(&account, session_generation())?;
         let status = reply.status().as_u16();
         if reply.status().is_success() {
             break reply;
         }
-        let body: Value = reply.json().await.unwrap_or(Value::Null);
-        let failure = error_message(status, &body);
-        if status == 401 && tries == 1 {
-            token = access_token(true).await?;
+        if let Some(next) = recover_authentication_with(status, &mut refreshed,
+            || access_token(true, &account), || reject_session(&account, &token),
+        ).await? {
+            token = next;
             continue;
         }
+        let body: Value = reply.json().await.unwrap_or(Value::Null);
+        check_session_generation(&account, session_generation())?;
+        let failure = error_message(status, &body);
         // Bounded backoff, only before anything streamed.
         if failure.transient && tries <= 2 {
             tokio::time::sleep(Duration::from_secs(tries * 2)).await;
             continue;
         }
+        let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+        check_session_generation(&account, session_generation())?;
         crate::log::line(format!("chatgpt: HTTP {status} {}", body.pointer("/error/code").and_then(Value::as_str).unwrap_or("")));
         if failure.usage_limit {
             on_usage_limit();
@@ -1122,6 +1659,8 @@ pub async fn send(
     let mut last = Instant::now();
     let mut done = false;
     'read: while let Some(chunk) = reply.chunk().await.map_err(|_| t("ChatGPT stopped before finishing the answer."))? {
+        let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+        check_session_generation(&account, session_generation())?;
         pending.extend_from_slice(&chunk);
         while let Some(end) = pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
@@ -1160,6 +1699,8 @@ pub async fn send(
     if !done {
         return Err(t("ChatGPT stopped before finishing the answer."));
     }
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    check_session_generation(&account, session_generation())?;
     on_delta(answer.clone());
     let plain = chat::plain_question(turn.first, context.as_ref(), &query);
     Ok(finish_turn(chat, &turn, user, &plain, answer))

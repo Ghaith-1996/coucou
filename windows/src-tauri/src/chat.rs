@@ -219,12 +219,16 @@ fn checked_context(context: ChatContext) -> Result<ChatContext, String> {
     }
 }
 
-/// True when `path` is a regular file directly inside `dir`, both resolved
-/// (no `..`, no symlink pointing out of it).
+/// True when `path` is a regular file directly inside `dir`: its folder,
+/// resolved (no `..`, no link out of it), is `dir`, and the file itself is
+/// not a link. The folder is compared rather than the file's own resolved
+/// path: when Coucou runs inside a packaged app's context, Windows redirects
+/// the files it writes under AppData to the package's cache, and a file then
+/// resolves there while its folder still resolves to AppData.
 fn is_inside(dir: &std::path::Path, path: &std::path::Path) -> bool {
-    let (Ok(dir), Ok(file)) = (dir.canonicalize(), path.canonicalize()) else { return false };
-    file.parent() == Some(dir.as_path())
-        && std::fs::symlink_metadata(&file).map(|m| m.is_file()).unwrap_or(false)
+    let Some(parent) = path.parent() else { return false };
+    let (Ok(dir), Ok(parent)) = (dir.canonicalize(), parent.canonicalize()) else { return false };
+    parent == dir && std::fs::symlink_metadata(path).map(|m| m.is_file()).unwrap_or(false)
 }
 
 /// One chat turn with the provider chosen in the settings.

@@ -17,9 +17,10 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TITLE_CHARS: usize = 120;
 pub const MAX_LISTED: usize = 500;
 
-// Save and rename both read before writing. Keep that whole operation together
-// so an in-flight message save cannot undo a title change (or lose messages).
-static WRITES: Mutex<()> = Mutex::new(());
+// Keep reads and read-modify-writes together. Reopening during a save must
+// wait for its new transcript, not restore an older one that can overwrite it.
+// Private *_locked helpers are only called while the caller holds this lock.
+static STORE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,18 +98,18 @@ fn path(dir: &Path, id: &str) -> Option<PathBuf> {
 
 pub fn save(dir: &Path, c: &Conversation) -> Result<(), String> {
     validate(c)?;
-    let _guard = WRITES.lock().map_err(|_| "conversation store unavailable")?;
+    let _guard = STORE.lock().map_err(|_| "conversation store unavailable")?;
     let mut c = c.clone();
     let target = path(dir, &c.id).ok_or("bad conversation id")?;
     if target.try_exists().map_err(|e| e.to_string())? {
         // Only rename changes an existing title. The view may have captured
         // its save before a rename completed, even after reopening the chat.
-        c.title = load(dir, &c.id)?.title;
+        c.title = load_locked(dir, &c.id)?.title;
     }
-    write(dir, &c)
+    write_locked(dir, &c)
 }
 
-fn write(dir: &Path, c: &Conversation) -> Result<(), String> {
+fn write_locked(dir: &Path, c: &Conversation) -> Result<(), String> {
     validate(c)?;
     let bytes = serde_json::to_vec(c).map_err(|e| e.to_string())?;
     if bytes.len() > MAX_FILE_BYTES {
@@ -123,6 +124,11 @@ fn write(dir: &Path, c: &Conversation) -> Result<(), String> {
 }
 
 pub fn load(dir: &Path, id: &str) -> Result<Conversation, String> {
+    let _guard = STORE.lock().map_err(|_| "conversation store unavailable")?;
+    load_locked(dir, id)
+}
+
+fn load_locked(dir: &Path, id: &str) -> Result<Conversation, String> {
     let file = path(dir, id).ok_or("bad conversation id")?;
     let bytes = std::fs::read(file).map_err(|_| crate::i18n::t("This conversation is gone."))?;
     if bytes.len() > MAX_FILE_BYTES {
@@ -138,13 +144,14 @@ pub fn load(dir: &Path, id: &str) -> Result<Conversation, String> {
 
 /// Every saved conversation, most recent first. Unreadable files are skipped.
 pub fn list(dir: &Path) -> Vec<Summary> {
+    let Ok(_guard) = STORE.lock() else { return Vec::new() };
     let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<Summary> = read
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
             let id = name.strip_suffix(".json")?;
-            let c = load(dir, id).ok()?;
+            let c = load_locked(dir, id).ok()?;
             Some(Summary { id: c.id, title: c.title, updated_at: c.updated_at, count: c.messages.len() })
         })
         .collect();
@@ -154,14 +161,14 @@ pub fn list(dir: &Path) -> Vec<Summary> {
 }
 
 pub fn rename(dir: &Path, id: &str, title: &str) -> Result<(), String> {
-    let _guard = WRITES.lock().map_err(|_| "conversation store unavailable")?;
-    let mut c = load(dir, id)?;
+    let _guard = STORE.lock().map_err(|_| "conversation store unavailable")?;
+    let mut c = load_locked(dir, id)?;
     c.title = title.trim().to_string();
-    write(dir, &c)
+    write_locked(dir, &c)
 }
 
 pub fn delete(dir: &Path, id: &str) -> Result<(), String> {
-    let _guard = WRITES.lock().map_err(|_| "conversation store unavailable")?;
+    let _guard = STORE.lock().map_err(|_| "conversation store unavailable")?;
     let file = path(dir, id).ok_or("bad conversation id")?;
     match std::fs::remove_file(file) {
         Ok(()) => Ok(()),
@@ -278,6 +285,108 @@ mod tests {
         let back = load(&dir, &stale.id).unwrap();
         assert_eq!(back.title, "Lisbon trip");
         assert_eq!(back.messages, stale.messages);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reopening_and_listing_wait_for_an_in_flight_write() {
+        use std::sync::{mpsc, Arc, Barrier};
+        use std::time::Duration;
+
+        let dir = scratch("read-write-race");
+        let mut latest = conv("c-0000000000000005", 10);
+        save(&dir, &latest).unwrap();
+        latest.updated_at = 20;
+        latest.messages.push(msg("user", "What next?"));
+        latest.messages.push(msg("assistant", "Day two"));
+
+        // Pause a writer before replacing the old JSON. The barriers/channels
+        // coordinate the readers; no sleeps are used to race the filesystem.
+        let guard = STORE.lock().unwrap();
+        let ready = Arc::new(Barrier::new(3));
+        let (opened_tx, opened_rx) = mpsc::channel();
+        let (listed_tx, listed_rx) = mpsc::channel();
+        let opener = {
+            let ready = Arc::clone(&ready);
+            let dir = dir.clone();
+            let id = latest.id.clone();
+            std::thread::spawn(move || {
+                ready.wait();
+                opened_tx.send(load(&dir, &id)).unwrap();
+            })
+        };
+        let lister = {
+            let ready = Arc::clone(&ready);
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                ready.wait();
+                listed_tx.send(list(&dir)).unwrap();
+            })
+        };
+        ready.wait();
+        let opened_early = opened_rx.recv_timeout(Duration::from_millis(100));
+        let listed_early = listed_rx.recv_timeout(Duration::from_millis(100));
+        write_locked(&dir, &latest).unwrap();
+        drop(guard);
+
+        // Release the writer before asserting, so a regression cannot leave
+        // the readers stuck or poison the store lock for the other tests.
+        let opened = opened_early.as_ref().ok().cloned().unwrap_or_else(|| {
+            opened_rx.recv_timeout(Duration::from_secs(5)).expect("reopen must finish after the write")
+        }).unwrap();
+        let listed = listed_early.as_ref().ok().cloned().unwrap_or_else(|| {
+            listed_rx.recv_timeout(Duration::from_secs(5)).expect("listing must finish after the write")
+        });
+        opener.join().unwrap();
+        lister.join().unwrap();
+        assert!(matches!(opened_early, Err(mpsc::RecvTimeoutError::Timeout)), "reopen read before the writer committed");
+        assert!(matches!(listed_early, Err(mpsc::RecvTimeoutError::Timeout)), "listing read before the writer committed");
+        assert_eq!(opened, latest);
+        assert_eq!(context_turns(&opened).last(), Some(&("What next?".into(), "Day two".into())));
+        assert_eq!(listed, [Summary { id: latest.id.clone(), title: latest.title.clone(), updated_at: 20, count: 4 }]);
+
+        // Saving the reopened transcript must not discard the committed turn.
+        save(&dir, &opened).unwrap();
+        rename(&dir, &latest.id, "Trip plans").unwrap();
+        assert_eq!(load(&dir, &latest.id).unwrap().messages, latest.messages);
+        assert_eq!(list(&dir)[0].title, "Trip plans");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_errors_release_the_lock_and_preserve_the_saved_file() {
+        let dir = scratch("store-errors");
+        let saved = conv("c-0000000000000006", 10);
+        assert!(list(&dir).is_empty());
+        assert!(load(&dir, &saved.id).is_err());
+        save(&dir, &saved).unwrap();
+
+        assert!(rename(&dir, &saved.id, " \n ").is_err());
+        assert_eq!(load(&dir, &saved.id).unwrap(), saved);
+
+        // A directory at the temporary-file path makes the write fail on
+        // both Windows and Unix, without relying on permission settings.
+        let tmp = dir.join(format!("{}.tmp", saved.id));
+        std::fs::create_dir(&tmp).unwrap();
+        let mut latest = saved.clone();
+        latest.messages.push(msg("user", "New message"));
+        assert!(save(&dir, &latest).is_err());
+        assert_eq!(load(&dir, &saved.id).unwrap(), saved);
+        assert_eq!(list(&dir)[0].count, saved.messages.len());
+        std::fs::remove_dir(&tmp).unwrap();
+
+        let file = path(&dir, &saved.id).unwrap();
+        std::fs::write(&file, b"{ not json").unwrap();
+        assert!(load(&dir, &saved.id).is_err());
+        assert!(save(&dir, &latest).is_err());
+        assert!(rename(&dir, &saved.id, "Trip plans").is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"{ not json");
+        assert!(list(&dir).is_empty());
+
+        delete(&dir, &saved.id).unwrap();
+        save(&dir, &latest).unwrap();
+        assert_eq!(load(&dir, &saved.id).unwrap(), latest);
+        assert_eq!(list(&dir)[0].count, latest.messages.len());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

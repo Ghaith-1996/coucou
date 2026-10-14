@@ -39,6 +39,12 @@ cd windows && npx tsc --noEmit && npm test               # JS tests
 - Logs: `%LOCALAPPDATA%\Coucou\coucou.log`. Settings:
   `%APPDATA%\Coucou\settings.json`.
 
+## Everything at once: `hybrid/all`
+
+`hybrid/all` = `hybrid/main` + every open hybrid PR, for trying them
+together or on another PC (`SECOND-DEVICE.md`). It is never merged into
+`hybrid/main`; it is rebuilt from the PR branches when they change.
+
 ## PRs (base `hybrid/main`)
 
 | PR | Branch | State |

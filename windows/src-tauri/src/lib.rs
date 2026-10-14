@@ -630,8 +630,17 @@ fn chatgpt_status() -> chatgpt::Status {
 
 /// "Continue with ChatGPT": the sign-in in the system browser.
 #[tauri::command]
-async fn chatgpt_connect(app: AppHandle) -> Result<chatgpt::Status, String> {
-    let status = chatgpt::connect(|url| platform::open_url(url)).await?;
+async fn chatgpt_connect(app: AppHandle, new_account: Option<bool>) -> Result<chatgpt::Status, String> {
+    let result = chatgpt::connect(|url| platform::open_url(url), new_account.unwrap_or(false)).await;
+    // Failed exchange/storage can still retain a pending or validated account.
+    // Every window must discard its old account/model state in that case too.
+    let _ = app.emit("chatgpt-status", chatgpt::status());
+    result
+}
+
+#[tauri::command]
+async fn chatgpt_select_account(app: AppHandle, client_id: String) -> Result<chatgpt::Status, String> {
+    let status = chatgpt::select_account(&client_id).await?;
     let _ = app.emit("chatgpt-status", status.clone());
     Ok(status)
 }
@@ -651,8 +660,8 @@ async fn chatgpt_models() -> Result<Vec<chatgpt::CatalogModel>, String> {
 }
 
 #[tauri::command]
-fn chatgpt_welcomed(app: AppHandle) -> Result<(), String> {
-    chatgpt::mark_welcomed()?;
+async fn chatgpt_welcomed(app: AppHandle, client_id: Option<String>) -> Result<(), String> {
+    chatgpt::mark_welcomed(client_id.as_deref()).await?;
     let _ = app.emit("chatgpt-status", chatgpt::status());
     Ok(())
 }
@@ -917,6 +926,7 @@ pub fn run() {
             chat_undo_last,
             chatgpt_status,
             chatgpt_connect,
+            chatgpt_select_account,
             chatgpt_disconnect,
             chatgpt_models,
             chatgpt_welcomed,

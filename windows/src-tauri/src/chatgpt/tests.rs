@@ -376,6 +376,69 @@ fn an_uncommitted_attempt_keeps_image_and_text_context_for_the_first_completed_t
     }
 }
 
+// The provider is polled directly by chat_send's select, not spawned. Every
+// provider commits synchronously immediately before returning Ready. Cover
+// both possible polling orders without relying on select's random choice.
+#[tokio::test]
+async fn a_completed_turn_wins_even_if_stop_arrives_between_commit_and_ready() {
+    for stop_first in [false, true] {
+        let chat = Chat::default();
+        let turn = chat.begin(PROVIDER);
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let provider = async {
+            let reply = finish_turn(&chat, &turn, json!("question"), "question", "complete answer".into());
+            stop.send(()).unwrap();
+            // No await here: this is the real providers' commit boundary.
+            reply
+        };
+        let reply = if stop_first {
+            tokio::select! { biased;
+                _ = stopped => None,
+                reply = provider => Some(reply),
+            }
+        } else {
+            tokio::select! { biased;
+                reply = provider => Some(reply),
+                _ = stopped => None,
+            }
+        }.expect("Stop cannot supersede the same poll that committed and returned Ready");
+        assert_eq!(reply.text, "complete answer");
+        assert_eq!(chat.begin(PROVIDER).history, vec![
+            json!({"role": "user", "content": "question"}),
+            json!({"role": "assistant", "content": "complete answer"}),
+        ]);
+    }
+}
+
+#[tokio::test]
+async fn stop_at_a_real_suspension_point_leaves_the_turn_uncommitted() {
+    for stop_first in [false, true] {
+        let chat = Chat::default();
+        let turn = chat.begin(PROVIDER);
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let provider = async {
+            stop.send(()).unwrap();
+            std::future::pending::<()>().await;
+            finish_turn(&chat, &turn, json!("question"), "question", "unreachable".into())
+        };
+        let reply = if stop_first {
+            tokio::select! { biased;
+                _ = stopped => None,
+                reply = provider => Some(reply),
+            }
+        } else {
+            tokio::select! { biased;
+                reply = provider => Some(reply),
+                _ = stopped => None,
+            }
+        };
+        assert!(reply.is_none());
+        let next = chat.begin(PROVIDER);
+        assert!(next.first);
+        assert!(next.history.is_empty());
+    }
+}
+
 #[test]
 fn replayed_content_allows_only_supported_user_parts_and_plain_assistant_text() {
     let history = vec![
@@ -479,29 +542,40 @@ async fn disconnect_attempts_both_deletions_and_clears_access_for_every_failure_
     for remote_ok in [true, false] {
         for refresh_ok in [true, false] {
             for id_ok in [true, false] {
-                let mut deleted = Vec::new();
-                let access_present = std::cell::Cell::new(true);
-                let result = disconnect_with(
-                    Some("test-refresh"),
-                    Some("test-client"),
-                    |refresh, client| {
-                        assert_eq!((refresh, client), ("test-refresh", "test-client"));
-                        std::future::ready(remote_ok)
-                    },
-                    |key| {
-                        deleted.push(key.to_string());
-                        if if key == REFRESH_TOKEN_KEY { refresh_ok } else { id_ok } {
-                            Ok(())
-                        } else {
-                            Err("test keystore deletion failed".into())
-                        }
-                    },
-                    || access_present.set(false),
-                ).await;
-                assert_eq!(deleted, [REFRESH_TOKEN_KEY, ID_TOKEN_KEY]);
-                assert!(!access_present.get(), "access is cleared even when either deletion fails");
-                assert_eq!(result.revocation_confirmed, Some(remote_ok));
-                assert_eq!(result.local_cleanup_succeeded, refresh_ok && id_ok);
+                for file_ok in [true, false] {
+                    let account = registered_account();
+                    let mut deleted = Vec::new();
+                    let access_present = std::cell::Cell::new(true);
+                    let mut saved = None;
+                    let result = disconnect_with(
+                        Some("test-refresh"), &account,
+                        |refresh, client| {
+                            assert_eq!((refresh, client), ("test-refresh", "oaiapp_original"));
+                            std::future::ready(remote_ok)
+                        },
+                        |key| {
+                            deleted.push(key.to_string());
+                            if if key == REFRESH_TOKEN_KEY { refresh_ok } else { id_ok } {
+                                Ok(())
+                            } else { Err("test keystore deletion failed".into()) }
+                        },
+                        || access_present.set(false),
+                        |next| {
+                            assert!(refresh_ok && id_ok, "switching cannot be enabled while credentials remain");
+                            if file_ok { saved = Some(next.clone()); Ok(()) } else { Err("disk full".into()) }
+                        },
+                    ).await;
+                    assert_eq!(deleted, [REFRESH_TOKEN_KEY, ID_TOKEN_KEY]);
+                    assert!(!access_present.get(), "access is cleared even when either deletion or account save fails");
+                    assert_eq!(result.revocation_confirmed, Some(remote_ok));
+                    assert_eq!(result.local_cleanup_succeeded, refresh_ok && id_ok && file_ok);
+                    if let Some(saved) = saved {
+                        assert!(saved.explicitly_disconnected);
+                        assert_eq!(saved.registration(), account.registration(), "sign-out retains the subject/client binding");
+                        assert_eq!(saved.host_id, account.host_id);
+                        assert!(status_for(&saved, false, false).can_switch_accounts);
+                    }
+                }
             }
         }
     }
@@ -514,25 +588,41 @@ async fn disconnect_distinguishes_no_refresh_from_a_missing_client() {
         (None, Some("test-client"), None),
         (Some("test-refresh"), None, Some(false)),
     ] {
+        let account = account(client);
         let mut deleted = Vec::new();
         let access_present = std::cell::Cell::new(true);
         let result = disconnect_with(
-            refresh,
-            client,
-            |_, _| -> std::future::Ready<bool> {
-                panic!("revocation needs both a refresh token and a client")
-            },
-            |key| {
-                deleted.push(key.to_string());
-                Ok(())
-            },
+            refresh, &account,
+            |_, _| -> std::future::Ready<bool> { panic!("revocation needs both a refresh token and a client") },
+            |key| { deleted.push(key.to_string()); Ok(()) },
             || access_present.set(false),
+            |_| Ok(()),
         ).await;
         assert_eq!(result.revocation_confirmed, expected);
         assert!(result.local_cleanup_succeeded);
         assert_eq!(deleted, [REFRESH_TOKEN_KEY, ID_TOKEN_KEY]);
         assert!(!access_present.get());
     }
+}
+
+#[tokio::test]
+async fn account_save_failure_can_be_retried_after_restart_without_any_credentials() {
+    let original = registered_account();
+    let mut stored = serde_json::to_vec(&original).unwrap();
+    let failed = disconnect_with(Some("refresh"), &original, |_, _| std::future::ready(true),
+        |_| Ok(()), || {}, |_| Err("disk full".into())).await;
+    assert!(!failed.local_cleanup_succeeded);
+    let reloaded: Account = serde_json::from_slice(&stored).unwrap();
+    let status = status_for(&reloaded, false, false);
+    assert!(status.needs_reconnect && !status.has_saved_credentials && !status.can_switch_accounts);
+    let result = disconnect_with(None, &reloaded,
+        |_, _| -> std::future::Ready<bool> { panic!("there is no refresh token to revoke") },
+        |_| Ok(()), || {}, |next| { stored = serde_json::to_vec(next).unwrap(); Ok(()) }).await;
+    assert_eq!(result.revocation_confirmed, None);
+    assert!(result.local_cleanup_succeeded);
+    let reloaded: Account = serde_json::from_slice(&stored).unwrap();
+    assert_eq!(reloaded.registration(), original.registration());
+    assert!(status_for(&reloaded, false, false).can_switch_accounts);
 }
 
 #[test]
@@ -542,6 +632,372 @@ fn disconnect_result_serializes_only_the_two_outcomes() {
         "revocationConfirmed": null,
         "localCleanupSucceeded": false,
     }));
+}
+
+fn registered_account() -> Account {
+    Account {
+        sub: Some("original-user".into()), plan_enabled: true, welcomed: true,
+        ..account(Some("oaiapp_original"))
+    }
+}
+
+fn new_account_tokens() -> Tokens {
+    Tokens {
+        access_token: "new-access".into(), refresh_token: Some("new-refresh".into()),
+        id_token: Some("new-id-hint".into()), expires_in: Some(3600), scope: Some(SCOPE.into()),
+    }
+}
+
+fn new_account_claims() -> IdClaims {
+    IdClaims {
+        iss: ISSUER.into(), aud: json!("oaiapp_new"), exp: 4_102_444_800,
+        sub: "new-user".into(), email: Some("new@example.com".into()), nonce: Some("nonce".into()),
+    }
+}
+
+#[test]
+fn legacy_accounts_keep_their_exact_registration_and_need_explicit_cleanup_before_switching() {
+    let legacy = json!({ "hostId": "old-host", "clientId": "oaiapp_old", "sub": "old-user",
+        "email": "same@example.com", "planEnabled": true, "welcomed": true });
+    let account: Account = serde_json::from_value(legacy).unwrap();
+    assert_eq!(account.host_id, "old-host");
+    assert_eq!(account.client_id.as_deref(), Some("oaiapp_old"));
+    assert_eq!(account.sub.as_deref(), Some("old-user"));
+    assert!(account.saved_accounts.is_empty() && account.pending_account.is_none());
+    assert!(!status_for(&account, false, false).can_switch_accounts);
+    assert!(require_signed_out(&account, Ok((false, false))).is_err());
+}
+
+#[test]
+fn switching_requires_explicit_disconnect_and_error_free_absence_of_both_credentials() {
+    for explicit in [false, true] {
+        for refresh in [false, true] {
+            for id in [false, true] {
+                let mut account = registered_account();
+                account.explicitly_disconnected = explicit;
+                assert_eq!(require_signed_out(&account, Ok((refresh, id))).is_ok(), explicit && !refresh && !id);
+                assert_eq!(status_for(&account, refresh, id).can_switch_accounts, explicit && !refresh && !id);
+            }
+        }
+    }
+    let account = Account { explicitly_disconnected: true, ..registered_account() };
+    assert!(require_signed_out(&account, Err("keystore locked".into())).is_err());
+}
+
+#[test]
+fn a_pending_new_registration_is_separate_and_retries_its_issued_client_after_restart() {
+    let mut original = Account { explicitly_disconnected: true, ..registered_account() };
+    let original_identity = original.registration();
+    let mut candidate = new_account_candidate(&original);
+    let request = query(&authorize_url(&candidate, &Attempt::new(1455), None));
+    assert_eq!(request["client_id"], DYNAMIC_CLIENT);
+    assert_eq!(request["ext_agent_host_id"], original.host_id);
+    assert!(!request.contains_key("login_hint") && !request.contains_key("id_token_hint"));
+    let attempt = Attempt::new(1455);
+    let callback = format!("/auth/callback?state={}&code=new-code&client_id=oaiapp_new", attempt.state);
+    let mut saved = Vec::new();
+    prepare_code_exchange(&mut candidate, &attempt, &callback, |record| {
+        retain_pending_account(&mut original, record, |next| {
+            saved = serde_json::to_vec(next).unwrap();
+            Ok(())
+        })
+    }).unwrap();
+    assert_eq!(original.registration(), original_identity, "exchange failure cannot replace the selected identity");
+    let restarted: Account = serde_json::from_slice(&saved).unwrap();
+    assert!(status_for(&restarted, false, false).has_pending_account);
+    let retry = new_account_candidate(&restarted);
+    assert_eq!(retry.client_id.as_deref(), Some("oaiapp_new"));
+    assert!(retry.sub.is_none() && retry.email.is_none() && !retry.plan_enabled && !retry.welcomed);
+    let q = query(&authorize_url(&retry, &Attempt::new(54321), None));
+    assert_eq!(q["client_id"], "oaiapp_new");
+    assert!(!q.contains_key("agent_name_hint") && !q.contains_key("login_hint"));
+    let serialized = String::from_utf8(saved).unwrap();
+    assert!(!serialized.contains("new-code"), "codes and credentials never enter the registration file");
+}
+
+#[test]
+fn cancelled_or_unpersisted_new_registrations_leave_the_old_account_unchanged() {
+    let mut original = Account { explicitly_disconnected: true, ..registered_account() };
+    let before = original.clone();
+    let mut candidate = new_account_candidate(&original);
+    let attempt = Attempt::new(1455);
+    for query in [format!("state={}&error=access_denied", attempt.state),
+                  format!("state={}&code=abc&client_id=oaiapp_new", attempt.state)] {
+        assert!(prepare_code_exchange(&mut candidate, &attempt, &format!("/auth/callback?{query}"), |record| {
+            retain_pending_account(&mut original, record, |_| Err("disk full".into()))
+        }).is_err());
+        assert_eq!(original, before);
+        assert!(candidate.client_id.is_none());
+    }
+}
+
+#[test]
+fn ordinary_reconnect_rejects_a_different_subject_before_any_persistence_or_credential_write() {
+    let account = registered_account();
+    let mut claims = new_account_claims();
+    claims.aud = json!("oaiapp_original");
+    let result = store_verified_sign_in(&account, &account, "oaiapp_original", &claims, &new_account_tokens(), false,
+        |_| panic!("mismatched identity must not be persisted"),
+        |_, _| panic!("mismatched identity must not write credentials"),
+        |_| panic!("mismatched identity must not become active"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn a_validated_new_account_gets_fresh_flags_and_never_reuses_another_registration() {
+    let original = Account { explicitly_disconnected: true, ..registered_account() };
+    let candidate = Account { host_id: original.host_id.clone(), client_id: Some("oaiapp_new".into()), ..Default::default() };
+    let persisted = std::cell::RefCell::new(None);
+    let mut credentials = std::collections::HashMap::new();
+    let access = std::cell::RefCell::new(None);
+    let next = store_verified_sign_in(&original, &candidate, "oaiapp_new", &new_account_claims(), &new_account_tokens(), true,
+        |record| { persisted.replace(Some(record.clone())); Ok(()) },
+        |key, value| {
+            assert_eq!(persisted.borrow().as_ref().unwrap().sub.as_deref(), Some("new-user"), "identity is stored before credentials");
+            credentials.insert(key.to_string(), value.to_string()); Ok(())
+        },
+        |tokens| { access.replace(Some(tokens.access_token.clone())); }).unwrap();
+    assert_eq!(next.host_id, original.host_id);
+    assert_eq!(next.client_id.as_deref(), Some("oaiapp_new"));
+    assert_eq!(next.email.as_deref(), Some("new@example.com"));
+    assert_eq!(next.sub.as_deref(), Some("new-user"));
+    assert!(!next.welcomed && next.plan_enabled && !next.explicitly_disconnected);
+    assert!(next.pending_account.is_none());
+    assert_eq!(next.saved_accounts, vec![original.registration().unwrap()]);
+    assert!(status_for(&next, true, true).show_welcome);
+    assert_eq!(credentials[REFRESH_TOKEN_KEY], "new-refresh");
+    assert_eq!(credentials[ID_TOKEN_KEY], "new-id-hint");
+    assert_eq!(access.borrow().as_deref(), Some("new-access"));
+    let text = serde_json::to_string(&next).unwrap();
+    for secret in ["new-refresh", "new-id-hint", "new-access"] { assert!(!text.contains(secret)); }
+}
+
+#[test]
+fn a_new_account_persistence_failure_writes_no_credentials_or_access() {
+    let original = Account { explicitly_disconnected: true, ..registered_account() };
+    let candidate = Account { host_id: original.host_id.clone(), client_id: Some("oaiapp_new".into()), ..Default::default() };
+    let result = store_verified_sign_in(&original, &candidate, "oaiapp_new", &new_account_claims(), &new_account_tokens(), true,
+        |_| Err("disk full".into()), |_, _| panic!("do not pair new credentials with old metadata"),
+        |_| panic!("a failed switch must not cache access"));
+    assert_eq!(result, Err("disk full".into()));
+}
+
+#[test]
+fn saved_registrations_are_distinct_even_when_their_emails_match_and_can_be_selected_again() {
+    let original = Account { explicitly_disconnected: true, ..registered_account() };
+    let mut other = original.registration().unwrap();
+    other.client_id = "oaiapp_other".into(); other.sub = Some("other-user".into());
+    other.welcomed = false; other.plan_enabled = false;
+    let next = original.select_registration(&other);
+    assert_eq!(next.saved_accounts, vec![original.registration().unwrap()]);
+    assert_eq!(next.email, original.email);
+    assert_eq!(next.sub, other.sub);
+    let restored = next.select_registration(&next.saved_accounts[0]);
+    assert_eq!(restored.registration(), original.registration());
+    assert_eq!(restored.saved_accounts, vec![other]);
+}
+
+#[test]
+fn welcome_acknowledgement_cannot_modify_a_signed_out_or_different_registration() {
+    let account = registered_account();
+    for (client, connected) in [(None, true), (Some("oaiapp_other"), true), (Some("oaiapp_original"), false)] {
+        mark_welcomed_for(&account, client, connected, |_| panic!("stale welcome must not write an account record")).unwrap();
+    }
+    let mut unseen = account.clone(); unseen.welcomed = false;
+    mark_welcomed_for(&unseen, Some("oaiapp_original"), true, |saved| {
+        assert!(saved.welcomed); assert_eq!(saved.sub, unseen.sub); Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn failed_atomic_account_writes_preserve_the_previous_registration_file() {
+    let dir = std::env::temp_dir().join(format!("coucou-chatgpt-account-{}", random(12)));
+    let path = dir.join("chatgpt.json");
+    let original = registered_account();
+    save_account_to(&path, &original).unwrap();
+    let blocked = path.with_extension("json.tmp");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::write(blocked.join("keep"), b"blocked").unwrap();
+    let mut changed = original.clone(); changed.explicitly_disconnected = true;
+    assert!(save_account_to(&path, &changed).is_err());
+    let retained: Account = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(retained, original);
+    std::fs::remove_dir_all(&blocked).unwrap();
+    save_account_to(&path, &changed).unwrap();
+    assert_eq!(serde_json::from_slice::<Account>(&std::fs::read(path).unwrap()).unwrap(), changed);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_refresh_credential_write_failure_keeps_the_new_identity_recoverable_without_caching_access() {
+    let original = Account { explicitly_disconnected: true, ..registered_account() };
+    let candidate = Account { host_id: original.host_id.clone(), client_id: Some("oaiapp_new".into()), ..Default::default() };
+    let mut saved = None;
+    let mut written = Vec::new();
+    let result = store_verified_sign_in(&original, &candidate, "oaiapp_new", &new_account_claims(), &new_account_tokens(), true,
+        |account| { saved = Some(account.clone()); Ok(()) },
+        |key, _| { written.push(key.to_string()); Err("keystore locked".into()) },
+        |_| panic!("failed credential storage cannot cache access"));
+    assert_eq!(result, Err("keystore locked".into()));
+    assert_eq!(written, [REFRESH_TOKEN_KEY]);
+    let saved = saved.unwrap();
+    assert_eq!(saved.sub.as_deref(), Some("new-user"));
+    assert_eq!(saved.saved_accounts, vec![original.registration().unwrap()]);
+    let status = status_for(&saved, false, false);
+    assert!(!status.connected && status.needs_reconnect && !status.can_switch_accounts);
+    let request = query(&authorize_url(&saved, &Attempt::new(1455), None));
+    assert_eq!(request["client_id"], "oaiapp_new", "retry reuses the now-validated registration");
+}
+
+fn sign_in_scope_cases() -> [(Option<&'static str>, bool); 6] {
+    [
+        (None, true),
+        (Some(""), false),
+        (Some("openid profile email offline_access resource.invoke"), false),
+        (Some(SCOPE), true),
+        (Some("openid chatgpt.tokens.use.direct.extra"), false),
+        (Some("openid CHATGPT.TOKENS.USE.DIRECT"), false),
+    ]
+}
+
+#[test]
+fn a_new_sign_in_uses_omitted_scope_without_inheriting_another_accounts_flags() {
+    for (scope, granted) in sign_in_scope_cases() {
+        for previous_plan in [false, true] {
+            let original = Account { plan_enabled: previous_plan, explicitly_disconnected: true, ..registered_account() };
+            let candidate = Account { host_id: original.host_id.clone(), client_id: Some("oaiapp_new".into()), ..Default::default() };
+            // Deserialize the wire shape as well: an absent field differs from
+            // an explicitly empty or reduced grant.
+            let mut response = json!({ "access_token": "new-access", "refresh_token": "new-refresh",
+                "id_token": "new-id-hint", "expires_in": 3600 });
+            if let Some(scope) = scope { response["scope"] = json!(scope); }
+            let tokens: Tokens = serde_json::from_value(response).unwrap();
+            let mut claims = new_account_claims(); claims.email = None;
+            let mut saved = None;
+            let next = store_verified_sign_in(&original, &candidate, "oaiapp_new", &claims, &tokens, true,
+                |record| { saved = Some(record.clone()); Ok(()) }, |_, _| Ok(()), |_| {}).unwrap();
+            assert_eq!(saved.as_ref(), Some(&next));
+            assert_eq!(next.client_id, candidate.client_id);
+            assert_eq!(next.sub.as_deref(), Some("new-user"));
+            assert_eq!(next.email, None, "no stale email from the previous registration");
+            assert_eq!(next.plan_enabled, granted, "scope={scope:?}, previous_plan={previous_plan}");
+            assert!(!next.welcomed, "another account's welcome cannot carry over");
+            assert_eq!(status_for(&next, true, true).show_welcome, granted);
+            assert_eq!(require_selected_client(&next, "oaiapp_new").is_ok(), granted);
+            assert_eq!(next.saved_accounts, vec![original.registration().unwrap()],
+                "the old flags and identity stay with their own registration");
+        }
+    }
+}
+
+#[test]
+fn reconnect_uses_the_new_scope_result_and_preserves_only_its_own_welcome() {
+    for (scope, granted) in sign_in_scope_cases() {
+        for previous_plan in [false, true] {
+            for welcomed in [false, true] {
+                let mut original = Account { plan_enabled: previous_plan, welcomed, ..registered_account() };
+                let other = Registration { client_id: "oaiapp_other".into(), sub: Some("other-user".into()),
+                    email: None, plan_enabled: !previous_plan, welcomed: !welcomed };
+                original.saved_accounts.push(other.clone());
+                let request = query(&authorize_url(&original, &Attempt::new(1455), None));
+                assert_eq!(request["scope"], SCOPE);
+                assert_eq!(request.get("prompt").map(String::as_str), (!previous_plan).then_some("consent"));
+                let mut tokens = new_account_tokens(); tokens.scope = scope.map(str::to_string);
+                let mut claims = new_account_claims();
+                claims.aud = json!("oaiapp_original"); claims.sub = "original-user".into();
+                let next = store_verified_sign_in(&original, &original, "oaiapp_original", &claims, &tokens, false,
+                    |_| Ok(()), |_, _| Ok(()), |_| {}).unwrap();
+                assert_eq!(next.client_id, original.client_id);
+                assert_eq!(next.sub, original.sub);
+                assert_eq!(next.plan_enabled, granted, "scope={scope:?}, previous_plan={previous_plan}");
+                assert_eq!(next.welcomed, welcomed);
+                assert_eq!(status_for(&next, true, true).show_welcome, granted && !welcomed);
+                assert_eq!(require_selected_client(&next, "oaiapp_original").is_ok(), granted);
+                assert_eq!(next.saved_accounts, vec![other]);
+            }
+        }
+    }
+}
+
+#[test]
+fn reconnecting_the_same_subject_keeps_its_welcome_and_registration() {
+    let original = registered_account();
+    let mut claims = new_account_claims(); claims.sub = "original-user".into();
+    let next = store_verified_sign_in(&original, &original, "oaiapp_original", &claims, &new_account_tokens(), false,
+        |_| Ok(()), |_, _| Ok(()), |_| {}).unwrap();
+    assert_eq!(next.client_id, original.client_id);
+    assert_eq!(next.sub, original.sub);
+    assert!(next.welcomed && next.saved_accounts.is_empty());
+    assert!(!status_for(&next, true, true).show_welcome);
+}
+
+#[test]
+fn missing_required_tokens_cannot_change_selection_or_write_any_credentials() {
+    let original = registered_account();
+    let mut claims = new_account_claims(); claims.sub = "original-user".into();
+    for missing_refresh in [true, false] {
+        let mut tokens = new_account_tokens();
+        if missing_refresh { tokens.refresh_token = None; } else { tokens.id_token = None; }
+        assert!(store_verified_sign_in(&original, &original, "oaiapp_original", &claims, &tokens, false,
+            |_| panic!("incomplete tokens must not change the account"),
+            |_, _| panic!("incomplete tokens must not change stored credentials"),
+            |_| panic!("incomplete tokens must not cache access")).is_err());
+    }
+}
+
+#[test]
+fn a_new_registration_cannot_replace_an_existing_registration_with_the_same_client_id() {
+    let mut original = registered_account();
+    let duplicate = original.clone();
+    assert!(retain_pending_account(&mut original, &duplicate, |_| panic!("do not replace an existing registration")).is_err());
+    assert_eq!(original, duplicate);
+}
+
+#[test]
+fn only_missing_account_files_default_to_a_new_installation() {
+    let dir = std::env::temp_dir().join(format!("coucou-chatgpt-read-{}", random(12)));
+    let path = dir.join("chatgpt.json");
+    assert_eq!(read_account_from(&path).unwrap(), Account::default());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, b"{corrupted existing registration}").unwrap();
+    assert!(read_account_from(&path).is_err(), "corruption cannot erase an existing registration");
+    assert!(read_account_from(&dir).is_err(), "an I/O error cannot become an empty account");
+    assert_eq!(std::fs::read(path).unwrap(), b"{corrupted existing registration}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn in_flight_requests_cannot_take_credentials_from_a_different_selected_registration() {
+    let original = registered_account();
+    assert!(require_selected_client(&original, "oaiapp_original").is_ok());
+    let mut changed = original.clone(); changed.client_id = Some("oaiapp_new".into());
+    assert!(require_selected_client(&changed, "oaiapp_original").is_err(), "a late 401 from A cannot refresh B");
+    let mut signed_out = original.clone(); signed_out.explicitly_disconnected = true;
+    assert!(require_selected_client(&signed_out, "oaiapp_original").is_err());
+    let mut plan_off = original; plan_off.plan_enabled = false;
+    assert!(require_selected_client(&plan_off, "oaiapp_original").is_err());
+    let cached = Access { client_id: "oaiapp_new".into(), generation: 1, token: "new-access".into(), until: Instant::now() + Duration::from_secs(3600) };
+    assert_eq!(cached.fresh_for(&RequestAccount { client_id: "oaiapp_original".into(), generation: 1 }), None, "a request cannot reuse another account's access cache");
+    assert_eq!(cached.fresh_for(&RequestAccount { client_id: "oaiapp_new".into(), generation: 1 }).as_deref(), Some("new-access"));
+}
+
+#[test]
+fn a_metadata_reset_cannot_register_over_surviving_credentials() {
+    for (refresh, id) in [(true, false), (false, true), (true, true)] {
+        assert!(require_empty_credentials(Ok((refresh, id))).is_err());
+    }
+    assert!(require_empty_credentials(Err("keystore locked".into())).is_err());
+    assert!(require_empty_credentials(Ok((false, false))).is_ok(), "a genuinely new installation can register");
+}
+
+#[test]
+fn same_registration_reauthorization_also_invalidates_older_requests_and_cached_tokens() {
+    let old = RequestAccount { client_id: "oaiapp_original".into(), generation: 4 };
+    assert!(check_session_generation(&old, 4).is_ok());
+    assert!(check_session_generation(&old, 5).is_err(), "same client after disconnect/reconnect is a different session");
+    let cached = Access { client_id: old.client_id.clone(), generation: 5, token: "new-access".into(), until: Instant::now() + Duration::from_secs(3600) };
+    assert_eq!(cached.fresh_for(&old), None);
+    assert_eq!(cached.fresh_for(&RequestAccount { generation: 5, ..old }).as_deref(), Some("new-access"));
 }
 
 #[test]

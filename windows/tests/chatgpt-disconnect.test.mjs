@@ -11,12 +11,14 @@ const { chatgptSection } = await import("../src/settings/chatgpt.ts");
 const { setLanguage } = await import("../src/i18n/i18n.ts");
 
 const CONNECTED = {
+  accountId: "test-client", canSwitchAccounts: false, savedAccounts: [], hasPendingAccount: false,
   connected: true, hasSavedCredentials: true, email: "me@example.com", planEnabled: true,
   needsReconnect: false, showWelcome: false, manageUsageUrl: "https://chatgpt.com/#settings",
 };
-const SIGNED_OUT = { ...CONNECTED, connected: false, hasSavedCredentials: false, needsReconnect: true };
-const ORPHANED_ID = { ...SIGNED_OUT, hasSavedCredentials: true };
-const LOCAL_WARNING = "Couldn't remove all saved ChatGPT credentials from this device. Try Disconnect again.";
+const SIGNED_OUT = { ...CONNECTED, connected: false, hasSavedCredentials: false, needsReconnect: true, canSwitchAccounts: true };
+const NEEDS_CLEANUP = { ...SIGNED_OUT, canSwitchAccounts: false };
+const ORPHANED_ID = { ...NEEDS_CLEANUP, hasSavedCredentials: true };
+const LOCAL_WARNING = "Couldn't finish disconnecting ChatGPT on this device. Try Disconnect again.";
 const REMOTE_WARNING = "Remote revocation was not confirmed. You can also disconnect Coucou in ChatGPT's settings.";
 
 let answers;
@@ -166,3 +168,236 @@ test("a successful cleanup still signs out locally when the follow-up status is 
   assert.equal(button(el, "Disconnect"), undefined);
   assert.ok(button(el, "Continue with ChatGPT") || button(el, "Reconnect"));
 });
+
+
+test("an account-file cleanup failure stays retryable after Settings is recreated", async () => {
+  let el = await section();
+  answers.chatgpt_disconnect = () => {
+    answers.chatgpt_status = NEEDS_CLEANUP;
+    return { revocationConfirmed: true, localCleanupSucceeded: false };
+  };
+  await disconnect(el);
+  assert.ok(message(el).includes(LOCAL_WARNING));
+  el = await section();
+  assert.ok(button(el, "Disconnect"), "retained identity without credentials still needs explicit cleanup");
+  assert.equal(button(el, "Use a different ChatGPT account"), undefined);
+  answers.chatgpt_disconnect = () => {
+    answers.chatgpt_status = SIGNED_OUT;
+    return { revocationConfirmed: null, localCleanupSucceeded: true };
+  };
+  await disconnect(el);
+  assert.equal(button(el, "Disconnect"), undefined);
+  assert.ok(button(el, "Use a different ChatGPT account"));
+});
+
+test("adding another registration is available only after confirmed explicit disconnect", async () => {
+  for (const status of [CONNECTED, NEEDS_CLEANUP, ORPHANED_ID]) {
+    answers.chatgpt_status = status;
+    assert.equal(button(await section(), "Use a different ChatGPT account"), undefined);
+  }
+  answers.chatgpt_status = SIGNED_OUT;
+  const el = await section();
+  answers.chatgpt_connect = { ...CONNECTED, accountId: "new-client", email: "other@example.com" };
+  button(el, "Use a different ChatGPT account").fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_connect"), [{ newAccount: true }]);
+  assert.equal(message(el), "Connected as other@example.com");
+});
+
+test("a failed new registration exposes the persisted retry after recreating Settings", async () => {
+  answers.chatgpt_status = SIGNED_OUT;
+  let el = await section();
+  answers.chatgpt_connect = () => {
+    answers.chatgpt_status = { ...SIGNED_OUT, hasPendingAccount: true };
+    throw new Error("ChatGPT sign-in failed.");
+  };
+  button(el, "Use a different ChatGPT account").fire("click");
+  await flush();
+  await flush();
+  assert.equal(message(el), "ChatGPT sign-in failed.");
+  assert.ok(button(el, "Finish connecting new ChatGPT account"));
+  el = await section();
+  assert.ok(button(el, "Finish connecting new ChatGPT account"));
+  assert.ok(button(el, "Reconnect"), "the original account remains available");
+});
+
+test("a saved registration can be selected again without automatically granting access", async () => {
+  answers.chatgpt_status = { ...SIGNED_OUT, savedAccounts: [{ id: "previous-client", email: "previous@example.com" }] };
+  const el = await section();
+  const select = el.find("SELECT")[0];
+  assert.ok(select);
+  assert.ok(select.find("OPTION").some((option) => option.textContent.includes("previous@example.com") && option.textContent.includes("previous-client")));
+  answers.chatgpt_select_account = { ...SIGNED_OUT, accountId: "previous-client", email: "previous@example.com" };
+  select.value = "previous-client";
+  select.fire("change");
+  await flush();
+  assert.deepEqual(sent("chatgpt_select_account"), [{ clientId: "previous-client" }]);
+  assert.equal(sent("chatgpt_connect").length, 0);
+  assert.ok(button(el, "Reconnect"));
+});
+
+test("the initial status reply cannot restore stale connected state after disconnect", async () => {
+  let resolveInitial;
+  answers.chatgpt_status = new Promise((resolve) => { resolveInitial = resolve; });
+  const el = chatgptSection();
+  await flush();
+  emit("chatgpt-status", CONNECTED);
+  answers.chatgpt_disconnect = () => {
+    answers.chatgpt_status = SIGNED_OUT;
+    return { revocationConfirmed: true, localCleanupSucceeded: true };
+  };
+  await disconnect(el);
+  resolveInitial(CONNECTED);
+  await flush();
+  assert.equal(button(el, "Disconnect"), undefined);
+  assert.ok(button(el, "Use a different ChatGPT account"));
+});
+
+test("welcome acknowledgement identifies the displayed registration and is disabled while disconnecting", async () => {
+  answers.chatgpt_status = { ...CONNECTED, showWelcome: true };
+  const el = await section();
+  button(el, "Got it").fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_welcomed"), [{ clientId: "test-client" }]);
+  let finish;
+  answers.chatgpt_disconnect = new Promise((resolve) => { finish = resolve; });
+  button(el, "Disconnect").fire("click");
+  await flush();
+  assert.notEqual(button(el, "Got it").getAttribute("disabled"), null);
+  answers.chatgpt_status = SIGNED_OUT;
+  finish({ revocationConfirmed: true, localCleanupSucceeded: true });
+  await flush();
+});
+
+test("a credential-write failure displays the persisted new account as disconnected and retryable", async () => {
+  answers.chatgpt_status = SIGNED_OUT;
+  const el = await section();
+  answers.chatgpt_connect = () => {
+    answers.chatgpt_status = {
+      ...NEEDS_CLEANUP, accountId: "new-client", email: "new@example.com", planEnabled: false,
+      savedAccounts: [{ id: "test-client", email: "me@example.com" }],
+    };
+    throw new Error("Keystore unavailable");
+  };
+  button(el, "Use a different ChatGPT account").fire("click");
+  await flush();
+  await flush();
+  assert.equal(message(el), "Keystore unavailable");
+  const selected = el.find(".chatgpt-account")[0].textContent;
+  assert.ok(selected.includes("new-client") && selected.includes("new@example.com"));
+  assert.ok(!selected.includes("test-client") && !selected.includes("me@example.com"));
+  assert.ok(button(el, "Reconnect"));
+  assert.ok(button(el, "Disconnect"), "explicit cleanup must be confirmed again before returning to a saved account");
+  assert.equal(button(el, "Use a different ChatGPT account"), undefined);
+  assert.equal(el.find("SELECT").length, 0);
+});
+
+test("failed saved-account selection leaves the previous state and exposes the error", async () => {
+  answers.chatgpt_status = { ...SIGNED_OUT, savedAccounts: [{ id: "previous-client", email: "previous@example.com" }] };
+  const el = await section();
+  answers.chatgpt_select_account = new Error("Couldn't check saved ChatGPT credentials. Try again.");
+  const select = el.find("SELECT")[0];
+  select.value = "previous-client";
+  select.fire("change");
+  await flush();
+  await flush();
+  assert.equal(message(el), "Couldn't check saved ChatGPT credentials. Try again.");
+  assert.equal(sent("chatgpt_connect").length, 0);
+  assert.equal(button(el, "Reconnect").getAttribute("disabled"), null);
+});
+
+test("the selected registration stays visible while signed out and when an error overrides status", async () => {
+  answers.chatgpt_status = { ...SIGNED_OUT, savedAccounts: [{ id: "previous-client", email: SIGNED_OUT.email }] };
+  const el = await section();
+  const label = () => el.find(".chatgpt-account")[0]?.textContent;
+  assert.ok(label()?.includes("test-client") && label()?.includes("me@example.com"));
+  answers.chatgpt_select_account = { ...SIGNED_OUT, accountId: "previous-client", savedAccounts: [{ id: "test-client", email: SIGNED_OUT.email }] };
+  const select = el.find("SELECT")[0];
+  select.value = "previous-client";
+  select.fire("change");
+  await flush();
+  assert.ok(label().includes("previous-client"));
+  assert.ok(!label().includes("test-client"), "equal emails do not collapse different registrations");
+  answers.chatgpt_connect = new Error("Sign-in failed");
+  answers.chatgpt_status = { ...answers.chatgpt_select_account };
+  button(el, "Reconnect").fire("click");
+  await flush();
+  await flush();
+  assert.equal(message(el), "Sign-in failed");
+  assert.ok(label().includes("previous-client"));
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+const NEWER_ACCOUNT = { ...CONNECTED, accountId: "newer-client", email: "newer@example.com" };
+const selectedLabel = (el) => el.find(".chatgpt-account")[0].textContent;
+function startOperation(el, operation) {
+  if (operation === "connect") button(el, "Reconnect").fire("click");
+  else if (operation === "disconnect") button(el, "Disconnect").fire("click");
+  else {
+    const select = el.find("SELECT")[0];
+    select.value = "previous-client";
+    select.fire("change");
+  }
+}
+function operationInitialStatus(operation) {
+  return operation === "disconnect" ? CONNECTED : {
+    ...SIGNED_OUT, savedAccounts: [{ id: "previous-client", email: "previous@example.com" }],
+  };
+}
+const commandFor = { connect: "chatgpt_connect", select: "chatgpt_select_account", disconnect: "chatgpt_disconnect" };
+
+for (const operation of ["connect", "select", "disconnect"]) {
+  for (const fails of [false, true]) {
+    test(`a newer account event wins over a delayed ${operation} ${fails ? "failure" : "success"}`, async () => {
+      answers.chatgpt_status = operationInitialStatus(operation);
+      const el = await section();
+      const pending = deferred();
+      answers[commandFor[operation]] = pending.promise;
+      startOperation(el, operation);
+      await flush();
+      emit("chatgpt-status", NEWER_ACCOUNT);
+      answers.chatgpt_status = SIGNED_OUT;
+      if (fails) pending.reject(new Error("Earlier operation failed"));
+      else pending.resolve(operation === "disconnect"
+        ? { revocationConfirmed: true, localCleanupSucceeded: true }
+        : { ...CONNECTED, accountId: "previous-client" });
+      await flush();
+      await flush();
+      assert.ok(selectedLabel(el).includes("newer-client"), "older operation cannot restore or sign out a newer account");
+      assert.ok(selectedLabel(el).includes("newer@example.com"));
+      assert.equal(button(el, "Disconnect").getAttribute("disabled"), null);
+      assert.equal(button(el, "Reconnect"), undefined, "the newer account stays connected");
+      if (fails) assert.ok(message(el).includes("Earlier operation failed"));
+    });
+  }
+}
+
+for (const operation of ["connect", "select", "disconnect"]) {
+  test(`a newer event also wins while ${operation}'s follow-up status is pending`, async () => {
+    answers.chatgpt_status = operationInitialStatus(operation);
+    const el = await section();
+    const pendingStatus = deferred();
+    answers.chatgpt_status = pendingStatus.promise;
+    answers[commandFor[operation]] = operation === "disconnect"
+      ? { revocationConfirmed: false, localCleanupSucceeded: false }
+      : new Error("Earlier operation failed");
+    startOperation(el, operation);
+    await flush();
+    assert.equal(sent("chatgpt_status").length, 2, "the fallback read is in flight");
+    emit("chatgpt-status", NEWER_ACCOUNT);
+    pendingStatus.resolve(SIGNED_OUT);
+    await flush();
+    await flush();
+    assert.ok(selectedLabel(el).includes("newer-client"));
+    assert.equal(button(el, "Reconnect"), undefined);
+    assert.equal(button(el, "Disconnect").getAttribute("disabled"), null);
+    if (operation === "disconnect") {
+      assert.ok(message(el).includes(LOCAL_WARNING));
+      assert.ok(message(el).includes(REMOTE_WARNING));
+    } else assert.ok(message(el).includes("Earlier operation failed"));
+  });
+}

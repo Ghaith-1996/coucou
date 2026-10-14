@@ -8,7 +8,7 @@ import { installFakeDom } from "./fakedom.mjs";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 
 installFakeDom();
-const { buildPrompt, newConversation } = await import("../src/views/chat.ts");
+const { buildPrompt } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -34,6 +34,7 @@ internals.invoke = async (cmd, args) => {
   }
   if (cmd === "chat_history_open") return structuredClone(records.get(args.id));
   if (cmd === "chat_history_rename") records.get(args.id).title = args.title;
+  if (cmd === "chat_history_delete") records.delete(args.id);
   if (cmd === "chat_send") return { text: "An answer" };
   return result;
 };
@@ -55,6 +56,11 @@ beforeEach(async () => {
 });
 
 const $ = (selector) => view.el.querySelector(selector);
+
+// The island redraws after State.notify(), not after every button click.
+function observeView(t) {
+  t.after(State.subscribe(() => view.sync()));
+}
 
 function seed(id, title, firstQuestion = "Plan my trip") {
   records.set(id, {
@@ -154,16 +160,97 @@ test("renaming another conversation leaves the active conversation's title alone
   assert.equal(records.get(OTHER).title, "Paris trip");
 });
 
-test("starting a new conversation does not inherit the previous custom title", async () => {
+test("New chat redraws the empty conversation and does not inherit its title or context", async (t) => {
+  observeView(t);
   seed(CURRENT, "Lisbon trip");
   await open(CURRENT);
-  newConversation();
-  view.sync();
+  State.droppedFile = { name: "old.txt", path: "/inbox/old.txt" };
+  State.promptContext = { kind: "file", ...State.droppedFile };
+  State.notify();
+  assert.equal(view.el.find(".chat-row").length, 2);
+  assert.ok($(".chat-restored"));
+  assert.ok($(".chip"));
+  assert.equal($(".chat-input").placeholder, "Continue…");
+  await history();
+  $(".history-new").fire("click");
+  assert.equal(view.el.find(".chat-row").length, 0, "the click redraws without a manual sync");
+  assert.equal($(".chat-restored"), null);
+  assert.equal($(".chip"), null);
+  assert.equal($(".chat-input").placeholder, "Ask me anything…");
+  assert.equal($(".history").classList.contains("on"), false);
+  assert.deepEqual(State.chatHistory, []);
+  assert.equal(State.chatId, null);
+  assert.equal(State.droppedFile, null);
+  assert.equal(State.promptContext, null);
+  assert.equal(sent("chat_reset").length, 1);
+  assert.ok(records.has(CURRENT), "New chat keeps the saved conversation");
   await send("A fresh question");
   assert.notEqual(State.chatId, CURRENT);
   assert.equal(records.get(State.chatId).title, "A fresh question");
   assert.notEqual(records.get(State.chatId).createdAt, 123);
 });
+
+for (const deleted of [CURRENT, OTHER]) {
+  test(`confirmed deletion of ${deleted === CURRENT ? "the active" : "another"} conversation redraws only the affected chat`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    seed(OTHER, "Paris trip");
+    await open(CURRENT);
+    const messages = State.chatHistory;
+    const transcript = $(".chat-log").textContent;
+    await history();
+    const row = view.el.find(".history-row")[[...records.keys()].indexOf(deleted)];
+    const button = row.find(".history-act").find((b) => b.getAttribute("aria-label") === "Delete");
+    button.fire("click");
+    assert.equal(sent("chat_history_delete").length, 0, "the first click only asks for confirmation");
+    assert.equal($(".chat-log").textContent, transcript);
+    button.fire("click");
+    await flush();
+    assert.deepEqual(sent("chat_history_delete"), [{ id: deleted }]);
+    assert.equal(records.has(deleted), false);
+    assert.equal(view.el.find(".history-row").length, 1);
+    if (deleted === CURRENT) {
+      assert.equal(State.chatId, null);
+      assert.deepEqual(State.chatHistory, []);
+      assert.equal(view.el.find(".chat-row").length, 0, "deletion redraws without a manual sync");
+      assert.equal($(".chat-restored"), null);
+      assert.equal($(".chat-input").placeholder, "Ask me anything…");
+      assert.equal(sent("chat_reset").length, 1);
+    } else {
+      assert.equal(State.chatId, CURRENT);
+      assert.equal(State.chatHistory, messages);
+      assert.equal($(".chat-log").textContent, transcript);
+      assert.ok($(".chat-restored"));
+      assert.equal($(".chat-input").placeholder, "Continue…");
+      assert.equal(sent("chat_reset").length, 0);
+    }
+  });
+}
+
+for (const outcome of ["resolves", "rejects"]) {
+  test(`New chat redraws before native reset ${outcome}`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    await open(CURRENT);
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(); await flush(); });
+    answers.chat_reset = () => pending.promise;
+    const errors = t.mock.method(console, "error", () => {});
+    await history();
+    $(".history-new").fire("click");
+    assert.equal(view.el.find(".chat-row").length, 0, "redraw cannot wait for native reset");
+    assert.equal($(".chat-restored"), null);
+    assert.equal($(".chat-input").placeholder, "Ask me anything…");
+    if (outcome === "rejects") pending.reject(new Error("Native reset unavailable"));
+    else pending.resolve();
+    await flush();
+    assert.equal(errors.mock.callCount(), outcome === "rejects" ? 1 : 0);
+    assert.equal(State.chatId, null);
+    assert.deepEqual(State.chatHistory, []);
+    assert.equal(view.el.find(".chat-row").length, 0);
+    assert.equal(State.view, "prompt");
+  });
+}
 
 test("a delayed rename cannot change the title of a different active conversation", async (t) => {
   seed(CURRENT, "Lisbon trip");
@@ -248,14 +335,15 @@ for (const finish of ["reply", "Stop"]) {
   });
 }
 
-test("a failed first save warns; starting a new chat does not inherit that warning", async () => {
+test("a failed first save warns; New chat immediately clears that warning", async (t) => {
+  observeView(t);
   answers.chat_history_save = () => Promise.reject(new Error("Disk full"));
   await send("Unsaved first question");
   assert.equal(records.size, 0);
   assert.equal(State.chatHistory.length, 2);
   assert.ok($(".chat-notice.warn"));
-  newConversation();
-  view.sync();
+  await history();
+  $(".history-new").fire("click");
   assert.equal($(".chat-notice.warn"), null);
   delete answers.chat_history_save;
   await send("New question");

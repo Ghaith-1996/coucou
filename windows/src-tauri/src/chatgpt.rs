@@ -186,6 +186,8 @@ fn save_account(account: &Account) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub connected: bool,
+    /// Either saved credential remains, including an orphaned sign-in hint.
+    pub has_saved_credentials: bool,
     pub email: Option<String>,
     pub plan_enabled: bool,
     /// Signed in before, but the session ended: "Reconnect".
@@ -197,9 +199,17 @@ pub struct Status {
 
 pub fn status() -> Status {
     let account = load_account();
-    let connected = secrets::get_internal(REFRESH_TOKEN_KEY).is_some();
+    status_for(
+        &account,
+        secrets::get_internal(REFRESH_TOKEN_KEY).is_some(),
+        secrets::get_internal(ID_TOKEN_KEY).is_some(),
+    )
+}
+
+fn status_for(account: &Account, connected: bool, has_id_token: bool) -> Status {
     Status {
         connected,
+        has_saved_credentials: connected || has_id_token,
         email: account.email.clone(),
         plan_enabled: account.plan_enabled,
         needs_reconnect: !connected && account.client_id.is_some() && account.email.is_some(),
@@ -603,21 +613,62 @@ pub async fn connect(open: impl Fn(&str)) -> Result<Status, String> {
     Ok(status())
 }
 
-/// Sign out: the refresh token is revoked at OpenAI, then forgotten here. The
-/// client id and host id stay for the next sign-in. Returns false when the
-/// revocation wasn't confirmed (the user can disconnect Coucou in ChatGPT).
-pub async fn disconnect() -> bool {
+/// Remote revocation and local cleanup are independent outcomes. No secrets
+/// or raw keystore errors are exposed to the webview.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisconnectResult {
+    /// None means there was no refresh token to revoke, not remote success.
+    pub revocation_confirmed: Option<bool>,
+    pub local_cleanup_succeeded: bool,
+}
+
+/// Sign out: try revocation, then always attempt both local deletions and
+/// clear the in-memory access token. Client and host ids stay for next time.
+pub async fn disconnect() -> DisconnectResult {
     let _serial = REFRESHING.get_or_init(Default::default).lock().await;
     let account = load_account();
-    let mut confirmed = true;
-    if let (Some(refresh), Some(client)) = (secrets::get_internal(REFRESH_TOKEN_KEY), account.client_id.as_deref()) {
-        confirmed = revoke(&refresh, client).await;
+    let refresh = secrets::get_internal(REFRESH_TOKEN_KEY);
+    let result = disconnect_with(
+        refresh.as_deref(),
+        account.client_id.as_deref(),
+        revoke,
+        |key| secrets::set_internal(key, ""),
+        || *ACCESS.lock().unwrap() = None,
+    ).await;
+    crate::log::line(format!(
+        "chatgpt: disconnect (revocation {}, local cleanup {})",
+        match result.revocation_confirmed {
+            Some(true) => "confirmed",
+            Some(false) => "not confirmed",
+            None => "not attempted",
+        },
+        if result.local_cleanup_succeeded { "succeeded" } else { "failed" },
+    ));
+    result
+}
+
+/// Keep the cleanup orchestration testable without OAuth or a real keystore.
+async fn disconnect_with<'a, F: std::future::Future<Output = bool>>(
+    refresh: Option<&'a str>,
+    client: Option<&'a str>,
+    revoke: impl FnOnce(&'a str, &'a str) -> F,
+    mut forget: impl FnMut(&str) -> Result<(), String>,
+    clear_access: impl FnOnce(),
+) -> DisconnectResult {
+    let revocation_confirmed = match (refresh, client) {
+        (Some(refresh), Some(client)) => Some(revoke(refresh, client).await),
+        (Some(_), None) => Some(false),
+        (None, _) => None,
+    };
+    // Evaluate each operation separately: a failure must not skip the next.
+    let refresh_deleted = forget(REFRESH_TOKEN_KEY).is_ok();
+    let id_deleted = forget(ID_TOKEN_KEY).is_ok();
+    clear_access();
+    DisconnectResult {
+        revocation_confirmed,
+        local_cleanup_succeeded: refresh_deleted && id_deleted,
     }
-    let _ = secrets::set_internal(REFRESH_TOKEN_KEY, "");
-    let _ = secrets::set_internal(ID_TOKEN_KEY, "");
-    *ACCESS.lock().unwrap() = None;
-    crate::log::line(format!("chatgpt: disconnected (revocation {})", if confirmed { "confirmed" } else { "not confirmed" }));
-    confirmed
 }
 
 async fn revoke(refresh: &str, client_id: &str) -> bool {

@@ -10,7 +10,7 @@ import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
 import type { ActionReceipt, AppGrant } from "../assistant/contracts";
-import type { ChatGptModel, ChatGptStatus } from "./chatgpt";
+import type { ChatGptDisconnectResult, ChatGptModel, ChatGptStatus } from "./chatgpt";
 import type { ChatMessage } from "./state";
 
 /** chat_store.rs `Summary`. */
@@ -375,8 +375,8 @@ export const Bridge = {
   /** ChatGPT sign-in (chatgpt.rs): only a status ever comes back, never a token. */
   chatgptStatus: () => call<ChatGptStatus>("chatgpt_status"),
   chatgptConnect: () => callOrThrow<ChatGptStatus>("chatgpt_connect"),
-  /** True when OpenAI confirmed the revocation. */
-  chatgptDisconnect: () => call<boolean>("chatgpt_disconnect"),
+  /** Remote revocation and local cleanup are separate; IPC errors propagate. */
+  chatgptDisconnect: () => callOrThrow<ChatGptDisconnectResult>("chatgpt_disconnect"),
   chatgptModels: () => callOrThrow<ChatGptModel[]>("chatgpt_models"),
   chatgptWelcomed: () => call<void>("chatgpt_welcomed"),
   /**

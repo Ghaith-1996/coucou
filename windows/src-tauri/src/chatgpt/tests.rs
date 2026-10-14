@@ -438,7 +438,7 @@ fn errors_follow_the_recovery_table() {
 
 #[test]
 fn the_status_never_carries_a_token() {
-    let text = serde_json::to_string(&status()).unwrap();
+    let text = serde_json::to_string(&status_for(&account(Some("test-client")), true, true)).unwrap();
     for word in ["token", "refresh", "access", "secret"] {
         assert!(!text.to_lowercase().contains(word), "{text}");
     }
@@ -461,4 +461,85 @@ fn the_effort_table_is_the_one_the_island_uses() {
 fn print_a_first_sign_in_url() {
     let account = Account { host_id: new_host_id(), ..Default::default() };
     println!("URL={}", authorize_url(&account, &Attempt::new(1455), None));
+}
+
+#[test]
+fn status_keeps_cleanup_available_for_either_saved_credential() {
+    for (refresh, id) in [(false, false), (true, false), (false, true), (true, true)] {
+        let status = status_for(&account(Some("oaiapp_test123")), refresh, id);
+        assert_eq!(status.connected, refresh);
+        assert_eq!(status.has_saved_credentials, refresh || id);
+        let serialized = serde_json::to_value(status).unwrap();
+        assert_eq!(serialized["hasSavedCredentials"], refresh || id);
+    }
+}
+
+#[tokio::test]
+async fn disconnect_attempts_both_deletions_and_clears_access_for_every_failure_combination() {
+    for remote_ok in [true, false] {
+        for refresh_ok in [true, false] {
+            for id_ok in [true, false] {
+                let mut deleted = Vec::new();
+                let access_present = std::cell::Cell::new(true);
+                let result = disconnect_with(
+                    Some("test-refresh"),
+                    Some("test-client"),
+                    |refresh, client| {
+                        assert_eq!((refresh, client), ("test-refresh", "test-client"));
+                        std::future::ready(remote_ok)
+                    },
+                    |key| {
+                        deleted.push(key.to_string());
+                        if if key == REFRESH_TOKEN_KEY { refresh_ok } else { id_ok } {
+                            Ok(())
+                        } else {
+                            Err("test keystore deletion failed".into())
+                        }
+                    },
+                    || access_present.set(false),
+                ).await;
+                assert_eq!(deleted, [REFRESH_TOKEN_KEY, ID_TOKEN_KEY]);
+                assert!(!access_present.get(), "access is cleared even when either deletion fails");
+                assert_eq!(result.revocation_confirmed, Some(remote_ok));
+                assert_eq!(result.local_cleanup_succeeded, refresh_ok && id_ok);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn disconnect_distinguishes_no_refresh_from_a_missing_client() {
+    for (refresh, client, expected) in [
+        (None, None, None),
+        (None, Some("test-client"), None),
+        (Some("test-refresh"), None, Some(false)),
+    ] {
+        let mut deleted = Vec::new();
+        let access_present = std::cell::Cell::new(true);
+        let result = disconnect_with(
+            refresh,
+            client,
+            |_, _| -> std::future::Ready<bool> {
+                panic!("revocation needs both a refresh token and a client")
+            },
+            |key| {
+                deleted.push(key.to_string());
+                Ok(())
+            },
+            || access_present.set(false),
+        ).await;
+        assert_eq!(result.revocation_confirmed, expected);
+        assert!(result.local_cleanup_succeeded);
+        assert_eq!(deleted, [REFRESH_TOKEN_KEY, ID_TOKEN_KEY]);
+        assert!(!access_present.get());
+    }
+}
+
+#[test]
+fn disconnect_result_serializes_only_the_two_outcomes() {
+    let result = DisconnectResult { revocation_confirmed: None, local_cleanup_succeeded: false };
+    assert_eq!(serde_json::to_value(result).unwrap(), json!({
+        "revocationConfirmed": null,
+        "localCleanupSucceeded": false,
+    }));
 }

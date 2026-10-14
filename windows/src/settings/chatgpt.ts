@@ -19,7 +19,8 @@ const STRINGS = {
   get notConnected() { return t("Not connected."); },
   get sessionEnded() { return t("Your ChatGPT session ended. Reconnect in Settings."); },
   get planOff() { return t("Plan usage wasn't allowed at sign-in."); },
-  get notRevoked() { return t("Signed out here, but remote revocation was not confirmed. You can also disconnect Coucou in ChatGPT's settings."); },
+  get notRevoked() { return t("Remote revocation was not confirmed. You can also disconnect Coucou in ChatGPT's settings."); },
+  get cleanupFailed() { return t("Couldn't remove all saved ChatGPT credentials from this device. Try Disconnect again."); },
   get welcomeTitle() { return t("You're using your ChatGPT plan"); },
   get welcomeBody() { return t("Eligible AI requests in Coucou use the usage included in your ChatGPT plan or credits balance."); },
   get gotIt() { return t("Got it"); },
@@ -34,11 +35,13 @@ export function chatgptSection(): HTMLElement {
   let status: ChatGptStatus | null = null;
   let busy = false;
   let note = "";
+  let cleanupFailed = false;
+  let revocationUnconfirmed = false;
 
   function draw() {
     const s = status;
     dot.style.background = s?.connected && s.planEnabled ? "#22c55e" : s?.connected || s?.needsReconnect ? "#f5a524" : "#f4505e";
-    line.textContent = note
+    line.textContent = [note, cleanupFailed ? STRINGS.cleanupFailed : "", revocationUnconfirmed ? STRINGS.notRevoked : ""].filter(Boolean).join(" ")
       || (busy ? STRINGS.connecting
         : !s?.connected ? (s?.needsReconnect ? STRINGS.sessionEnded : STRINGS.notConnected)
         : !s.planEnabled ? STRINGS.planOff
@@ -50,7 +53,11 @@ export function chatgptSection(): HTMLElement {
       actions.append(button(s?.needsReconnect ? STRINGS.reconnect : STRINGS.connect, () => void connect()));
     } else {
       if (!s.planEnabled) actions.append(button(STRINGS.reconnect, () => void connect()));
+    }
+    if (s?.connected || s?.hasSavedCredentials || cleanupFailed) {
       actions.append(button(STRINGS.disconnect, () => void disconnect(), true));
+    }
+    if (s?.connected) {
       actions.append(h("button", { text: STRINGS.manageUsage, onclick: () => void Bridge.openUrl(s.manageUsageUrl) }));
     }
     clear(welcome);
@@ -70,6 +77,8 @@ export function chatgptSection(): HTMLElement {
     draw();
     try {
       status = await Bridge.chatgptConnect();
+      cleanupFailed = false;
+      revocationUnconfirmed = false;
     } catch (err) {
       note = String(err).replace(/^Error:\s*/, "");
     }
@@ -79,12 +88,23 @@ export function chatgptSection(): HTMLElement {
 
   async function disconnect() {
     busy = true;
+    note = "";
     draw();
-    const confirmed = await Bridge.chatgptDisconnect();
-    note = confirmed ? "" : STRINGS.notRevoked;
-    status = (await Bridge.chatgptStatus()) ?? null;
-    busy = false;
-    draw();
+    try {
+      const result = await Bridge.chatgptDisconnect();
+      cleanupFailed = !result.localCleanupSucceeded;
+      // An ID-token-only retry cannot confirm an earlier remote revocation.
+      if (result.revocationConfirmed !== null) revocationUnconfirmed = !result.revocationConfirmed;
+      if (result.localCleanupSucceeded && status) {
+        status = { ...status, connected: false, hasSavedCredentials: false, showWelcome: false };
+      }
+      status = (await Bridge.chatgptStatus()) ?? status;
+    } catch (err) {
+      note = String(err).replace(/^Error:\s*/, "");
+    } finally {
+      busy = false;
+      draw();
+    }
   }
 
   void Bridge.chatgptStatus().then((s) => {

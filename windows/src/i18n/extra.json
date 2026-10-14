@@ -4406,16 +4406,27 @@
    "ru": "При входе использование тарифа не было разрешено.",
    "id": "Penggunaan paket tidak diizinkan saat masuk."
   },
-  "Signed out here, but remote revocation was not confirmed. You can also disconnect Coucou in ChatGPT's settings.": {
-   "zh-Hans": "已在此处退出，但远程撤销未得到确认。你也可以在 ChatGPT 的设置中断开 Coucou。",
-   "hi": "यहाँ साइन आउट हो गया, पर दूरस्थ रद्दीकरण की पुष्टि नहीं हुई। आप ChatGPT की सेटिंग्स में भी Coucou को डिस्कनेक्ट कर सकते हैं।",
-   "es": "Se cerró la sesión aquí, pero no se confirmó la revocación remota. También puedes desconectar Coucou en los ajustes de ChatGPT.",
-   "ar": "تم تسجيل الخروج هنا، لكن لم يتم تأكيد الإلغاء عن بُعد. يمكنك أيضًا فصل Coucou من إعدادات ChatGPT.",
-   "fr": "Déconnecté ici, mais la révocation à distance n'a pas été confirmée. Tu peux aussi déconnecter Coucou dans les réglages de ChatGPT.",
-   "bn": "এখানে সাইন আউট হয়েছে, কিন্তু দূরবর্তী প্রত্যাহার নিশ্চিত হয়নি। ChatGPT-এর সেটিংসেও Coucou বিচ্ছিন্ন করতে পারেন।",
-   "pt-BR": "Você saiu aqui, mas a revogação remota não foi confirmada. Você também pode desconectar o Coucou nas configurações do ChatGPT.",
-   "ru": "Выход выполнен здесь, но удалённый отзыв не подтверждён. Можно также отключить Coucou в настройках ChatGPT.",
-   "id": "Sudah keluar di sini, tetapi pencabutan jarak jauh tidak dikonfirmasi. Anda juga bisa memutuskan Coucou di pengaturan ChatGPT."
+  "Remote revocation was not confirmed. You can also disconnect Coucou in ChatGPT's settings.": {
+   "zh-Hans": "未能确认远程撤销。你也可以在 ChatGPT 设置中断开 Coucou 的连接。",
+   "hi": "रिमोट एक्सेस रद्द होने की पुष्टि नहीं हुई। आप ChatGPT की सेटिंग्स में भी Coucou को डिस्कनेक्ट कर सकते हैं।",
+   "es": "No se confirmó la revocación remota. También puedes desconectar Coucou en los ajustes de ChatGPT.",
+   "ar": "لم يتم تأكيد إلغاء الوصول عن بُعد. يمكنك أيضًا فصل Coucou من إعدادات ChatGPT.",
+   "fr": "La révocation à distance n'a pas été confirmée. Vous pouvez aussi déconnecter Coucou dans les réglages de ChatGPT.",
+   "bn": "দূরবর্তী অ্যাক্সেস বাতিল হওয়ার নিশ্চিতকরণ পাওয়া যায়নি। আপনি ChatGPT-এর সেটিংস থেকেও Coucou সংযোগ বিচ্ছিন্ন করতে পারেন।",
+   "pt-BR": "A revogação remota não foi confirmada. Você também pode desconectar o Coucou nas configurações do ChatGPT.",
+   "ru": "Отзыв доступа на сервере не подтверждён. Вы также можете отключить Coucou в настройках ChatGPT.",
+   "id": "Pencabutan akses jarak jauh belum dikonfirmasi. Anda juga dapat memutuskan Coucou di pengaturan ChatGPT."
+  },
+  "Couldn't remove all saved ChatGPT credentials from this device. Try Disconnect again.": {
+   "zh-Hans": "无法从此设备删除所有已保存的 ChatGPT 登录凭据。请再次尝试断开连接。",
+   "hi": "इस डिवाइस से ChatGPT की सभी सहेजी गई लॉगिन जानकारी हटाई नहीं जा सकी। फिर से डिस्कनेक्ट करने का प्रयास करें।",
+   "es": "No se pudieron eliminar todas las credenciales de ChatGPT guardadas en este dispositivo. Intenta desconectar de nuevo.",
+   "ar": "تعذّر إزالة جميع بيانات اعتماد ChatGPT المحفوظة من هذا الجهاز. حاول الفصل مرة أخرى.",
+   "fr": "Impossible de supprimer tous les identifiants ChatGPT enregistrés sur cet appareil. Réessayez de vous déconnecter.",
+   "bn": "এই ডিভাইস থেকে ChatGPT-এর সব সংরক্ষিত লগইন তথ্য সরানো যায়নি। আবার সংযোগ বিচ্ছিন্ন করার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível remover todas as credenciais do ChatGPT salvas neste dispositivo. Tente desconectar novamente.",
+   "ru": "Не удалось удалить все сохранённые учётные данные ChatGPT с этого устройства. Попробуйте отключиться ещё раз.",
+   "id": "Tidak dapat menghapus semua kredensial ChatGPT yang tersimpan dari perangkat ini. Coba putuskan lagi."
   },
   "You're using your ChatGPT plan": {
    "zh-Hans": "你正在使用你的 ChatGPT 套餐",

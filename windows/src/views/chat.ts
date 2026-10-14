@@ -369,6 +369,7 @@ export function newConversation() {
   saveFailure = null;
   reopenedChatId = null;
   void Bridge.chatReset();
+  State.notify();
 }
 
 /** Saves the conversation on screen (after an answer, a Stop or a rename). */

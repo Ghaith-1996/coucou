@@ -63,7 +63,7 @@ export interface ChatGptStatus {
   savedAccounts: { id: string; email: string | null }[];
   hasPendingAccount: boolean;
   connected: boolean;
-  /** Either saved credential remains, even if only the sign-in hint does. */
+  /** A credential remains, or the native keystore could not confirm absence. */
   hasSavedCredentials: boolean;
   email: string | null;
   planEnabled: boolean;

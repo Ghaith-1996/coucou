@@ -401,3 +401,37 @@ for (const operation of ["connect", "select", "disconnect"]) {
     } else assert.ok(message(el).includes("Earlier operation failed"));
   });
 }
+
+for (const operation of ["models", "send"]) {
+  for (const retainedCredential of [false, true]) {
+    test(`expired session from ${operation} exposes recovery with retained credential=${retainedCredential}`, async () => {
+      const el = await section();
+      assert.equal(button(el, "Reconnect"), undefined);
+      const expired = { ...CONNECTED, connected: false, needsReconnect: true, hasSavedCredentials: retainedCredential };
+      const command = operation === "models" ? "chatgpt_models" : "chat_send";
+      answers[command] = () => {
+        answers.chatgpt_status = expired;
+        emit("chatgpt-status", expired);
+        throw new Error("Your ChatGPT session ended. Reconnect in Settings.");
+      };
+      await assert.rejects(operation === "models" ? Bridge.chatgptModels() : Bridge.chatSend("hello", null), /Reconnect in Settings/);
+      assert.ok(button(el, "Reconnect"), "an already-open Settings section offers recovery");
+      assert.ok(button(el, "Disconnect"), "explicit cleanup remains available");
+      assert.equal(button(el, "Use a different ChatGPT account"), undefined, "expiration is not explicit Disconnect");
+      assert.ok(selectedLabel(el).includes("test-client"));
+      assert.equal(message(el), "Your ChatGPT session ended. Reconnect in Settings.");
+      const reopened = await section();
+      assert.ok(button(reopened, "Reconnect"), "recreated Settings uses the same native recovery state");
+      answers.chatgpt_connect = () => {
+        answers.chatgpt_status = CONNECTED;
+        emit("chatgpt-status", CONNECTED);
+        return CONNECTED;
+      };
+      button(reopened, "Reconnect").fire("click");
+      await flush();
+      assert.deepEqual(sent("chatgpt_connect").at(-1), { newAccount: false });
+      assert.equal(button(reopened, "Reconnect"), undefined);
+      assert.ok(selectedLabel(reopened).includes("test-client"));
+    });
+  }
+}

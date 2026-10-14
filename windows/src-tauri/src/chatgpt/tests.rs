@@ -622,6 +622,249 @@ fn status_keeps_cleanup_available_for_either_saved_credential() {
     }
 }
 
+#[test]
+fn ended_sessions_keep_reconnect_and_cleanup_visible_without_authorizing_switching() {
+    for explicit in [false, true] {
+        for (refresh, id) in [(false, false), (true, false), (false, true), (true, true)] {
+            let account = Account { session_needs_reconnect: true, explicitly_disconnected: explicit, ..registered_account() };
+            let status = status_for(&account, refresh, id);
+            assert!(!status.connected && status.needs_reconnect && !status.show_welcome);
+            assert_eq!(status.has_saved_credentials, refresh || id);
+            assert_eq!(status.can_switch_accounts, explicit && !refresh && !id);
+            assert_eq!(require_signed_out(&account, Ok((refresh, id))).is_ok(), explicit && !refresh && !id);
+            assert!(require_selected_client(&account, "oaiapp_original").is_err());
+        }
+    }
+}
+
+#[test]
+fn status_read_failures_never_hide_recovery_or_claim_a_usable_session() {
+    for (refresh, id) in [(false, false), (true, false), (false, true), (true, true)] {
+        let status = status_from_storage(Err("unreadable metadata".into()), Ok((refresh, id)), Some("oaiapp_original"));
+        assert!(!status.connected && !status.can_switch_accounts && !status.show_welcome);
+        assert!(status.needs_reconnect);
+        assert_eq!(status.has_saved_credentials, refresh || id);
+    }
+    for account in [Ok(registered_account()), Ok(Account { explicitly_disconnected: true, ..registered_account() }), Err("corrupt metadata".into())] {
+        let status = status_from_storage(account, Err("keystore locked".into()), Some("oaiapp_original"));
+        assert!(!status.connected && !status.can_switch_accounts && !status.show_welcome);
+        assert!(status.needs_reconnect && status.has_saved_credentials);
+    }
+    let orphaned = status_from_storage(Ok(Account::default()), Ok((true, false)), None);
+    assert!(!orphaned.connected && orphaned.has_saved_credentials && !orphaned.can_switch_accounts);
+}
+
+#[tokio::test]
+async fn terminal_refresh_recovery_survives_failed_cleanup_and_restart_without_a_post_error_write() {
+    for code in ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"] {
+        for deletion_ok in [false, true] {
+            let active = std::sync::Mutex::new(None);
+            let original = registered_account();
+            let persisted = std::cell::RefCell::new(serde_json::to_vec(&original).unwrap());
+            let writes = std::cell::Cell::new(0);
+            let access = std::cell::Cell::new(true);
+            let generation = std::cell::Cell::new(4);
+            let refresh_present = std::cell::Cell::new(true);
+            let result = refresh_with(&active, &original,
+                || {
+                    let guarded: Account = serde_json::from_slice(&persisted.borrow()).unwrap();
+                    assert!(guarded.session_needs_reconnect,
+                        "the guard must reach disk before the token can be rejected");
+                    assert!(status_from_storage(Ok(guarded.clone()), Ok((true, true)), active.lock().unwrap().as_deref()).connected,
+                        "in-flight status still describes the starting session");
+                    assert!(!status_from_storage(Ok(guarded), Ok((true, true)), Some("oaiapp_other")).connected,
+                        "another client's refresh must never mask this marker");
+                    std::future::ready(Err(RefreshFailure::Rejected { status: 400, code: code.into() }))
+                },
+                |next| {
+                    writes.set(writes.get() + 1);
+                    if writes.get() != 1 { return Err("disk failed after the exchange".into()); }
+                    persisted.replace(serde_json::to_vec(next).unwrap()); Ok(())
+                },
+                |key, value| {
+                    assert_eq!((key, value), (REFRESH_TOKEN_KEY, ""));
+                    if deletion_ok { refresh_present.set(false); Ok(()) } else { Err("keystore locked".into()) }
+                },
+                || { access.set(false); generation.set(generation.get() + 1); },
+                |_| panic!("a terminal error cannot cache access"),
+            ).await;
+            assert_eq!(result, Err(t("Your ChatGPT session ended. Reconnect in Settings.")));
+            assert!(active.lock().unwrap().is_none());
+            assert_eq!(writes.get(), 1, "terminal recovery never depends on a post-error metadata write");
+            assert!(!access.get());
+            assert_eq!(generation.get(), 5);
+            assert!(check_session_generation(&RequestAccount { client_id: "oaiapp_original".into(), generation: 4 }, generation.get()).is_err());
+            let restarted: Account = serde_json::from_slice(&persisted.borrow()).unwrap();
+            assert_eq!(restarted.registration(), original.registration());
+            assert_eq!(restarted.host_id, original.host_id);
+            assert!(!restarted.explicitly_disconnected);
+            let status = status_for(&restarted, refresh_present.get(), true);
+            assert!(!status.connected && status.needs_reconnect && status.has_saved_credentials);
+            assert!(!status.can_switch_accounts && !status.show_welcome);
+            assert!(require_selected_client(&restarted, "oaiapp_original").is_err(), "the unusable token cannot be retried");
+            assert!(require_signed_out(&restarted, Ok((false, false))).is_err(), "expiry is not explicit Disconnect");
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_refresh_preflight_cannot_call_the_endpoint_or_change_credentials() {
+    let active = std::sync::Mutex::new(None);
+    let original = registered_account();
+    let result = refresh_with(&active, &original,
+        || -> std::future::Ready<Result<Tokens, RefreshFailure>> { panic!("no exchange without durable recovery") },
+        |_| Err("disk full".into()),
+        |_, _| panic!("no credential writes before the guard is saved"),
+        || panic!("a failed preflight never changed the session"),
+        |_| panic!("no access token was issued"),
+    ).await;
+    assert_eq!(result, Err("disk full".into()));
+    assert!(active.lock().unwrap().is_none());
+    assert!(!original.session_needs_reconnect);
+}
+
+#[tokio::test]
+async fn nonterminal_refresh_failures_restore_the_session_only_if_metadata_commit_succeeds() {
+    for code in [None, Some("temporarily_unavailable"), Some("server_error"), Some("invalid_client"), Some("")] {
+        for restore_ok in [true, false] {
+            let active = std::sync::Mutex::new(None);
+            let original = registered_account();
+            let persisted = std::cell::RefCell::new(original.clone());
+            let invalidated = std::cell::Cell::new(false);
+            let mut writes = 0;
+            let result = refresh_with(&active, &original,
+                || std::future::ready(Err(match code {
+                    None => RefreshFailure::Unreachable,
+                    Some(code) => RefreshFailure::Rejected { status: 503, code: code.into() },
+                })),
+                |next| {
+                    writes += 1;
+                    if writes == 2 && !restore_ok { return Err("disk full".into()); }
+                    persisted.replace(next.clone()); Ok(())
+                },
+                |_, _| panic!("nonterminal errors must not delete or replace credentials"),
+                || invalidated.set(true),
+                |_| panic!("no token was issued"),
+            ).await;
+            assert!(result.is_err());
+            assert!(active.lock().unwrap().is_none());
+            assert_eq!(writes, 2);
+            assert_eq!(invalidated.get(), !restore_ok);
+            let restarted: Account = serde_json::from_slice(&serde_json::to_vec(&*persisted.borrow()).unwrap()).unwrap();
+            assert_eq!(restarted.session_needs_reconnect, !restore_ok);
+            assert_eq!(restarted.registration(), original.registration());
+            assert_eq!(status_for(&restarted, true, true).connected, restore_ok);
+            assert_eq!(require_selected_client(&restarted, "oaiapp_original").is_ok(), restore_ok);
+        }
+    }
+}
+
+#[tokio::test]
+async fn successful_refresh_unblocks_only_after_both_credential_and_metadata_commits() {
+    for rotated in [false, true] {
+        for store_ok in [false, true] {
+            for finish_ok in [false, true] {
+                let active = std::sync::Mutex::new(None);
+                let original = registered_account();
+                let persisted = std::cell::RefCell::new(original.clone());
+                let invalidated = std::cell::Cell::new(false);
+                let remembered = std::cell::Cell::new(false);
+                let mut writes = 0;
+                let mut stores = 0;
+                let result = refresh_with(&active, &original,
+                    || {
+                        assert!(status_from_storage(Ok(persisted.borrow().clone()), Ok((true, true)), active.lock().unwrap().as_deref()).connected);
+                        let mut tokens = new_account_tokens();
+                        if !rotated { tokens.refresh_token = None; }
+                        std::future::ready(Ok(tokens))
+                    },
+                    |next| {
+                        writes += 1;
+                        if writes == 2 && !finish_ok { return Err("disk full".into()); }
+                        persisted.replace(next.clone()); Ok(())
+                    },
+                    |key, value| {
+                        stores += 1;
+                        assert_eq!((key, value), (REFRESH_TOKEN_KEY, "new-refresh"));
+                        assert!(persisted.borrow().session_needs_reconnect);
+                        if store_ok { Ok(()) } else { Err("keystore locked".into()) }
+                    },
+                    || invalidated.set(true),
+                    |tokens| {
+                        assert!(!persisted.borrow().session_needs_reconnect);
+                        assert_eq!(tokens.access_token, "new-access");
+                        remembered.set(true);
+                    },
+                ).await;
+                let committed = (!rotated || store_ok) && finish_ok;
+                assert!(active.lock().unwrap().is_none());
+                assert_eq!(result.is_ok(), committed);
+                assert_eq!(remembered.get(), committed);
+                assert_eq!(invalidated.get(), !committed);
+                assert_eq!(stores, usize::from(rotated));
+                assert_eq!(persisted.borrow().session_needs_reconnect, !committed);
+                assert_eq!(status_for(&persisted.borrow(), true, true).connected, committed);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_success_keeps_the_session_blocked_because_rotation_may_have_happened() {
+    let active = std::sync::Mutex::new(None);
+    let original = registered_account();
+    let mut saved = None;
+    let invalidated = std::cell::Cell::new(false);
+    assert!(refresh_with(&active, &original, || std::future::ready(Err(RefreshFailure::InvalidResponse)),
+        |next| { saved = Some(next.clone()); Ok(()) },
+        |_, _| panic!("a malformed reply provides no credential to store"),
+        || invalidated.set(true), |_| panic!("no verified token response"),
+    ).await.is_err());
+    assert!(active.lock().unwrap().is_none());
+    assert!(invalidated.get() && saved.unwrap().session_needs_reconnect);
+}
+
+#[test]
+fn cancelled_refresh_leaves_durable_recovery_and_invalidates_the_previous_access() {
+    let active = std::sync::Mutex::new(None);
+    let original = registered_account();
+    let persisted = std::cell::RefCell::new(original.clone());
+    let invalidated = std::cell::Cell::new(false);
+    let mut refresh = Box::pin(refresh_with(&active, &original,
+        std::future::pending::<Result<Tokens, RefreshFailure>>,
+        |next| { persisted.replace(next.clone()); Ok(()) },
+        |_, _| panic!("no response arrived"),
+        || invalidated.set(true), |_| panic!("no response arrived"),
+    ));
+    let mut context = std::task::Context::from_waker(futures_util::task::noop_waker_ref());
+    assert!(std::future::Future::poll(refresh.as_mut(), &mut context).is_pending());
+    assert!(persisted.borrow().session_needs_reconnect);
+    assert!(status_from_storage(Ok(persisted.borrow().clone()), Ok((true, true)), active.lock().unwrap().as_deref()).connected);
+    assert!(!invalidated.get());
+    drop(refresh);
+    assert!(active.lock().unwrap().is_none());
+    assert!(invalidated.get());
+    assert!(!status_for(&persisted.borrow(), true, true).connected);
+}
+
+#[tokio::test]
+async fn an_already_ended_session_cannot_start_a_refresh_or_mask_its_persisted_marker() {
+    for explicit in [false, true] {
+        let active = std::sync::Mutex::new(None);
+        let account = Account { session_needs_reconnect: true, explicitly_disconnected: explicit, ..registered_account() };
+        assert!(refresh_with(&active, &account,
+            || -> std::future::Ready<Result<Tokens, RefreshFailure>> { panic!("never retry the unusable token") },
+            |_| panic!("do not overwrite the terminal marker"),
+            |_, _| panic!("no credential mutation"),
+            || panic!("the previous session was already invalidated"),
+            |_| panic!("no new access"),
+        ).await.is_err());
+        assert!(active.lock().unwrap().is_none());
+        assert!(!status_from_storage(Ok(account), Ok((true, true)), active.lock().unwrap().as_deref()).connected);
+    }
+}
+
+
 #[tokio::test]
 async fn disconnect_attempts_both_deletions_and_clears_access_for_every_failure_combination() {
     for remote_ok in [true, false] {
@@ -710,6 +953,32 @@ async fn account_save_failure_can_be_retried_after_restart_without_any_credentia
     assert!(status_for(&reloaded, false, false).can_switch_accounts);
 }
 
+#[tokio::test]
+async fn disconnecting_an_expired_session_preserves_recovery_until_cleanup_is_fully_persisted() {
+    for credentials_ok in [false, true] {
+        for metadata_ok in [false, true] {
+            let original = Account { session_needs_reconnect: true, ..registered_account() };
+            let mut saved = original.clone();
+            let result = disconnect_with(Some("unusable-refresh"), &original,
+                |_, _| std::future::ready(false),
+                |_| if credentials_ok { Ok(()) } else { Err("keystore locked".into()) },
+                || {},
+                |next| {
+                    if metadata_ok { saved = next.clone(); Ok(()) } else { Err("disk full".into()) }
+                },
+            ).await;
+            let restarted: Account = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+            let status = status_for(&restarted, !credentials_ok, !credentials_ok);
+            assert!(!status.connected && status.needs_reconnect);
+            assert!(restarted.session_needs_reconnect);
+            assert_eq!(restarted.registration(), original.registration());
+            assert_eq!(result.local_cleanup_succeeded, credentials_ok && metadata_ok);
+            assert_eq!(status.can_switch_accounts, credentials_ok && metadata_ok);
+            assert_eq!(require_signed_out(&restarted, Ok((!credentials_ok, !credentials_ok))).is_ok(), credentials_ok && metadata_ok);
+        }
+    }
+}
+
 #[test]
 fn disconnect_result_serializes_only_the_two_outcomes() {
     let result = DisconnectResult { revocation_confirmed: None, local_cleanup_succeeded: false };
@@ -749,6 +1018,7 @@ fn legacy_accounts_keep_their_exact_registration_and_need_explicit_cleanup_befor
     assert_eq!(account.client_id.as_deref(), Some("oaiapp_old"));
     assert_eq!(account.sub.as_deref(), Some("old-user"));
     assert!(account.saved_accounts.is_empty() && account.pending_account.is_none());
+    assert!(!account.session_needs_reconnect, "legacy usable sessions retain their behavior until refreshed");
     assert!(!status_for(&account, false, false).can_switch_accounts);
     assert!(require_signed_out(&account, Ok((false, false))).is_err());
 }
@@ -818,14 +1088,59 @@ fn cancelled_or_unpersisted_new_registrations_leave_the_old_account_unchanged() 
 
 #[test]
 fn ordinary_reconnect_rejects_a_different_subject_before_any_persistence_or_credential_write() {
-    let account = registered_account();
-    let mut claims = new_account_claims();
-    claims.aud = json!("oaiapp_original");
-    let result = store_verified_sign_in(&account, &account, "oaiapp_original", &claims, &new_account_tokens(), false,
-        |_| panic!("mismatched identity must not be persisted"),
-        |_, _| panic!("mismatched identity must not write credentials"),
-        |_| panic!("mismatched identity must not become active"));
-    assert!(result.is_err());
+    for expired in [false, true] {
+        let account = Account { session_needs_reconnect: expired, ..registered_account() };
+        let mut claims = new_account_claims();
+        claims.aud = json!("oaiapp_original");
+        let result = store_verified_sign_in(&account, &account, "oaiapp_original", &claims, &new_account_tokens(), false,
+            |_| panic!("mismatched identity must not be persisted"),
+            |_, _| panic!("mismatched identity must not write credentials"),
+            |_| panic!("mismatched identity must not become active"));
+        assert!(result.is_err());
+    }
+}
+
+#[test]
+fn reconnect_clears_expiry_only_after_refresh_storage_and_the_final_metadata_write() {
+    for preflight_ok in [false, true] {
+        for refresh_ok in [false, true] {
+            for final_write_ok in [false, true] {
+                let original = Account { session_needs_reconnect: true, ..registered_account() };
+                let mut claims = new_account_claims(); claims.sub = "original-user".into();
+                let persisted = std::cell::RefCell::new(original.clone());
+                let remembered = std::cell::Cell::new(false);
+                let refresh_present = std::cell::Cell::new(true);
+                let mut writes = 0;
+                let result = store_verified_sign_in(&original, &original, "oaiapp_original", &claims, &new_account_tokens(), false,
+                    |next| {
+                        writes += 1;
+                        if (writes == 1 && !preflight_ok) || (writes == 2 && !final_write_ok) {
+                            return Err("disk full".into());
+                        }
+                        persisted.replace(next.clone()); Ok(())
+                    },
+                    |key, _| {
+                        assert!(persisted.borrow().session_needs_reconnect, "surviving expired credentials must stay blocked until replaced");
+                        if key == ID_TOKEN_KEY { return Err("optional hint too long".into()); }
+                        assert_eq!(key, REFRESH_TOKEN_KEY);
+                        if refresh_ok { refresh_present.set(true); Ok(()) } else { Err("keystore locked".into()) }
+                    },
+                    |_| { assert!(!persisted.borrow().session_needs_reconnect); remembered.set(true); },
+                );
+                let success = preflight_ok && refresh_ok && final_write_ok;
+                assert_eq!(result.is_ok(), success);
+                assert_eq!(remembered.get(), success);
+                let restarted: Account = serde_json::from_slice(&serde_json::to_vec(&*persisted.borrow()).unwrap()).unwrap();
+                assert_eq!(restarted.client_id, original.client_id);
+                assert_eq!(restarted.sub, original.sub);
+                assert_eq!(restarted.session_needs_reconnect, !success);
+                let status = status_for(&restarted, refresh_present.get(), true);
+                assert_eq!(status.connected, success);
+                assert_eq!(status.needs_reconnect, !success);
+                assert!(!status.can_switch_accounts);
+            }
+        }
+    }
 }
 
 #[test]

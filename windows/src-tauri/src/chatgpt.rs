@@ -1317,7 +1317,7 @@ pub fn as_model_infos(models: &[CatalogModel]) -> Vec<ModelInfo> {
 // rules out audio input and transcription, and says nothing of speech out.
 // Audio mode asks for OpenAI's voice once in a while: when the account may
 // use it, replies are read by it, on the plan like everything else here;
-// when it may not, the first refusal is remembered for this run and Windows'
+// when it may not, the first refusal is remembered for that session and Windows'
 // own voices read instead. Never an API key, never another billing.
 
 const SPEECH: &str = "https://api.openai.com/v1/audio/speech";

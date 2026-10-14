@@ -69,7 +69,8 @@ same access token as the chat; never an API key).
   assumed.
 - The first refusal (HTTP 400/401/403/404) is logged
   (`chatgpt: speech not available on this sign-in`) and not asked again
-  until restart. Other failures fall back for that chunk only.
+  until reconnecting or switching accounts. Other failures fall back for that
+  chunk only.
 - Windows' voices read whatever OpenAI's voice doesn't.
 - The log says `speech: ChatGPT's voice in use` the first time it works.
 

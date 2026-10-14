@@ -9,6 +9,11 @@ listening with a level meter, Stop, a transcript preview, then Use in chat,
 confirm a supported command, or Cancel. A chat draft is never sent automatically.
 An agent's waiting permission or question takes priority, without being answered
 by voice. The button is disabled while the chat is waiting for a model reply.
+The composer also reserves a pending microphone start synchronously: Send,
+Enter and repeated microphone clicks cannot race the native startup reply.
+The typed draft stays intact. Completion, a refused start or cancellation
+releases the controls without changing the voice controller's capture ownership
+or taking the island away from a newer permission card.
 
 The control has a translated tooltip and accessible name, keyboard activation
 and a visible focus ring. The existing composer layout and Send button are

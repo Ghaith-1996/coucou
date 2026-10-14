@@ -264,6 +264,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
 
   let sending = false;
+  // Reserve the composer before the native microphone startup can yield.
+  let startingVoice = false;
   let renderedCount = -1;
   // A local model answers token by token: where its text so far is shown.
   let live: HTMLElement | null = null;
@@ -274,7 +276,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     modelName.textContent = activeModel(State.settings) || t(STRINGS.noModel);
     modelBtn.classList.toggle("open", picker.isOpen);
     modelBtn.disabled = sending;
-    if (voice) voice.disabled = sending;
+    if (voice) voice.disabled = sending || startingVoice;
+    send.disabled = sending || startingVoice;
   }
 
   modelBtn.addEventListener("click", () => {
@@ -296,7 +299,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   async function submit() {
     const query = input.value.trim();
-    if (!query || sending) return;
+    if (!query || sending || startingVoice) return;
     if (picker.isOpen) picker.close();
     input.value = "";
     sending = true;
@@ -334,10 +337,20 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   }
 
   send.addEventListener("click", () => void submit());
-  voice?.addEventListener("click", () => {
-    if (sending) return;
+  voice?.addEventListener("click", async () => {
+    if (sending || startingVoice) return;
+    startingVoice = true;
     if (picker.isOpen) picker.close();
-    void voiceShortcut();
+    drawModelButton();
+    try {
+      await voiceShortcut();
+    } catch {
+      // Keep the draft and any newer permission card in place on failure.
+      Sound.play("error");
+    } finally {
+      startingVoice = false;
+      drawModelButton();
+    }
   });
   input.addEventListener("keydown", (e) => {
     const key = (e as KeyboardEvent).key;

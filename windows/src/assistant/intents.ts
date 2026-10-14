@@ -759,16 +759,18 @@ export function parseMultiAction(raw: string, pills: readonly PillDefinition[]):
 }
 
 const OPEN_VERBS = new Set(["ouvre", "ouvrir", "open"]);
-const OPEN_FILLERS = new Set(["moi", "l", "la", "le", "les", "app", "application", "the", "an", "appli"]);
-/** Longer than this after "open", it is a sentence being dictated, not an app's name. */
+// Keep in sync with apps.rs: validation skips these, catalog matching disambiguates them.
+const OPEN_FILLERS = new Set(["moi", "l", "la", "le", "les", "un", "une", "des", "app", "application", "the", "a", "an", "appli"]);
+/** More words than this after leading fillers is dictation, not an app's name. */
 const MAX_APP_WORDS = 4;
 
 /**
- * "ouvre Figma", "open the app Notion" → the app's name as it was said
- * (VoiceQuery.appToOpen): the words after the first open verb, past "moi",
- * articles and "app". Null when the sentence opens nothing. Unlike the Mac,
- * more than four words after the verb is dictation ("…open the chat and show
- * me the latest pull request"), not a name: Whisper hears whole sentences.
+ * "ouvre Figma", "open the app Notion" → the query after the first open verb.
+ * Skip "moi", articles and "app" only to validate a nonempty name of at most
+ * four words. Preserve them in the query so Rust can prefer an exact catalog
+ * label like "The Witness" before interpreting its article as a filler.
+ * Longer names are dictation ("…open the chat and show me the latest pull
+ * request"), not an app command: Whisper hears whole sentences.
  */
 export function appToOpen(raw: string): string | null {
   const n = normalise(raw).split(" ").filter(Boolean);
@@ -779,7 +781,7 @@ export function appToOpen(raw: string): string | null {
   let start = i + 1;
   while (start < n.length && OPEN_FILLERS.has(n[start])) start++;
   if (start >= n.length || n.length - start > MAX_APP_WORDS) return null;
-  const name = r.slice(start).join(" ").replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
+  const name = r.slice(i + 1).join(" ").replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
   return name || null;
 }
 

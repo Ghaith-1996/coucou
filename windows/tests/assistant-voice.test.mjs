@@ -663,6 +663,16 @@ test("Do it still completes after its ordinary Rust idle event", async () => {
 
 const GRANT = { actionId: "act-90", digest: "ab".repeat(32), expiresAtMs: 9e12 };
 
+test("article-led app queries reach Rust intact and still require confirmation", async () => {
+  await startListening();
+  answers.set("assistant_app_propose", { label: "The Witness", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Open an app The Witness." }));
+  await flush();
+  assert.deepEqual(sent("assistant_app_propose"), [{ captureId: "cap-1", name: "an app The Witness" }]);
+  assert.equal(Voice.app.label, "The Witness");
+  assert.equal(sent("assistant_app_launch").length, 0, "nothing opens before the click");
+});
+
 test("\"open <app>\" offers the app Rust found, and opens it only on the click", async () => {
   await startListening();
   answers.set("assistant_app_propose", { label: "Visual Studio Code", grant: GRANT });

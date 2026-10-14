@@ -343,6 +343,8 @@ function buildPicker(onChange: () => void): Picker {
 
 /** When the conversation on screen was first saved. */
 let chatCreatedAt = 0;
+/** Its generated or explicitly renamed title, kept when more messages arrive. */
+let chatTitle = "";
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
@@ -360,8 +362,9 @@ function saveConversation() {
   if (!State.chatId) {
     State.chatId = newChatId();
     chatCreatedAt = Date.now();
+    chatTitle = titleFor(messages);
   }
-  void Bridge.chatHistorySave(toSaved(State.chatId, titleFor(messages), chatCreatedAt || Date.now(), messages)).catch(() => {});
+  void Bridge.chatHistorySave(toSaved(State.chatId, chatTitle, chatCreatedAt || Date.now(), messages)).catch(() => {});
 }
 
 interface HistoryPanel {
@@ -401,7 +404,9 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       const done = async (keep: boolean) => {
         const title = keep ? cleanTitle(input.value) : null;
         if (title && title !== s.title) {
-          await Bridge.chatHistoryRename(s.id, title).catch(() => {});
+          await Bridge.chatHistoryRename(s.id, title).then(() => {
+            if (State.chatId === s.id) chatTitle = title;
+          }).catch(() => {});
         }
         void draw();
       };
@@ -447,6 +452,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       nextId += saved.messages.length;
       State.chatId = saved.id;
       chatCreatedAt = saved.createdAt;
+      chatTitle = saved.title;
       State.droppedFile = null;
       State.promptContext = null;
       Sound.play("blip");

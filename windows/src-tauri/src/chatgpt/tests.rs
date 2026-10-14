@@ -82,6 +82,33 @@ fn a_returning_account_reuses_its_client_and_hints_itself() {
 }
 
 #[test]
+fn only_a_returning_account_without_plan_access_requests_consent_again() {
+    for (client, plan_enabled, expected_prompt) in [
+        (None, false, None),
+        (None, true, None),
+        (Some("oaiapp_test123"), false, Some("consent")),
+        (Some("oaiapp_test123"), true, None),
+    ] {
+        let mut account = account(client);
+        account.plan_enabled = plan_enabled;
+        // Recovery also works after restart without an ID-token hint.
+        for hint in [None, Some("old.id.token")] {
+            let attempt = Attempt::new(1455);
+            let q = query(&authorize_url(&account, &attempt, hint));
+            assert_eq!(q.get("prompt").map(String::as_str), expected_prompt,
+                "client={client:?}, plan_enabled={plan_enabled}, hint={hint:?}");
+            assert!(!q.contains_key("force_reconsent"), "requires confirmed integration rollout");
+            assert_eq!(q["client_id"], client.unwrap_or(DYNAMIC_CLIENT));
+            assert_eq!(q["scope"], SCOPE, "recovery retains the complete requested scopes");
+            assert_eq!(q["ext_agent_host_id"], account.host_id);
+            assert_eq!(q["state"], attempt.state);
+            assert_eq!(q["nonce"], attempt.nonce);
+            assert_eq!(q["code_challenge"], pkce_challenge(&attempt.verifier));
+        }
+    }
+}
+
+#[test]
 fn every_attempt_has_fresh_secrets() {
     let (a, b) = (Attempt::new(1), Attempt::new(1));
     assert_ne!(a.state, b.state);

@@ -310,6 +310,13 @@ pub fn authorize_url(account: &Account, attempt: &Attempt, id_token_hint: Option
         match &account.client_id {
             Some(client) => {
                 q.append_pair("client_id", client);
+                // connect() is user-initiated. A previous sign-in without plan
+                // access needs the consent screen again; ordinary reconnects
+                // with an existing grant should keep their normal flow.
+                // https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery
+                if !account.plan_enabled {
+                    q.append_pair("prompt", "consent");
+                }
                 if let Some(hint) = id_token_hint {
                     q.append_pair("id_token_hint", hint);
                 }

@@ -97,6 +97,14 @@ class FakeElement {
     this.childNodes = [];
     this.append(...nodes);
   }
+  replaceWith(node) {
+    const parent = this.parentNode;
+    if (!parent) return;
+    const index = parent.childNodes.indexOf(this);
+    parent.childNodes.splice(index, 1, node);
+    node.parentNode = parent;
+    this.parentNode = null;
+  }
   removeChild(node) {
     this.childNodes = this.childNodes.filter((n) => n !== node);
     return node;

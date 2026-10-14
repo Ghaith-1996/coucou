@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { normalise, parseIntent, parseMultiAction, parseTranscript, resolvePill } from "../src/assistant/intents.ts";
+import { appToOpen, normalise, parseIntent, parseMultiAction, parseTranscript, resolvePill } from "../src/assistant/intents.ts";
 import { PILL_CATALOG, availablePills } from "../src/core/pills.ts";
 
 const cases = JSON.parse(readFileSync(new URL("./fixtures/mac-intent-cases.json", import.meta.url), "utf8"));
@@ -342,6 +342,84 @@ test("multiple removals run first without mutating the input intent order", () =
   assert.deepEqual(got.next, declared("integration_claude", "integration_stripe", "integration_n8n", "integration_github", "integration_resend"));
   assert.deepEqual(intents, before);
 });
+
+test("open an app: the Mac's VoiceQueryTests cases, then Whisper's", () => {
+  assert.equal(appToOpen("ouvre Figma"), "Figma");
+  assert.equal(appToOpen("ouvre l'app Notes"), "l app Notes");
+  assert.equal(appToOpen("open Safari"), "Safari");
+  assert.deepEqual(parseTranscript("ouvre Figma", PILL_CATALOG), [{ kind: "openApp", name: "Figma" }]);
+  // Whisper's punctuation and capitals; the name kept as said.
+  assert.deepEqual(parseTranscript("Ouvre Visual Studio Code.", PILL_CATALOG), [{ kind: "openApp", name: "Visual Studio Code" }]);
+  assert.equal(appToOpen("Peux-tu ouvrir Spotify ?"), "Spotify");
+  assert.equal(appToOpen("Open the app Notion"), "the app Notion");
+  assert.equal(appToOpen("ouvre-moi la calculatrice"), "moi la calculatrice");
+  // Nothing to open, or a sentence being dictated.
+  assert.equal(appToOpen("ouvre"), null);
+  assert.equal(appToOpen("open the app"), null);
+  assert.equal(appToOpen("please open the chat and show me the latest pull request"), null);
+  assert.equal(appToOpen("Ajoute GitHub"), null);
+});
+
+// English and French definite/indefinite articles, with and without an app label.
+const OPEN_APP_PREFIXES = [
+  ["Open a ", "a "], ["Open an ", "an "], ["Open the ", "the "],
+  ["Open an app ", "an app "], ["Open an application ", "an application "], ["Open the app ", "the app "],
+  ["ouvre un ", "un "], ["ouvre une ", "une "], ["ouvre des ", "des "],
+  ["ouvre le ", "le "], ["ouvre la ", "la "], ["ouvre les ", "les "], ["ouvre l'", "l "], ["ouvre l’", "l "],
+  ["ouvre une app ", "une app "], ["ouvre une application ", "une application "], ["ouvre une appli ", "une appli "],
+  ["ouvre l'app ", "l app "], ["ouvre l’application ", "l application "], ["ouvre l’appli ", "l appli "],
+];
+
+for (const [prefix, queryPrefix] of OPEN_APP_PREFIXES) {
+  test(`open-app filler articles: ${prefix}Notion`, () => {
+    const text = `${prefix}Notion`;
+    const name = `${queryPrefix}Notion`;
+    assert.equal(appToOpen(text), name);
+    assert.deepEqual(parseTranscript(text, PILL_CATALOG), [{ kind: "openApp", name }]);
+  });
+
+  test(`open-app incomplete filler prefix: ${prefix.trim()}`, () => {
+    assert.equal(appToOpen(prefix.trim()), null);
+    assert.deepEqual(parseTranscript(prefix.trim(), PILL_CATALOG), []);
+  });
+
+  test(`open-app four-word limit after fillers: ${prefix.trim()}`, () => {
+    const target = "Visual Studio Code Insiders";
+    const name = `${queryPrefix}${target}`;
+    assert.equal(appToOpen(`${prefix}${target}`), name);
+    assert.deepEqual(parseTranscript(`${prefix}${target}`, PILL_CATALOG), [{ kind: "openApp", name }]);
+    assert.equal(appToOpen(`${prefix}${target} Preview`), null);
+    assert.deepEqual(parseTranscript(`${prefix}${target} Preview`, PILL_CATALOG), []);
+  });
+}
+
+for (const [text, name] of [
+  ["ouvre un Bloc-notes", "un Bloc notes"],
+  ["ouvre les paramètres", "les paramètres"],
+  ["Open Android Studio", "Android Studio"],
+  ["Open Aegis", "Aegis"],
+  ["Open Leslie", "Leslie"],
+  ["Open Unity", "Unity"],
+  ["Open Unearth", "Unearth"],
+  ["Open Desmos", "Desmos"],
+  ["Open Create an App", "Create an App"],
+  ["Open Design a Home", "Design a Home"],
+  ["Ouvre Tous les outils", "Tous les outils"],
+  ["Ouvre Dessine un plan", "Dessine un plan"],
+  ["Ouvre Crée une application", "Crée une application"],
+  ["Ouvre Gestionnaire des tâches", "Gestionnaire des tâches"],
+  ["Open The Witness", "The Witness"],
+  ["Open A Way Out", "A Way Out"],
+  ["Open an app The Witness", "an app The Witness"],
+  ["Open the application A Way Out", "the application A Way Out"],
+  ["Ouvre Une Histoire", "Une Histoire"],
+  ["Ouvre l’appli À la carte", "l appli À la carte"],
+]) {
+  test(`open-app fillers preserve app-name words: ${text}`, () => {
+    assert.equal(appToOpen(text), name);
+    assert.deepEqual(parseTranscript(text, PILL_CATALOG), [{ kind: "openApp", name }]);
+  });
+}
 
 test("a multi-add must fit every distinct new pill or reject the whole plan", () => {
   const current = declared("integration_claude", "integration_vercel", "integration_notion", "integration_stripe");

@@ -9,7 +9,7 @@ import type { Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
-import type { ActionReceipt } from "../assistant/contracts";
+import type { ActionReceipt, AppGrant } from "../assistant/contracts";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -387,6 +387,15 @@ export const Bridge = {
   /** A command the transcript asked for (`pill-set`), for Rust's policy; the action id when allowed. */
   voiceAct: (captureId: string, kind: "pill-set", args: unknown) =>
     callOrThrow<string>("assistant_voice_act", { captureId, kind, args }),
+  /**
+   * "Open <name>": the app the Start menu has under that name, offered for
+   * the user to confirm, and the grant that confirms it. Null when there is none.
+   */
+  appPropose: (captureId: string, name: string) =>
+    callOrThrow<{ label: string; grant: AppGrant } | null>("assistant_app_propose", { captureId, name }),
+  /** The user confirmed: Rust checks the grant, opens the app and says what came of it. */
+  appLaunch: (captureId: string, grant: AppGrant) =>
+    callOrThrow<ActionReceipt>("assistant_app_launch", { captureId, grant }),
   /** What came of an assistant action, for the log (never with its text). */
   actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
   /** The speech models (Settings → Voice). Only the settings window may change them. */

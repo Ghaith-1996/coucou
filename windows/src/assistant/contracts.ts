@@ -20,7 +20,7 @@ export const ACTION_KINDS: readonly { kind: ActionKind; available: boolean; idem
   { kind: "chat-draft", available: true, idempotent: true },
   { kind: "pill-set", available: true, idempotent: true },
   { kind: "insert-text", available: false, idempotent: false },
-  { kind: "launch-app", available: false, idempotent: false },
+  { kind: "launch-app", available: true, idempotent: false },
   { kind: "ask-region", available: false, idempotent: false },
 ];
 
@@ -61,6 +61,17 @@ export function succeededReceipt(actionId: string, evidenceRef: string): Extract
     throw new TypeError("a successful receipt requires nonblank evidenceRef");
   }
   return { actionId, outcome: "succeeded", evidenceRef: evidenceRef as NonBlankEvidence };
+}
+
+/**
+ * Rust's grant for an action shown for confirmation (policy.rs `Grant`). The
+ * page only hands it back on the user's click; Rust recomputes the binding,
+ * so a changed one is worthless.
+ */
+export interface AppGrant {
+  readonly actionId: string;
+  readonly digest: string;
+  readonly expiresAtMs: number;
 }
 
 export type VoiceState = "idle" | "listening" | "processing" | "preview" | "speaking" | "error";

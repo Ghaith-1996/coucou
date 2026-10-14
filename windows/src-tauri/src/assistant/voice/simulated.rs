@@ -5,6 +5,7 @@
 // never pretends to understand words. `Microphone` is for the tests.
 
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ use super::{Capture, Transcript, VoiceError};
 pub struct Transcriber;
 
 impl super::Transcriber for Transcriber {
-    fn transcribe(&self, samples: &[f32], sample_rate: u32) -> Result<Transcript, VoiceError> {
+    fn transcribe(&self, samples: &[f32], sample_rate: u32, _abort: &AtomicBool) -> Result<Transcript, VoiceError> {
         let seconds = samples.len() as f64 / sample_rate.max(1) as f64;
         Ok(Transcript {
             text: format!("Simulated transcript: {seconds:.1} s of speech heard."),

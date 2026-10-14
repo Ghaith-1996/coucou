@@ -3,12 +3,14 @@
 // deterministic, no model. tests/assistant-intents.test.mjs carries the Mac's
 // IntentParserTests table.
 //
-// Only the pill commands can be acted on in this version (pills.ts → a
-// `pill-set` action). Music is recognised as on the Mac so that ambiguous
-// verbs ("lance Spotify", "mets du Daft Punk") resolve the same way, but there
-// is no Windows media adapter yet: a music intent offers nothing. The Mac's
-// mail, questions, "open an app" and web search (VoiceQuery) are not ported:
-// those sentences are simply not commands here.
+// What can be acted on in this version: the pill commands (pills.ts → a
+// `pill-set` action), and "open <app>" (VoiceQuery.appToOpen → a `launch-app`
+// action, after the user confirms the app Rust found in the Start menu).
+// Music is recognised as on the Mac so that ambiguous verbs ("lance
+// Spotify", "mets du Daft Punk") resolve the same way, but there is no Windows
+// media adapter yet: a music intent offers nothing. The Mac's mail, questions
+// and web search (VoiceQuery) are not ported: those sentences are simply not
+// commands here.
 
 import type { PillCategory, PillDefinition } from "../core/pills";
 
@@ -29,6 +31,7 @@ export type Intent =
   | { kind: "musicSetVolume"; percent: number }
   | { kind: "musicPlaySearch"; name: string }
   | { kind: "musicPlayPlaylist"; name: string }
+  | { kind: "openApp"; name: string }
   | { kind: "unknown" };
 
 const UNKNOWN: Intent = { kind: "unknown" };
@@ -755,10 +758,40 @@ export function parseMultiAction(raw: string, pills: readonly PillDefinition[]):
   return intents.length >= 2 ? intents : null;
 }
 
+const OPEN_VERBS = new Set(["ouvre", "ouvrir", "open"]);
+// Keep in sync with apps.rs: validation skips these, catalog matching disambiguates them.
+const OPEN_FILLERS = new Set(["moi", "l", "la", "le", "les", "un", "une", "des", "app", "application", "the", "a", "an", "appli"]);
+/** More words than this after leading fillers is dictation, not an app's name. */
+const MAX_APP_WORDS = 4;
+
+/**
+ * "ouvre Figma", "open the app Notion" → the query after the first open verb.
+ * Skip "moi", articles and "app" only to validate a nonempty name of at most
+ * four words. Preserve them in the query so Rust can prefer an exact catalog
+ * label like "The Witness" before interpreting its article as a filler.
+ * Longer names are dictation ("…open the chat and show me the latest pull
+ * request"), not an app command: Whisper hears whole sentences.
+ */
+export function appToOpen(raw: string): string | null {
+  const n = normalise(raw).split(" ").filter(Boolean);
+  const r = buildRawWords(raw);
+  if (n.length !== r.length) return null;
+  const i = n.findIndex((w) => OPEN_VERBS.has(w));
+  if (i < 0 || i + 1 >= n.length) return null;
+  let start = i + 1;
+  while (start < n.length && OPEN_FILLERS.has(n[start])) start++;
+  if (start >= n.length || n.length - start > MAX_APP_WORDS) return null;
+  const name = r.slice(i + 1).join(" ").replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
+  return name || null;
+}
+
 /** Everything a transcript asks for: one intent, several, or nothing. */
 export function parseTranscript(raw: string, pills: readonly PillDefinition[]): Intent[] {
   // Whisper ends sentences with punctuation; the Mac's recogniser didn't.
   const text = raw.trim().replace(/[.!?…]+$/u, "").trim();
+  // Before the pills, as on the Mac: "ouvre Figma" opens Figma.
+  const app = appToOpen(text);
+  if (app) return [{ kind: "openApp", name: app }];
   const multi = parseMultiAction(text, pills);
   if (multi) return multi;
   const one = parseIntent(text, pills);

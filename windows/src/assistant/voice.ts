@@ -14,13 +14,18 @@
 // A transcript that is a pill command (intents.ts, the Mac's parser) is shown
 // as that change on the card, next to "Use in chat"; doing it is a `pill-set`
 // action Rust's policy decides, applied the way Settings applies it.
+//
+// "Open <app>" asks Rust for the app the Start menu has under that name. Rust
+// keeps the `launch-app` action and gives back the app's name and a grant;
+// the card shows "Open <that name>", and the user's click hands the grant
+// back, Rust checks it and opens the app. Nothing opens without that click.
 
 import { Bridge, onEvent } from "../core/bridge";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
 import { State } from "../core/state";
-import { CONTRACT_VERSION, VOICE_EVENT, parseVoiceEvent, succeededReceipt, type VoiceEvent } from "./contracts";
+import { CONTRACT_VERSION, VOICE_EVENT, parseVoiceEvent, succeededReceipt, type AppGrant, type VoiceEvent } from "./contracts";
 import { parseTranscript } from "./intents";
 import { planPills, sameList, type Declared, type PillPlan } from "./pill-command";
 
@@ -78,12 +83,18 @@ export const Voice = {
       sanitizeDeclared(State.settings, HOST_OS), HOST_OS,
     );
   },
+  /** "Open <app>": the name said, then the app Rust found and its grant. */
+  app: null as AppOffer | null,
 
   get active(): boolean {
     const s = this.event?.state;
     return s === "listening" || s === "processing" || s === "preview";
   },
 };
+
+export type AppOffer =
+  | { name: string; status: "finding" | "missing" }
+  | { name: string; status: "ready" | "opening"; label: string; grant: AppGrant };
 
 function waitingCard(): IslandViewName | null {
   const req = State.pendingApproval;
@@ -225,6 +236,43 @@ export async function voiceDo() {
   }
 }
 
+/** Asks Rust for the app the transcript named; the card offers it, or says it isn't there. */
+async function findApp(id: string, name: string) {
+  const requestGeneration = generation;
+  const stale = () => requestGeneration !== generation || Voice.event?.captureId !== id || Voice.app?.name !== name;
+  try {
+    const found = await Bridge.appPropose(id, name);
+    if (stale()) return;
+    Voice.app = found ? { name, status: "ready", label: found.label, grant: found.grant } : { name, status: "missing" };
+  } catch {
+    if (stale()) return;
+    Voice.app = { name, status: "missing" };
+  }
+  State.notify();
+}
+
+/** The user's click on "Open <app>": Rust checks the grant and opens it. */
+export async function voiceOpen() {
+  const current = Voice.event;
+  const app = Voice.app;
+  if (current?.state !== "preview" || app?.status !== "ready" || !host) return;
+  Voice.app = { ...app, status: "opening" };
+  State.notify();
+  const requestGeneration = generation;
+  try {
+    const receipt = await Bridge.appLaunch(current.captureId, app.grant);
+    if (requestGeneration !== generation) return;
+    end();
+    // `unknown`: it may still be opening, or not at all. Never tried again.
+    Sound.play(receipt.outcome === "succeeded" ? "approve" : "error");
+    if (receipt.outcome !== "succeeded") host.emote("annoyed");
+  } catch {
+    if (requestGeneration !== generation) return;
+    end();
+    Sound.play("error");
+  }
+}
+
 /** Forgets the capture; `close` folds the card away. */
 function end(close = true) {
   if (errorTimer) clearTimeout(errorTimer);
@@ -233,6 +281,7 @@ function end(close = true) {
   previewTimer = null;
   captureId = null;
   Voice.event = null;
+  Voice.app = null;
   shown = false;
   unpin();
   if (close && State.view === "voice" && host) host.collapse();
@@ -281,6 +330,11 @@ function accept(event: VoiceEvent) {
   }
   if (event.state === "preview" && current?.state !== "preview") {
     Sound.play("finish");
+    // Only a real transcript can be a command: a simulated one is a placeholder.
+    const intents = event.simulated ? [] : parseTranscript(event.transcript ?? "", availablePills(HOST_OS));
+    const open = intents.length === 1 && intents[0].kind === "openApp" ? intents[0].name : null;
+    Voice.app = open ? { name: open, status: "finding" } : null;
+    if (open) void findApp(event.captureId, open);
     previewTimer = setTimeout(() => {
       if (Voice.event?.captureId === event.captureId && Voice.event.state === "preview") voiceCancel();
     }, PREVIEW_TTL_MS);
@@ -337,6 +391,7 @@ export function resetVoiceForTests() {
   previewTimer = null;
   captureId = null;
   Voice.event = null;
+  Voice.app = null;
   shown = false;
   pinnedByVoice = false;
   userPinned = false;

@@ -3,7 +3,10 @@
 // is a domain apart from the agents' permission requests.
 
 pub mod app;
+pub mod apps;
 pub mod contracts;
+#[cfg(windows)]
+pub mod launch;
 pub mod policy;
 pub mod voice;
 

@@ -633,8 +633,8 @@ fn chatgpt_status() -> chatgpt::Status {
 
 /// "Continue with ChatGPT": the sign-in in the system browser.
 #[tauri::command]
-async fn chatgpt_connect(app: AppHandle, new_account: Option<bool>) -> Result<chatgpt::Status, String> {
-    let result = chatgpt::connect(|url| platform::open_url(url), new_account.unwrap_or(false)).await;
+async fn chatgpt_connect(app: AppHandle, new_account: Option<bool>, pending_account_id: Option<String>, start_another: Option<bool>) -> Result<chatgpt::Status, String> {
+    let result = chatgpt::connect(|url| platform::open_url(url), new_account.unwrap_or(false), pending_account_id.as_deref(), start_another.unwrap_or(false)).await;
     // Failed exchange/storage can still retain a pending or validated account.
     // Every window must discard its old account/model state in that case too.
     let _ = app.emit("chatgpt-status", chatgpt::status());

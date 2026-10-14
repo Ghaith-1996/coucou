@@ -5021,6 +5021,39 @@
    "pt-BR": "Carregar mais",
    "ru": "Загрузить ещё",
    "id": "Muat lagi"
+  },
+  "Retry the unfinished sign-in, or start a separate registration. The unfinished registration will remain in saved accounts.": {
+   "zh-Hans": "重试未完成的登录，或开始单独注册。未完成的注册将保留在已保存的账户中。",
+   "hi": "अधूरा साइन-इन फिर से आज़माएँ या एक अलग पंजीकरण शुरू करें। अधूरा पंजीकरण सहेजे गए खातों में रहेगा।",
+   "es": "Reintenta el inicio de sesión pendiente o inicia un registro independiente. El registro pendiente permanecerá en las cuentas guardadas.",
+   "ar": "أعِد محاولة تسجيل الدخول غير المكتمل، أو ابدأ تسجيلاً منفصلاً. سيبقى التسجيل غير المكتمل ضمن الحسابات المحفوظة.",
+   "fr": "Réessayez la connexion inachevée ou démarrez une inscription distincte. L’inscription inachevée restera dans les comptes enregistrés.",
+   "bn": "অসম্পূর্ণ সাইন-ইন আবার চেষ্টা করুন, অথবা আলাদা নিবন্ধন শুরু করুন। অসম্পূর্ণ নিবন্ধনটি সংরক্ষিত অ্যাকাউন্টগুলিতে থাকবে।",
+   "pt-BR": "Tente novamente o login incompleto ou inicie um cadastro separado. O cadastro incompleto permanecerá nas contas salvas.",
+   "ru": "Повторите незавершённый вход или начните отдельную регистрацию. Незавершённая регистрация останется в сохранённых аккаунтах.",
+   "id": "Coba lagi proses masuk yang belum selesai, atau mulai pendaftaran terpisah. Pendaftaran yang belum selesai akan tetap ada di akun tersimpan."
+  },
+  "The unfinished ChatGPT sign-in changed. Try again.": {
+   "zh-Hans": "未完成的 ChatGPT 登录已更改。请重试。",
+   "hi": "अधूरा ChatGPT साइन-इन बदल गया है। फिर से कोशिश करें।",
+   "es": "El inicio de sesión pendiente de ChatGPT ha cambiado. Inténtalo de nuevo.",
+   "ar": "تغيّر تسجيل الدخول غير المكتمل إلى ChatGPT. حاول مرة أخرى.",
+   "fr": "La connexion ChatGPT inachevée a changé. Réessayez.",
+   "bn": "অসম্পূর্ণ ChatGPT সাইন-ইন পরিবর্তিত হয়েছে। আবার চেষ্টা করুন।",
+   "pt-BR": "O login incompleto do ChatGPT mudou. Tente novamente.",
+   "ru": "Незавершённый вход в ChatGPT изменился. Повторите попытку.",
+   "id": "Proses masuk ChatGPT yang belum selesai telah berubah. Coba lagi."
+  },
+  "Another ChatGPT operation is in progress. Try again.": {
+   "zh-Hans": "另一项 ChatGPT 操作正在进行中。请重试。",
+   "hi": "ChatGPT की एक अन्य प्रक्रिया चल रही है। फिर से कोशिश करें।",
+   "es": "Hay otra operación de ChatGPT en curso. Inténtalo de nuevo.",
+   "ar": "هناك عملية أخرى في ChatGPT قيد التنفيذ. حاول مرة أخرى.",
+   "fr": "Une autre opération ChatGPT est en cours. Réessayez.",
+   "bn": "ChatGPT-এর আরেকটি কাজ চলছে। আবার চেষ্টা করুন।",
+   "pt-BR": "Outra operação do ChatGPT está em andamento. Tente novamente.",
+   "ru": "Выполняется другая операция ChatGPT. Повторите попытку.",
+   "id": "Operasi ChatGPT lain sedang berlangsung. Coba lagi."
   }
  }
 }

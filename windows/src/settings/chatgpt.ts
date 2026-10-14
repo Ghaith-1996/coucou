@@ -17,6 +17,7 @@ const STRINGS = {
   get disconnect() { return t("Disconnect"); },
   get differentAccount() { return t("Use a different ChatGPT account"); },
   get retryAccount() { return t("Finish connecting new ChatGPT account"); },
+  get pendingAccountHint() { return t("Retry the unfinished sign-in, or start a separate registration. The unfinished registration will remain in saved accounts."); },
   get chooseAccount() { return t("Choose a saved ChatGPT account"); },
   get newAccountHint() { return t("Choose and authorize the new account in your browser. Saved accounts remain available here."); },
   get manageUsage() { return t("Manage usage"); },
@@ -75,8 +76,12 @@ export function chatgptSection(): HTMLElement {
         select.addEventListener("change", () => { if (select.value) void selectAccount(select.value); });
         actions.append(select);
       }
-      actions.append(button(s.hasPendingAccount ? STRINGS.retryAccount : STRINGS.differentAccount, () => void connect(true)));
-      actions.append(h("div", { class: "hint", text: STRINGS.newAccountHint }));
+      const pendingId = s.pendingAccountId ?? null;
+      if (s.hasPendingAccount) {
+        actions.append(button(STRINGS.retryAccount, () => void connect(true, pendingId)));
+      }
+      actions.append(button(STRINGS.differentAccount, () => void connect(true, pendingId, s.hasPendingAccount)));
+      actions.append(h("div", { class: "hint", text: s.hasPendingAccount ? STRINGS.pendingAccountHint : STRINGS.newAccountHint }));
     }
     if (s?.connected) {
       actions.append(h("button", { text: STRINGS.manageUsage, onclick: () => void Bridge.openUrl(s.manageUsageUrl) }));
@@ -100,14 +105,17 @@ export function chatgptSection(): HTMLElement {
     if (version === statusVersion) status = next ?? status;
   }
 
-  async function connect(newAccount = false) {
+  async function connect(newAccount = false, pendingAccountId: string | null = null, startAnother = false) {
     if (busy) return;
+    // A detached button belongs to the registration displayed when drawn.
+    // Native code repeats this ownership check under the credential lock.
+    if (newAccount && (!status?.canSwitchAccounts || (status.pendingAccountId ?? null) !== pendingAccountId)) return;
     const version = ++statusVersion;
     busy = true;
     note = "";
     draw();
     try {
-      const next = await Bridge.chatgptConnect(newAccount);
+      const next = await Bridge.chatgptConnect(newAccount, pendingAccountId, startAnother);
       if (version === statusVersion) status = next;
       cleanupFailed = false;
       revocationUnconfirmed = false;

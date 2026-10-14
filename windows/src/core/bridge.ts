@@ -432,7 +432,8 @@ export const Bridge = {
   chatHistoryDelete: (id: string) => callOrThrow<void>("chat_history_delete", { id }),
   /** ChatGPT sign-in (chatgpt.rs): only a status ever comes back, never a token. */
   chatgptStatus: () => call<ChatGptStatus>("chatgpt_status"),
-  chatgptConnect: (newAccount = false) => callOrThrow<ChatGptStatus>("chatgpt_connect", { newAccount }),
+  chatgptConnect: (newAccount = false, pendingAccountId: string | null = null, startAnother = false) =>
+    callOrThrow<ChatGptStatus>("chatgpt_connect", newAccount ? { newAccount, pendingAccountId, startAnother } : { newAccount }),
   chatgptSelectAccount: (clientId: string) => callOrThrow<ChatGptStatus>("chatgpt_select_account", { clientId }),
   /** Remote revocation and local cleanup are separate; IPC errors propagate. */
   chatgptDisconnect: () => callOrThrow<ChatGptDisconnectResult>("chatgpt_disconnect"),

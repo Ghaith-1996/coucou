@@ -1677,3 +1677,135 @@ fn same_registration_reauthorization_also_invalidates_older_requests_and_cached_
     assert_eq!(cached.fresh_for(&old), None);
     assert_eq!(cached.fresh_for(&RequestAccount { generation: 5, ..old }).as_deref(), Some("new-access"));
 }
+
+fn account_with_pending_registration() -> Account {
+    let mut original = Account { explicitly_disconnected: true, ..registered_account() };
+    original.pending_account = account(Some("oaiapp_pending")).registration();
+    original.saved_accounts.push(Registration {
+        client_id: "oaiapp_saved".into(), email: original.email.clone(), sub: Some("saved-user".into()),
+        plan_enabled: true, welcomed: true,
+    });
+    original
+}
+
+#[test]
+fn starting_another_registration_preserves_the_abandoned_mapping_and_selected_account() {
+    let original = account_with_pending_registration();
+    let mut persisted = None;
+    let next = prepare_new_account(&original, Some("oaiapp_pending"), true, Ok((false, false)), |record| {
+        persisted = Some(serde_json::to_vec(record).unwrap()); Ok(())
+    }).unwrap();
+    let restarted: Account = serde_json::from_slice(&persisted.unwrap()).unwrap();
+    assert_eq!(next, restarted);
+    assert_eq!(next.registration(), original.registration());
+    assert_eq!(next.host_id, original.host_id);
+    assert_eq!(next.explicitly_disconnected, original.explicitly_disconnected);
+    assert_eq!(next.session_needs_reconnect, original.session_needs_reconnect);
+    assert!(next.pending_account.is_none());
+    assert_eq!(next.saved_accounts, [original.saved_accounts.clone(), vec![original.pending_account.clone().unwrap()]].concat());
+    let fresh = new_account_candidate(&restarted);
+    assert!(fresh.client_id.is_none() && fresh.sub.is_none());
+    assert_eq!(query(&authorize_url(&fresh, &Attempt::new(1455), None))["client_id"], DYNAMIC_CLIENT);
+    let restored = restarted.select_registration(&restarted.saved_accounts[1]);
+    assert_eq!(restored.registration(), original.pending_account);
+    assert_eq!(query(&authorize_url(&restored, &Attempt::new(1455), None))["client_id"], "oaiapp_pending");
+    assert!(!status_for(&restored, false, false).connected, "recoverable metadata never grants access");
+}
+
+#[test]
+fn retrying_pending_sign_in_reuses_its_identity_without_archiving_or_writing() {
+    let original = account_with_pending_registration();
+    let next = prepare_new_account(&original, Some("oaiapp_pending"), false, Ok((false, false)),
+        |_| panic!("retry must not change the registration record")).unwrap();
+    assert_eq!(next, original);
+    assert_eq!(new_account_candidate(&next).registration(), original.pending_account);
+    assert_eq!(status_for(&next, false, false).pending_account_id.as_deref(), Some("oaiapp_pending"));
+}
+
+#[test]
+fn pending_recovery_requires_explicit_cleanup_and_confirmed_empty_credentials() {
+    for explicit in [false, true] {
+        for refresh in [false, true] {
+            for id in [false, true] {
+                for start_another in [false, true] {
+                    let original = Account { explicitly_disconnected: explicit, ..account_with_pending_registration() };
+                    let may_start = explicit && !refresh && !id;
+                    let result = prepare_new_account(&original, Some("oaiapp_pending"), start_another, Ok((refresh, id)), |_| {
+                        assert!(may_start, "native gate must precede every write"); Ok(())
+                    });
+                    assert_eq!(result.is_ok(), may_start);
+                }
+            }
+        }
+    }
+    for start_another in [false, true] {
+        assert!(prepare_new_account(&account_with_pending_registration(), Some("oaiapp_pending"), start_another,
+            Err("keystore locked".into()), |_| panic!("unknown credential state must not write")).is_err());
+    }
+}
+
+#[test]
+fn stale_or_missing_pending_identity_cannot_retry_or_archive_another_registration() {
+    let original = account_with_pending_registration();
+    for expected in [None, Some("oaiapp_other")] {
+        for start_another in [false, true] {
+            assert!(prepare_new_account(&original, expected, start_another, Ok((false, false)),
+                |_| panic!("stale pending ownership must not write")).is_err());
+        }
+    }
+    let fresh = Account { pending_account: None, ..original.clone() };
+    for start_another in [false, true] {
+        assert!(prepare_new_account(&fresh, Some("oaiapp_pending"), start_another, Ok((false, false)),
+            |_| panic!("a consumed action must not run again")).is_err());
+    }
+    assert!(prepare_new_account(&fresh, None, true, Ok((false, false)),
+        |_| panic!("start-another requires a specific pending registration")).is_err());
+    assert_eq!(prepare_new_account(&fresh, None, false, Ok((false, false)),
+        |_| panic!("first add needs no archive")).unwrap(), fresh);
+}
+
+#[test]
+fn failed_pending_archive_persistence_leaves_the_retry_mapping_and_selection_intact() {
+    let original = account_with_pending_registration();
+    let before = original.clone();
+    let result = prepare_new_account(&original, Some("oaiapp_pending"), true, Ok((false, false)), |_| Err("disk full".into()));
+    assert_eq!(result, Err("disk full".into()));
+    assert_eq!(original, before);
+    assert_eq!(new_account_candidate(&original).client_id.as_deref(), Some("oaiapp_pending"));
+}
+
+#[test]
+fn an_archived_pending_mapping_survives_failure_of_the_next_registration() {
+    let original = account_with_pending_registration();
+    let mut next = prepare_new_account(&original, Some("oaiapp_pending"), true, Ok((false, false)), |_| Ok(())).unwrap();
+    let mut candidate = new_account_candidate(&next);
+    let attempt = Attempt::new(1455);
+    let callback = format!("/auth/callback?state={}&code=new-code&client_id=oaiapp_next", attempt.state);
+    prepare_code_exchange(&mut candidate, &attempt, &callback, |record| retain_pending_account(&mut next, record, |_| Ok(()))).unwrap();
+    assert_eq!(next.registration(), original.registration());
+    assert_eq!(next.saved_accounts.last(), original.pending_account.as_ref());
+    assert_eq!(next.pending_account.as_ref().unwrap().client_id, "oaiapp_next");
+    assert!(prepare_new_account(&next, Some("oaiapp_pending"), true, Ok((false, false)),
+        |_| panic!("old recovery click must not archive the newer pending account")).is_err());
+    assert!(retain_pending_account(&mut next, &candidate, |_| panic!("an issued pending mapping must not be overwritten")).is_err());
+}
+
+#[test]
+fn pending_archive_cannot_overwrite_a_selected_or_saved_registration() {
+    for selected in [false, true] {
+        let mut original = account_with_pending_registration();
+        original.pending_account = Some(if selected { original.registration().unwrap() } else { original.saved_accounts[0].clone() });
+        let id = original.pending_account.as_ref().unwrap().client_id.as_str();
+        assert!(prepare_new_account(&original, Some(id), true, Ok((false, false)),
+            |_| panic!("conflicting metadata must not overwrite either mapping")).is_err());
+    }
+}
+
+#[test]
+fn a_busy_native_account_operation_rejects_sign_in_without_queuing() {
+    let serial = tokio::sync::Mutex::new(());
+    let operation = try_sign_in_lock(&serial).unwrap();
+    assert!(try_sign_in_lock(&serial).is_err(), "double clicks and other busy operations fail immediately");
+    drop(operation);
+    assert!(try_sign_in_lock(&serial).is_ok(), "a later explicit retry can proceed");
+}

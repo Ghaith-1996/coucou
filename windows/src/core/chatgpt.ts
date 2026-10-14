@@ -62,6 +62,8 @@ export interface ChatGptStatus {
   canSwitchAccounts: boolean;
   savedAccounts: { id: string; email: string | null }[];
   hasPendingAccount: boolean;
+  /** Non-secret issued client ID, used to reject stale pending actions. */
+  pendingAccountId: string | null;
   connected: boolean;
   /** A credential remains, or the native keystore could not confirm absence. */
   hasSavedCredentials: boolean;

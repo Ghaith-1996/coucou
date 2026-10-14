@@ -11,7 +11,7 @@ const { chatgptSection } = await import("../src/settings/chatgpt.ts");
 const { setLanguage } = await import("../src/i18n/i18n.ts");
 
 const CONNECTED = {
-  accountId: "test-client", canSwitchAccounts: false, savedAccounts: [], hasPendingAccount: false,
+  accountId: "test-client", canSwitchAccounts: false, savedAccounts: [], hasPendingAccount: false, pendingAccountId: null,
   connected: true, hasSavedCredentials: true, email: "me@example.com", planEnabled: true,
   needsReconnect: false, showWelcome: false, manageUsageUrl: "https://chatgpt.com/#settings",
 };
@@ -200,7 +200,7 @@ test("adding another registration is available only after confirmed explicit dis
   answers.chatgpt_connect = { ...CONNECTED, accountId: "new-client", email: "other@example.com" };
   button(el, "Use a different ChatGPT account").fire("click");
   await flush();
-  assert.deepEqual(sent("chatgpt_connect"), [{ newAccount: true }]);
+  assert.deepEqual(sent("chatgpt_connect"), [{ newAccount: true, pendingAccountId: null, startAnother: false }]);
   assert.equal(message(el), "Connected as other@example.com");
 });
 
@@ -208,7 +208,7 @@ test("a failed new registration exposes the persisted retry after recreating Set
   answers.chatgpt_status = SIGNED_OUT;
   let el = await section();
   answers.chatgpt_connect = () => {
-    answers.chatgpt_status = { ...SIGNED_OUT, hasPendingAccount: true };
+    answers.chatgpt_status = { ...SIGNED_OUT, hasPendingAccount: true, pendingAccountId: "pending-client" };
     throw new Error("ChatGPT sign-in failed.");
   };
   button(el, "Use a different ChatGPT account").fire("click");
@@ -434,4 +434,137 @@ for (const operation of ["models", "send"]) {
       assert.ok(selectedLabel(reopened).includes("test-client"));
     });
   }
+}
+
+const PENDING_ACCOUNT = { ...SIGNED_OUT, hasPendingAccount: true, pendingAccountId: "pending-client" };
+const PENDING_HINT = "Retry the unfinished sign-in, or start a separate registration. The unfinished registration will remain in saved accounts.";
+
+test("an unfinished registration offers distinct retry and start-another actions with clear retention consent", async () => {
+  answers.chatgpt_status = PENDING_ACCOUNT;
+  const el = await section();
+  assert.ok(button(el, "Finish connecting new ChatGPT account"));
+  assert.ok(button(el, "Use a different ChatGPT account"), "a failed registration must not trap the account picker");
+  assert.ok(el.find(".hint").some((node) => node.textContent === PENDING_HINT));
+  answers.chatgpt_connect = PENDING_ACCOUNT;
+  button(el, "Finish connecting new ChatGPT account").fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_connect").at(-1), { newAccount: true, pendingAccountId: "pending-client", startAnother: false });
+  button(el, "Use a different ChatGPT account").fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_connect").at(-1), { newAccount: true, pendingAccountId: "pending-client", startAnother: true });
+});
+
+for (const startsAnother of [false, true]) {
+  test(`pending recovery startAnother=${startsAnother} submits only once while busy`, async () => {
+    answers.chatgpt_status = { ...PENDING_ACCOUNT, savedAccounts: [{ id: "previous-client", email: null }] };
+    const el = await section();
+    const pending = deferred();
+    answers.chatgpt_connect = pending.promise;
+    const retry = button(el, "Finish connecting new ChatGPT account");
+    const another = button(el, "Use a different ChatGPT account");
+    const reconnect = button(el, "Reconnect");
+    const select = el.find("SELECT")[0];
+    (startsAnother ? another : retry).fire("click");
+    retry.fire("click"); another.fire("click"); reconnect.fire("click");
+    select.value = "previous-client"; select.fire("change");
+    await flush();
+    assert.equal(sent("chatgpt_connect").length, 1);
+    assert.equal(sent("chatgpt_select_account").length, 0);
+    assert.ok(el.find("BUTTON").every((b) => b.getAttribute("disabled") !== null));
+    pending.reject(new Error("Couldn't save pending registration"));
+    await flush(); await flush();
+    assert.equal(message(el), "Couldn't save pending registration");
+    assert.equal(button(el, "Use a different ChatGPT account").getAttribute("disabled"), null);
+    assert.ok(button(el, "Finish connecting new ChatGPT account"));
+  });
+}
+
+for (const fails of [false, true]) {
+  test(`newer pending identity wins over start-another ${fails ? "failure" : "success"}`, async () => {
+    answers.chatgpt_status = PENDING_ACCOUNT;
+    const el = await section();
+    const pending = deferred();
+    answers.chatgpt_connect = pending.promise;
+    button(el, "Use a different ChatGPT account").fire("click");
+    await flush();
+    const newer = { ...PENDING_ACCOUNT, pendingAccountId: "later-pending", savedAccounts: [{ id: "pending-client", email: null }] };
+    emit("chatgpt-status", newer);
+    if (fails) pending.reject(new Error("Earlier recovery failed"));
+    else pending.resolve(SIGNED_OUT);
+    await flush(); await flush();
+    answers.chatgpt_connect = newer;
+    button(el, "Finish connecting new ChatGPT account").fire("click");
+    await flush();
+    assert.deepEqual(sent("chatgpt_connect").at(-1), { newAccount: true, pendingAccountId: "later-pending", startAnother: false });
+    assert.ok(el.find("SELECT")[0].find("OPTION").some((o) => o.textContent.includes("pending-client")));
+  });
+}
+
+test("a stale detached recovery button cannot retry or replace a newer pending identity", async () => {
+  answers.chatgpt_status = PENDING_ACCOUNT;
+  const el = await section();
+  const retry = button(el, "Finish connecting new ChatGPT account");
+  const another = button(el, "Use a different ChatGPT account");
+  emit("chatgpt-status", { ...PENDING_ACCOUNT, pendingAccountId: "later-pending" });
+  retry.fire("click"); another.fire("click");
+  await flush();
+  assert.equal(sent("chatgpt_connect").length, 0, "the click must belong to the displayed pending registration");
+});
+
+test("a failed fresh attempt keeps the archived registration selectable and reconnectable", async () => {
+  answers.chatgpt_status = PENDING_ACCOUNT;
+  const el = await section();
+  answers.chatgpt_connect = () => {
+    answers.chatgpt_status = {
+      ...SIGNED_OUT, savedAccounts: [{ id: "pending-client", email: null }],
+    };
+    throw new Error("ChatGPT sign-in was cancelled.");
+  };
+  button(el, "Use a different ChatGPT account").fire("click");
+  await flush(); await flush();
+  assert.equal(button(el, "Finish connecting new ChatGPT account"), undefined);
+  const select = el.find("SELECT")[0];
+  assert.ok(select.find("OPTION").some((o) => o.textContent === "ChatGPT (pending-client)"));
+  answers.chatgpt_select_account = { ...SIGNED_OUT, accountId: "pending-client", email: null, savedAccounts: [{ id: "test-client", email: SIGNED_OUT.email }] };
+  select.value = "pending-client"; select.fire("change");
+  await flush();
+  assert.equal(sent("chatgpt_connect").length, 1, "selection alone does not authenticate");
+  assert.ok(selectedLabel(el).includes("pending-client"));
+  answers.chatgpt_connect = { ...CONNECTED, accountId: "pending-client" };
+  button(el, "Reconnect").fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_connect").at(-1), { newAccount: false });
+});
+
+test("a newer pending event wins while the recovery failure's follow-up status is pending", async () => {
+  answers.chatgpt_status = PENDING_ACCOUNT;
+  const el = await section();
+  const pendingStatus = deferred();
+  answers.chatgpt_status = pendingStatus.promise;
+  answers.chatgpt_connect = new Error("Archive write failed");
+  button(el, "Use a different ChatGPT account").fire("click");
+  await flush();
+  assert.equal(sent("chatgpt_status").length, 2);
+  const newer = { ...PENDING_ACCOUNT, pendingAccountId: "later-pending" };
+  emit("chatgpt-status", newer);
+  pendingStatus.resolve(PENDING_ACCOUNT);
+  await flush(); await flush();
+  answers.chatgpt_connect = newer;
+  button(el, "Finish connecting new ChatGPT account").fire("click");
+  await flush();
+  assert.deepEqual(sent("chatgpt_connect").at(-1), { newAccount: true, pendingAccountId: "later-pending", startAnother: false });
+});
+
+for (const status of [CONNECTED, NEEDS_CLEANUP, ORPHANED_ID]) {
+  test(`stale pending recovery controls cannot bypass signed-out gate for ${status.connected ? "connected" : status.hasSavedCredentials ? "orphaned credentials" : "missing explicit cleanup"}`, async () => {
+    answers.chatgpt_status = PENDING_ACCOUNT;
+    const el = await section();
+    const retry = button(el, "Finish connecting new ChatGPT account");
+    const another = button(el, "Use a different ChatGPT account");
+    emit("chatgpt-status", { ...status, hasPendingAccount: true, pendingAccountId: "pending-client" });
+    assert.equal(button(el, "Use a different ChatGPT account"), undefined);
+    retry.fire("click"); another.fire("click");
+    await flush();
+    assert.equal(sent("chatgpt_connect").length, 0);
+  });
 }

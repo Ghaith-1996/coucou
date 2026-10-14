@@ -263,6 +263,8 @@ pub struct Status {
     pub can_switch_accounts: bool,
     pub saved_accounts: Vec<SavedAccount>,
     pub has_pending_account: bool,
+    /// Fences retry/replacement against the unfinished registration shown.
+    pub pending_account_id: Option<String>,
     pub connected: bool,
     /// Either saved credential remains (including an orphaned hint), or the
     /// keystore could not confirm their absence. Cleanup stays available.
@@ -317,6 +319,7 @@ fn status_for(account: &Account, has_refresh: bool, has_id_token: bool) -> Statu
         can_switch_accounts: account.explicitly_disconnected && !has_refresh && !has_id_token,
         saved_accounts: account.saved_accounts.iter().map(|r| SavedAccount { id: r.client_id.clone(), email: r.email.clone() }).collect(),
         has_pending_account: account.pending_account.is_some(),
+        pending_account_id: account.pending_account.as_ref().map(|r| r.client_id.clone()),
         connected,
         has_saved_credentials: has_refresh || has_id_token,
         email: account.email.clone(),
@@ -375,7 +378,8 @@ fn new_account_candidate(account: &Account) -> Account {
 
 fn retain_pending_account(account: &mut Account, candidate: &Account, persist: impl FnOnce(&Account) -> Result<(), String>) -> Result<(), String> {
     let registration = candidate.registration().ok_or_else(|| t("ChatGPT sign-in failed."))?;
-    if account.client_id.as_deref() == Some(registration.client_id.as_str())
+    if account.pending_account.is_some()
+        || account.client_id.as_deref() == Some(registration.client_id.as_str())
         || account.saved_accounts.iter().any(|r| r.client_id == registration.client_id) {
         return Err(t("ChatGPT sign-in failed."));
     }
@@ -384,6 +388,42 @@ fn retain_pending_account(account: &mut Account, candidate: &Account, persist: i
     persist(&next)?;
     *account = next;
     Ok(())
+}
+
+/// Only an explicit start-another action may set the unfinished sign-in
+/// aside. Keep its issued client and identity recoverable in the saved picker.
+/// The displayed pending ID is also checked for retries: a stale click must
+/// not continue a different registration or create a new one after removal.
+fn prepare_new_account(
+    account: &Account,
+    pending_account_id: Option<&str>,
+    start_another: bool,
+    credentials: Result<(bool, bool), String>,
+    persist: impl FnOnce(&Account) -> Result<(), String>,
+) -> Result<Account, String> {
+    require_signed_out(account, credentials)?;
+    if account.pending_account.as_ref().map(|r| r.client_id.as_str()) != pending_account_id
+        || (start_another && pending_account_id.is_none()) {
+        return Err(t("The unfinished ChatGPT sign-in changed. Try again."));
+    }
+    if !start_another { return Ok(account.clone()); }
+    let pending = account.pending_account.as_ref().ok_or_else(|| t("ChatGPT sign-in failed."))?;
+    if account.client_id.as_deref() == Some(pending.client_id.as_str())
+        || account.saved_accounts.iter().any(|r| r.client_id == pending.client_id) {
+        return Err(t("ChatGPT sign-in failed."));
+    }
+    let mut next = account.clone();
+    next.saved_accounts.push(pending.clone());
+    next.pending_account = None;
+    // Do not launch a new flow or lose the retry path if this write fails.
+    persist(&next)?;
+    Ok(next)
+}
+
+/// Browser sign-ins must not queue behind another operation. Otherwise a
+/// duplicate click could open a second browser after the first attempt ends.
+fn try_sign_in_lock(serial: &tokio::sync::Mutex<()>) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+    serial.try_lock().map_err(|_| t("Another ChatGPT operation is in progress. Try again."))
 }
 
 /// Selecting saved metadata never grants access; Reconnect still validates
@@ -730,11 +770,13 @@ async fn wait_for_callback(listener: tokio::net::TcpListener) -> Result<String, 
 
 /// The whole sign-in: listener, browser, callback, code exchange, checks.
 /// `open` opens the authorize URL in the system browser.
-pub async fn connect(open: impl Fn(&str), new_account: bool) -> Result<Status, String> {
-    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+pub async fn connect(open: impl Fn(&str), new_account: bool, pending_account_id: Option<&str>, start_another: bool) -> Result<Status, String> {
+    let _serial = try_sign_in_lock(REFRESHING.get_or_init(Default::default))?;
     let mut selected = read_account_from(&account_path())?;
     if new_account {
-        require_signed_out(&selected, credential_presence())?;
+        selected = prepare_new_account(&selected, pending_account_id, start_another, credential_presence(), save_account)?;
+    } else if start_another || pending_account_id.is_some() {
+        return Err(t("ChatGPT sign-in failed."));
     } else if selected.client_id.is_none() {
         // A config reset may leave OS credentials behind. Even a seemingly
         // first registration cannot reuse those slots until they are empty.

@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, State, Webview};
 use super::contracts::{ActionKind, ActionReceipt, ErrorCode, VoiceEvent, VOICE_EVENT};
 use super::voice::{self, model, ChatDraft, Voice};
 use crate::island::WINDOW_LABEL;
+use crate::Shared;
 
 struct IslandSink(AppHandle);
 
@@ -98,24 +99,40 @@ pub fn voice_model_status() -> model::Status {
     model::status()
 }
 
-/// Downloads the model the user asked for, with progress as `voice-model`
-/// events. Resolves once it is verified and in place, or with why not.
+/// Downloads one model the user asked for, with progress as `voice-model`
+/// events. Resolves once it is verified and in place, or with why not. When
+/// no installed model was picked yet, this one is.
 #[tauri::command]
-pub async fn voice_model_download(app: AppHandle, webview: Webview) -> Result<model::Status, String> {
+pub async fn voice_model_download(
+    app: AppHandle,
+    webview: Webview,
+    shared: State<'_, Shared>,
+    id: String,
+) -> Result<model::Status, String> {
     from_settings(&webview)?;
-    log("voice: model download started".into());
+    let chosen = model::find(&id).ok_or("unknown model")?;
+    log(format!("voice: model {} download started", chosen.id));
     let mut last = 0u64;
-    let result = model::download(|received| {
+    let result = model::download(chosen.id, |received| {
         // About one event per megabyte.
-        if received - last >= 1 << 20 || received == model::MODEL.size {
+        if received - last >= 1 << 20 || received == chosen.size {
             last = received;
             let _ = app.emit("voice-model", model::status());
         }
     })
     .await;
     match &result {
-        Ok(()) => log("voice: model installed".into()),
-        Err(err) => log(format!("voice: model download stopped: {err}")),
+        Ok(()) => {
+            log(format!("voice: model {} installed", chosen.id));
+            let _ = update_choice(&app, &shared, || {
+                if model::active().is_none() {
+                    model::select(chosen.id).map(Some)
+                } else {
+                    Ok(None)
+                }
+            });
+        }
+        Err(err) => log(format!("voice: model {} download stopped: {err}", chosen.id)),
     }
     let status = model::status();
     let _ = app.emit("voice-model", status.clone());
@@ -130,11 +147,62 @@ pub fn voice_model_cancel(webview: Webview) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn voice_model_delete(app: AppHandle, webview: Webview) -> Result<model::Status, String> {
+pub fn voice_model_delete(
+    app: AppHandle,
+    webview: Webview,
+    shared: State<'_, Shared>,
+    id: String,
+) -> Result<model::Status, String> {
     from_settings(&webview)?;
-    model::delete()?;
-    log("voice: model deleted".into());
+    update_choice(&app, &shared, || {
+        model::delete(&id)?;
+        match model::replacement_after_delete(&id, model::selected().id, model::installed) {
+            Some(next) => model::select(next.id).map(Some),
+            None => Ok(None),
+        }
+    })?;
+    log(format!("voice: model {id} deleted"));
     let status = model::status();
     let _ = app.emit("voice-model", status.clone());
     Ok(status)
+}
+
+/// Picks an installed model for the next captures.
+#[tauri::command]
+pub fn voice_model_select(
+    app: AppHandle,
+    webview: Webview,
+    shared: State<'_, Shared>,
+    id: String,
+) -> Result<model::Status, String> {
+    from_settings(&webview)?;
+    pick(&app, &shared, &id)?;
+    let status = model::status();
+    let _ = app.emit("voice-model", status.clone());
+    Ok(status)
+}
+
+fn pick(app: &AppHandle, shared: &Shared, id: &str) -> Result<(), String> {
+    update_choice(app, shared, || model::select(id).map(Some))
+}
+
+/// Serialize manual selection, deletion fallback and download completion with
+/// the persisted choice. No settings lock is held during a network download.
+fn update_choice(
+    app: &AppHandle,
+    shared: &Shared,
+    choose: impl FnOnce() -> Result<Option<&'static model::ModelInfo>, String>,
+) -> Result<(), String> {
+    let updated = {
+        let mut current = shared.settings.lock().unwrap();
+        let Some(chosen) = choose()? else { return Ok(()); };
+        current.voice_model = chosen.id.to_string();
+        if let Err(err) = crate::settings::save(&current) {
+            crate::log::line(format!("could not save settings: {err}"));
+        }
+        current.clone()
+    };
+    log(format!("voice: model {} picked", updated.voice_model));
+    let _ = app.emit("settings-changed", updated);
+    Ok(())
 }

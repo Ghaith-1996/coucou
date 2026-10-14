@@ -7,7 +7,7 @@ import { btn, card, stack, type ViewHost } from "../views/views";
 import { State } from "../core/state";
 import { washRGBA, type Wash } from "../core/layout";
 import { N_, t, tl } from "../i18n/i18n";
-import { Voice, canRetryInsert, voiceCancel, voiceCopy, voiceDo, voiceInsert, voiceOpen, voiceStop, voiceUse } from "./voice";
+import { Voice, canCopyInsert, canRetryInsert, voiceCancel, voiceCopy, voiceDo, voiceInsert, voiceOpen, voiceStop, voiceUse } from "./voice";
 import type { InsertRefusal, VoiceError } from "./contracts";
 
 const ERRORS: Record<VoiceError, string> = {
@@ -25,7 +25,7 @@ const REFUSALS: Record<InsertRefusal, string> = {
   gone: N_("That field is gone. Nothing was typed."),
   protected: N_("That's a password field: Coucou never types there."),
   "read-only": N_("That field is read-only."),
-  unsupported: N_("This field doesn't take dictated text. Copy it, or use it in chat."),
+  unsupported: N_("This field doesn't take dictated text. Use it in chat."),
   busy: N_("The app didn't answer. Nothing was typed."),
 };
 
@@ -145,6 +145,7 @@ export function buildVoice(): ViewHost {
       (buttons.retry as HTMLButtonElement).disabled = insert?.status === "retrying";
       (buttons.use as HTMLButtonElement).disabled = insert?.status === "inserting";
       (buttons.useToo as HTMLButtonElement).disabled = insert?.status === "inserting";
+      const copy = canCopyInsert(insert) ? ",copy" : "";
       const want =
         state === "listening" ? "stop,cancel"
         : state === "processing" ? "cancel"
@@ -153,8 +154,8 @@ export function buildVoice(): ViewHost {
           : app?.status === "finding" ? "useToo,cancel"
           : field ? "insert,useToo,cancel"
           : insert?.status === "retrying" || (insert?.status === "refused" && canRetryInsert(insert.reason))
-            ? "retry,useToo,copy,cancel"
-          : insert?.status === "refused" && insert.reason !== "protected" ? "use,copy,cancel"
+            ? `retry,useToo${copy},cancel`
+          : insert?.status === "refused" ? `use${copy},cancel`
           : command ? "act,useToo,cancel" : "use,cancel"
         : "close";
       if (want !== shownButtons) {

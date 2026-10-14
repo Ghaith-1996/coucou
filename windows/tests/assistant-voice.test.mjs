@@ -782,7 +782,7 @@ test("a field that can't take the words says why, and Insert does nothing", asyn
   answers.set("assistant_insert_offer", { status: "refused", reason: "protected" });
   emit("assistant-voice", ev("cap-1", "preview", { transcript: "hunter2" }));
   await flush();
-  assert.deepEqual(Voice.insert, { status: "refused", reason: "protected" });
+  assert.deepEqual(Voice.insert, { status: "refused", reason: "protected", copyAllowed: false });
   await voiceInsert();
   assert.equal(sent("assistant_insert_text").length, 0);
   assert.equal(Voice.event.state, "preview", "the transcript stays");
@@ -926,7 +926,7 @@ test("a protected refusal at insertion removes Insert and keeps the transcript",
   await flush();
   answers.set("assistant_insert_text", { status: "kept", reason: "protected" });
   await voiceInsert();
-  assert.deepEqual(Voice.insert, { status: "refused", reason: "protected" });
+  assert.deepEqual(Voice.insert, { status: "refused", reason: "protected", copyAllowed: false });
   await voiceInsert();
   assert.equal(sent("assistant_insert_text").length, 1);
   assert.equal(Voice.event.state, "preview");
@@ -941,7 +941,7 @@ for (const reason of ["gone", "read-only", "unsupported"]) {
     await flush();
     answers.set("assistant_insert_text", { status: "kept", reason });
     await voiceInsert();
-    assert.deepEqual(Voice.insert, { status: "refused", reason });
+    assert.deepEqual(Voice.insert, { status: "refused", reason, copyAllowed: false });
     await voiceInsert();
     assert.equal(sent("assistant_insert_text").length, 1);
     assert.equal(sent("assistant_insert_offer").length, 1);
@@ -973,7 +973,7 @@ for (const reason of ["gone", "protected", "read-only", "unsupported"]) {
     emit("assistant-voice", ev("cap-1", "preview", { transcript: "keep these words" }));
     await flush();
     await voiceInsert();
-    assert.deepEqual(Voice.insert, { status: "refused", reason });
+    assert.deepEqual(Voice.insert, { status: "refused", reason, copyAllowed: false });
     assert.equal(sent("assistant_insert_offer").length, 1);
     assert.equal(sent("assistant_insert_text").length, 0);
   });

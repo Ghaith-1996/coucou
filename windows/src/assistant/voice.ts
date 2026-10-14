@@ -116,11 +116,19 @@ export type InsertOffer =
   /** `reason`: the last Insert was refused before writing; it may be tried again. */
   | { status: "ready"; label: string; grant: AppGrant; reason?: InsertRefusal }
   | { status: "inserting"; label: string; grant: AppGrant }
-  | { status: "refused"; reason: InsertRefusal };
+  | { status: "refused"; reason: InsertRefusal; copyAllowed: boolean };
 
 /** Only these refusals can change while the same remembered field stays valid. */
 export function canRetryInsert(reason: InsertRefusal): boolean {
   return reason === "focus-moved" || reason === "busy";
+}
+
+/** Copy requires positive evidence from the current native refusal, never
+ * a stale offer, a refusal name, or a still-pending check/write.
+ */
+export function canCopyInsert(offer: InsertOffer | null): boolean {
+  return offer?.status === "refused" && offer.copyAllowed === true
+    && offer.reason !== "protected" && offer.reason !== "gone" && offer.reason !== "busy";
 }
 
 function waitingCard(): IslandViewName | null {
@@ -312,7 +320,7 @@ async function findField(id: string) {
     if (stale()) return;
     Voice.insert = !offer ? null
       : offer.status === "ready" ? { status: "ready", label: offer.label, grant: offer.grant }
-      : { status: "refused", reason: offer.reason };
+      : { status: "refused", reason: offer.reason, copyAllowed: offer.copyAllowed === true };
   } catch {
     if (stale()) return;
     Voice.insert = null;
@@ -346,7 +354,7 @@ export async function voiceInsert() {
       // a protected or unusable field gets the same safe fallback as an offer.
       Voice.insert = canRetryInsert(result.reason)
         ? { status: "ready", label: offer.label, grant: offer.grant, reason: result.reason }
-        : { status: "refused", reason: result.reason };
+        : { status: "refused", reason: result.reason, copyAllowed: result.copyAllowed === true };
       Sound.play("error");
       State.notify();
       return;
@@ -383,7 +391,7 @@ export async function voiceInsert() {
 /** Copy: the transcript on the clipboard, for a field Coucou can't write to. */
 export async function voiceCopy() {
   const current = Voice.event;
-  if (current?.state !== "preview" || current.simulated) return;
+  if (current?.state !== "preview" || current.simulated || !canCopyInsert(Voice.insert)) return;
   await writeClipboard(current.transcript ?? "");
   Sound.play("approve");
 }

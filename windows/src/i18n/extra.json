@@ -4318,16 +4318,16 @@
    "ru": "Это поле только для чтения.",
    "id": "Kolom itu hanya-baca."
   },
-  "This field doesn't take dictated text. Copy it, or use it in chat.": {
-   "zh-Hans": "此输入框不接受听写文本。可以复制，或在聊天中使用。",
-   "hi": "यह फ़ील्ड बोला गया टेक्स्ट नहीं लेता। इसे कॉपी करें, या चैट में इस्तेमाल करें।",
-   "es": "Este campo no acepta texto dictado. Cópialo o úsalo en el chat.",
-   "ar": "هذا الحقل لا يقبل النص المُملى. انسخه أو استخدمه في الدردشة.",
-   "fr": "Ce champ n'accepte pas le texte dicté. Copiez-le, ou utilisez-le dans le chat.",
-   "bn": "এই ঘরে বলা লেখা বসানো যায় না। কপি করুন, বা চ্যাটে ব্যবহার করুন।",
-   "pt-BR": "Este campo não aceita texto ditado. Copie-o ou use-o no chat.",
-   "ru": "Это поле не принимает надиктованный текст. Скопируйте его или используйте в чате.",
-   "id": "Kolom ini tidak menerima teks dikte. Salin, atau gunakan di obrolan."
+  "This field doesn't take dictated text. Use it in chat.": {
+   "zh-Hans": "此输入框不接受听写文本。请在聊天中使用。",
+   "hi": "यह फ़ील्ड बोला गया टेक्स्ट नहीं लेता। इसे चैट में इस्तेमाल करें।",
+   "es": "Este campo no acepta texto dictado. Úsalo en el chat.",
+   "ar": "هذا الحقل لا يقبل النص المُملى. استخدمه في الدردشة.",
+   "fr": "Ce champ n'accepte pas le texte dicté. Utilisez-le dans le chat.",
+   "bn": "এই ঘরে বলা লেখা বসানো যায় না। চ্যাটে ব্যবহার করুন।",
+   "pt-BR": "Este campo não aceita texto ditado. Use-o no chat.",
+   "ru": "Это поле не принимает надиктованный текст. Используйте в чате.",
+   "id": "Kolom ini tidak menerima teks dikte. Gunakan di obrolan."
   },
   "The app didn't answer. Nothing was typed.": {
    "zh-Hans": "该应用没有响应。没有输入任何内容。",

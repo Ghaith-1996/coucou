@@ -58,8 +58,8 @@ fn refuse_all(jobs: mpsc::Receiver<Job>) {
         match job {
             Job::Probe(reply) => drop(reply.send(())),
             Job::Bind(_) => {}
-            Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported))),
-            Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone))),
+            Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported.into()))),
+            Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone.into()))),
         }
     }
 }
@@ -96,13 +96,14 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
             Job::Offer(capture, expires, reply) => {
                 let answer = bound.as_mut().ok_or(Refusal::Gone)
                     .and_then(|target| target.offer(&capture, expires, Instant::now()))
+                    .map_err(Rejection::from)
                     .and_then(|field| check(field).map(|_| Offer {
                         label: app_label(field.pid),
                         target_window: field.window.0 as usize as u64,
                         target_pid: field.pid,
                     }));
                 if let Err(why) = answer {
-                    log(format!("dictation: no insertion offered ({})", name(why)));
+                    log(format!("dictation: no insertion offered ({})", name(why.reason)));
                 }
                 let _ = reply.send(answer);
             }
@@ -116,7 +117,7 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
                     Ok(Written::Verified) => "dictation: text inserted and read back".into(),
                     Ok(Written::Unconfirmed) => "dictation: text set but not read back".into(),
                     Ok(Written::Failed) => "dictation: the field refused the text".into(),
-                    Err(why) => format!("dictation: nothing inserted ({})", name(why)),
+                    Err(why) => format!("dictation: nothing inserted ({})", name(why.reason)),
                 });
                 let _ = reply.send(answer);
             }
@@ -170,18 +171,18 @@ fn facts(field: &Field) -> (Facts, Option<IUIAutomationValuePattern>) {
     (Facts { window_alive, foreground, element_alive, password, enabled, value_read_only }, pattern)
 }
 
-fn check(field: &Field) -> Result<IUIAutomationValuePattern, Refusal> {
+fn check(field: &Field) -> Result<IUIAutomationValuePattern, Rejection> {
     let (facts, pattern) = facts(field);
     match (refusal(&facts), pattern) {
-        (Some(why), _) => Err(why),
+        (Some(why), _) => Err(Rejection::checked(why, &facts)),
         (None, Some(pattern)) => Ok(pattern),
-        (None, None) => Err(Refusal::Unsupported),
+        (None, None) => Err(Rejection::checked(Refusal::Unsupported, &facts)),
     }
 }
 
-fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<Written, Refusal>>) -> Result<Written, Refusal> {
+fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<Written, Rejection>>) -> Result<Written, Rejection> {
     permit.check()?;
-    if reply.is_closed() { return Err(Refusal::Gone); }
+    if reply.is_closed() { return Err(Refusal::Gone.into()); }
     let pattern = check(field)?;
     let current = unsafe { pattern.CurrentValue() }.map_err(|_| Refusal::Gone)?.to_string();
     let caret = caret(&field.element);
@@ -190,7 +191,7 @@ fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<W
     // so a cancelled/replaced capture or a timed-out queued job cannot write.
     let next_value = BSTR::from(next.as_str());
     permit.check()?;
-    if reply.is_closed() { return Err(Refusal::Gone); }
+    if reply.is_closed() { return Err(Refusal::Gone.into()); }
     if unsafe { pattern.SetValue(&next_value) }.is_err() {
         return Ok(Written::Failed);
     }

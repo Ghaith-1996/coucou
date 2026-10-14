@@ -18,13 +18,19 @@ const listeners = new Map();
 window.addEventListener = (name, fn) => listeners.set(name, [...listeners.get(name) ?? [], fn]);
 const { State } = await import("../src/core/state.ts");
 const { CONTRACT_VERSION } = await import("../src/assistant/contracts.ts");
-const { Voice, registerVoice, resetVoiceForTests, voiceShortcut } = await import("../src/assistant/voice.ts");
+const { Voice, registerVoice, resetVoiceForTests, voiceCopy, voiceShortcut } = await import("../src/assistant/voice.ts");
 const { buildVoice } = await import("../src/assistant/voice-view.ts");
 const answers = new Map();
+const copied = [];
+Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+  async writeText(text) { copied.push(text); },
+} });
 const invoke = internals.invoke;
 internals.invoke = async (cmd, args) => {
   await invoke(cmd, args);
-  return answers.get(cmd) ?? null;
+  const answer = answers.get(cmd);
+  if (answer instanceof Error) throw answer;
+  return answer ?? null;
 };
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const GRANT = { actionId: "act-insert", digest: "ab".repeat(32), expiresAtMs: 9_000_000_000_000 };
@@ -47,6 +53,7 @@ beforeEach(() => {
   State.subscribe = subscribe;
   calls.length = 0;
   answers.clear();
+  copied.length = 0;
   answers.set("assistant_voice_toggle", "cap-1");
   State.pendingApproval = null;
   State.view = "overview";
@@ -69,7 +76,7 @@ async function preview(offer) {
 for (const reason of ["focus-moved", "busy"]) {
   test(`an initial ${reason} refusal renders Retry before the separately named Insert`, async () => {
     await preview({ status: "refused", reason });
-    assert.deepEqual(labels(), ["Retry", "Use in chat", "Copy", "Cancel"]);
+    assert.deepEqual(labels(), ["Retry", "Use in chat", "Cancel"]);
     assert.equal(button("Insert into Notepad"), undefined);
     const deferred = Promise.withResolvers();
     answers.set("assistant_insert_offer", deferred.promise);
@@ -120,8 +127,7 @@ for (const reason of ["focus-moved", "busy", "gone", "protected", "read-only", "
     await flush();
     const retryable = reason === "focus-moved" || reason === "busy";
     assert.deepEqual(labels(), retryable ? ["Insert into Notepad", "Use in chat", "Cancel"]
-      : reason === "protected" ? ["Use in chat", "Cancel"]
-      : ["Use in chat", "Copy", "Cancel"]);
+      : ["Use in chat", "Cancel"]);
     assert.equal(Voice.event.transcript, "keep these words");
     assert.equal(State.mode, "expanded");
     assert.equal(State.isPinned, true);
@@ -146,3 +152,137 @@ test("pending insertion disables Use in chat while leaving Cancel available", as
   assert.equal(uses, 0);
   assert.equal(button("Use in chat").disabled, false);
 });
+
+
+for (const reason of ["focus-moved", "busy", "gone", "protected", "read-only", "unsupported"]) {
+  for (const copyAllowed of [undefined, false, "true"]) {
+    test(`${reason} with unverified copy eligibility ${copyAllowed} never copies`, async () => {
+      await preview({ status: "refused", reason, copyAllowed });
+      assert.equal(button("Copy"), undefined);
+      assert.ok(button("Use in chat"));
+      assert.ok(button("Cancel"));
+      await voiceCopy();
+      assert.deepEqual(copied, [], "the handler fails closed independently of the view");
+    });
+  }
+}
+
+for (const reason of ["focus-moved", "read-only", "unsupported"]) {
+  test(`a natively checked non-protected ${reason} field can be copied`, async () => {
+    await preview({ status: "refused", reason, copyAllowed: true });
+    assert.ok(button("Copy"));
+    button("Copy").fire("click");
+    await flush();
+    assert.deepEqual(copied, ["keep these words"]);
+    assert.equal(sent("assistant_insert_text").length, 0);
+    assert.equal(Voice.event.state, "preview");
+  });
+}
+
+test("even a contradictory protected reply cannot enable Copy", async () => {
+  await preview({ status: "refused", reason: "protected", copyAllowed: true });
+  assert.equal(button("Copy"), undefined);
+  await voiceCopy();
+  assert.deepEqual(copied, []);
+});
+
+for (const nextReason of ["protected", "busy", "unsupported"]) {
+  test(`a retained Copy button cannot reuse eligibility during re-offer or after ${nextReason}`, async () => {
+    await preview({ status: "refused", reason: "focus-moved", copyAllowed: true });
+    const staleCopy = button("Copy");
+    const pending = Promise.withResolvers();
+    answers.set("assistant_insert_offer", pending.promise);
+    button("Retry").fire("click");
+    assert.equal(button("Copy"), undefined, "fresh classification is still pending");
+    staleCopy.fire("click");
+    await voiceCopy();
+    await flush();
+    assert.deepEqual(copied, []);
+    pending.resolve({ status: "refused", reason: nextReason, copyAllowed: false });
+    await flush();
+    assert.equal(button("Copy"), undefined);
+    staleCopy.fire("click");
+    await voiceCopy();
+    await flush();
+    assert.deepEqual(copied, []);
+    assert.ok(button("Use in chat"));
+  });
+}
+
+test("a retained Copy button cannot copy during insertion or reuse its old check after a kept refusal", async () => {
+  await preview({ status: "refused", reason: "focus-moved", copyAllowed: true });
+  const staleCopy = button("Copy");
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  button("Retry").fire("click");
+  await flush();
+  const pending = Promise.withResolvers();
+  answers.set("assistant_insert_text", pending.promise);
+  button("Insert into Notepad").fire("click");
+  staleCopy.fire("click");
+  await voiceCopy();
+  await flush();
+  assert.deepEqual(copied, []);
+  pending.resolve({ status: "kept", reason: "unsupported", copyAllowed: false });
+  await flush();
+  assert.equal(button("Copy"), undefined);
+  staleCopy.fire("click");
+  await voiceCopy();
+  await flush();
+  assert.deepEqual(copied, []);
+});
+
+for (const reason of ["read-only", "unsupported"]) {
+  test(`a kept ${reason} refusal needs its own positive classification to allow Copy`, async () => {
+    await preview({ status: "ready", label: "Notepad", grant: GRANT });
+    answers.set("assistant_insert_text", { status: "kept", reason, copyAllowed: true });
+    button("Insert into Notepad").fire("click");
+    await flush();
+    assert.ok(button("Copy"));
+    await voiceCopy();
+    assert.deepEqual(copied, ["keep these words"]);
+  });
+}
+
+test("a new capture cannot inherit Copy eligibility or an old button", async () => {
+  await preview({ status: "refused", reason: "unsupported", copyAllowed: true });
+  const staleCopy = button("Copy");
+  button("Cancel").fire("click");
+  answers.set("assistant_voice_toggle", "cap-2");
+  const pending = Promise.withResolvers();
+  answers.set("assistant_insert_offer", pending.promise);
+  await voiceShortcut();
+  emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-2", state: "preview", transcript: "new words" });
+  staleCopy.fire("click");
+  await voiceCopy();
+  await flush();
+  assert.deepEqual(copied, []);
+  pending.resolve({ status: "refused", reason: "busy", copyAllowed: false });
+  await flush();
+  staleCopy.fire("click");
+  await voiceCopy();
+  await flush();
+  assert.deepEqual(copied, []);
+});
+
+
+for (const offer of [null, new Error("UIA unavailable")]) {
+  test(`an absent or failed native offer does not allow direct Copy: ${offer}`, async () => {
+    await preview(offer);
+    assert.equal(button("Copy"), undefined);
+    await voiceCopy();
+    assert.deepEqual(copied, []);
+  });
+}
+
+for (const reason of ["protected", "busy", "unsupported"]) {
+  test(`Use in chat remains an explicit unsent fallback after ${reason}`, async () => {
+    await preview({ status: "refused", reason, copyAllowed: false });
+    answers.set("assistant_voice_use", { actionId: "draft-safe", text: "keep these words" });
+    button("Use in chat").fire("click");
+    await flush();
+    assert.deepEqual(sent("assistant_voice_use"), [{ captureId: "cap-1" }]);
+    assert.equal(sent("assistant_insert_text").length, 0);
+    assert.deepEqual(copied, []);
+    assert.equal(Voice.event, null);
+  });
+}

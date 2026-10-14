@@ -55,6 +55,33 @@ pub enum Refusal {
     Busy,
 }
 
+/// A refusal is not evidence that copying is safe: timeouts, missing fields
+/// and unavailable UI Automation have not classified the capture's target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rejection {
+    pub reason: Refusal,
+    pub copy_allowed: bool,
+}
+
+impl From<Refusal> for Rejection {
+    fn from(reason: Refusal) -> Self {
+        Self { reason, copy_allowed: false }
+    }
+}
+
+impl Rejection {
+    /// Only a live remembered field with a successful negative password check
+    /// can allow Copy. The refusal's name alone never grants that permission.
+    fn checked(reason: Refusal, facts: &Facts) -> Self {
+        Self {
+            reason,
+            copy_allowed: facts.window_alive && facts.element_alive && !facts.password
+                && !matches!(reason, Refusal::Protected | Refusal::Gone | Refusal::Busy),
+        }
+    }
+}
+
 /// What the card shows before the user decides: the app the field belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Offer {
@@ -84,6 +111,7 @@ pub struct Facts {
     pub foreground: Foreground,
     /// The element still answers and is in the same process.
     pub element_alive: bool,
+    /// True also when the password query failed: unknown is never safe to copy.
     pub password: bool,
     pub enabled: bool,
     /// None when the element has no ValuePattern at all.
@@ -105,11 +133,11 @@ pub fn refusal(facts: &Facts) -> Option<Refusal> {
     if !facts.window_alive || !facts.element_alive {
         return Some(Refusal::Gone);
     }
-    if facts.foreground == Foreground::Other {
-        return Some(Refusal::FocusMoved);
-    }
     if facts.password {
         return Some(Refusal::Protected);
+    }
+    if facts.foreground == Foreground::Other {
+        return Some(Refusal::FocusMoved);
     }
     match facts.value_read_only {
         None => Some(Refusal::Unsupported),
@@ -213,8 +241,8 @@ impl WritePermit {
 fn write_bound<T>(
     bound: &mut Option<T>,
     owns: impl FnOnce(&T) -> bool,
-    write: impl FnOnce(&T) -> Result<Written, Refusal>,
-) -> Result<Written, Refusal> {
+    write: impl FnOnce(&T) -> Result<Written, Rejection>,
+) -> Result<Written, Rejection> {
     let field = bound.as_ref().filter(|field| owns(field)).ok_or(Refusal::Gone)?;
     let answer = write(field);
     if answer.is_ok() { *bound = None; }
@@ -231,9 +259,9 @@ enum Job {
     Probe(Reply<()>),
     /// The capture that probe was for (None: no capture started).
     Bind(Option<String>),
-    Offer(String, Instant, Reply<Result<Offer, Refusal>>),
+    Offer(String, Instant, Reply<Result<Offer, Rejection>>),
     /// Checked again, then written.
-    Write(String, InsertTextArgs, WritePermit, Reply<Result<Written, Refusal>>),
+    Write(String, InsertTextArgs, WritePermit, Reply<Result<Written, Rejection>>),
 }
 
 /// The app's handle on the UI Automation thread. Cheap to share.
@@ -281,13 +309,13 @@ impl Dictation {
     /// The app this capture's field belongs to, if the field can take text.
     /// `expires` is the original preview deadline supplied by Voice, never by
     /// the page and never computed anew when the user retries an offer.
-    pub async fn offer(&self, capture_id: &str, expires: Instant) -> Result<Offer, Refusal> {
+    pub async fn offer(&self, capture_id: &str, expires: Instant) -> Result<Offer, Rejection> {
         let capture = capture_id.to_string();
-        self.ask(|reply| Job::Offer(capture, expires, reply), Err(Refusal::Busy)).await
+        self.ask(|reply| Job::Offer(capture, expires, reply), Err(Refusal::Busy.into())).await
     }
 
     /// Checks the field again, then writes the confirmed words into it.
-    pub async fn write(&self, capture_id: &str, args: InsertTextArgs, permit: WritePermit) -> Result<Written, Refusal> {
+    pub async fn write(&self, capture_id: &str, args: InsertTextArgs, permit: WritePermit) -> Result<Written, Rejection> {
         let capture = capture_id.to_string();
         // A missing reply cannot prove SetValue never ran. Retire the permit
         // and return unknown, never a retryable "nothing written" refusal.
@@ -309,8 +337,8 @@ fn run(jobs: mpsc::Receiver<Job>, _log: fn(String)) {
         match job {
             Job::Probe(reply) => drop(reply.send(())),
             Job::Bind(_) => {}
-            Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported))),
-            Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone))),
+            Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported.into()))),
+            Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone.into()))),
         }
     }
 }

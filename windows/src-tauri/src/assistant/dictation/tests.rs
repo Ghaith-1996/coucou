@@ -41,6 +41,7 @@ fn a_closed_window_or_a_vanished_field_stops_it() {
 fn a_password_field_is_never_written() {
     assert_eq!(refusal(&Facts { password: true, ..writable() }), Some(Refusal::Protected));
     assert_eq!(refusal(&Facts { password: true, foreground: Foreground::Target, ..writable() }), Some(Refusal::Protected));
+    assert_eq!(refusal(&Facts { password: true, foreground: Foreground::Other, ..writable() }), Some(Refusal::Protected));
 }
 
 #[test]
@@ -48,6 +49,53 @@ fn read_only_disabled_or_patternless_fields_are_refused() {
     assert_eq!(refusal(&Facts { value_read_only: Some(true), ..writable() }), Some(Refusal::ReadOnly));
     assert_eq!(refusal(&Facts { enabled: false, ..writable() }), Some(Refusal::ReadOnly));
     assert_eq!(refusal(&Facts { value_read_only: None, ..writable() }), Some(Refusal::Unsupported));
+}
+
+#[test]
+fn protected_or_unclassified_targets_never_allow_copy_despite_other_refusals() {
+    for reason in [Refusal::FocusMoved, Refusal::Gone, Refusal::Protected, Refusal::ReadOnly, Refusal::Unsupported, Refusal::Busy] {
+        assert!(!Rejection::from(reason).copy_allowed, "a refusal name alone is not evidence: {reason:?}");
+        for foreground in [Foreground::Target, Foreground::Coucou, Foreground::Other] {
+            // UIA also maps a failed CurrentIsPassword read to true.
+            let facts = Facts { password: true, foreground, ..writable() };
+            assert!(!Rejection::checked(reason, &facts).copy_allowed);
+        }
+        assert!(!Rejection::checked(reason, &Facts { window_alive: false, ..writable() }).copy_allowed);
+        assert!(!Rejection::checked(reason, &Facts { element_alive: false, ..writable() }).copy_allowed);
+    }
+}
+
+#[test]
+fn only_a_live_positively_checked_non_password_target_can_allow_copy() {
+    for facts in [
+        Facts { foreground: Foreground::Other, ..writable() },
+        Facts { value_read_only: Some(true), ..writable() },
+        Facts { enabled: false, ..writable() },
+        Facts { value_read_only: None, ..writable() },
+    ] {
+        let reason = refusal(&facts).expect("a fallback field");
+        let rejection = Rejection::checked(reason, &facts);
+        assert!(rejection.copy_allowed, "a checked non-password field can offer Copy: {reason:?}");
+    }
+    for reason in [Refusal::Gone, Refusal::Protected, Refusal::Busy] {
+        assert!(!Rejection::checked(reason, &writable()).copy_allowed);
+    }
+}
+
+#[test]
+fn refusal_wire_replies_explicitly_carry_native_copy_eligibility() {
+    use super::super::app::{InsertOffer, InsertResult};
+
+    let refusal = Rejection::checked(Refusal::FocusMoved, &Facts { foreground: Foreground::Other, ..writable() });
+    assert_eq!(serde_json::to_value(InsertOffer::Refused { refusal }).unwrap(), serde_json::json!({
+        "status": "refused", "reason": "focus-moved", "copyAllowed": true,
+    }));
+    assert_eq!(serde_json::to_value(InsertResult::Kept { refusal: Refusal::Protected.into() }).unwrap(), serde_json::json!({
+        "status": "kept", "reason": "protected", "copyAllowed": false,
+    }));
+    assert_eq!(serde_json::to_value(InsertOffer::Refused { refusal: Refusal::Unsupported.into() }).unwrap(), serde_json::json!({
+        "status": "refused", "reason": "unsupported", "copyAllowed": false,
+    }));
 }
 
 #[test]
@@ -190,7 +238,7 @@ fn a_stale_capture_or_changed_target_cannot_write_or_consume_the_current_field()
             |field| field.capture == capture && field.window == window && field.pid == pid,
             |_| panic!("a stale request must not reach the writer"),
         );
-        assert_eq!(answer, Err(Refusal::Gone));
+        assert_eq!(answer, Err(Refusal::Gone.into()));
         assert_eq!(bound, Some(field()), "the owning capture must keep its field");
         assert_eq!(write_bound(&mut bound, |_| true, |_| Ok(Written::Verified)), Ok(Written::Verified));
         assert!(bound.is_none());
@@ -202,7 +250,7 @@ fn a_missing_field_never_calls_the_writer() {
     let mut bound: Option<FakeField> = None;
     assert_eq!(
         write_bound(&mut bound, |_| panic!("nothing to own"), |_| panic!("nothing to write")),
-        Err(Refusal::Gone),
+        Err(Refusal::Gone.into()),
     );
 }
 
@@ -210,7 +258,7 @@ fn a_missing_field_never_calls_the_writer() {
 fn prewrite_refusals_keep_the_exact_field_for_a_later_success() {
     for why in [Refusal::FocusMoved, Refusal::Gone, Refusal::Protected, Refusal::ReadOnly, Refusal::Unsupported, Refusal::Busy] {
         let mut bound = Some(field());
-        assert_eq!(write_bound(&mut bound, |_| true, |_| Err(why)), Err(why));
+        assert_eq!(write_bound(&mut bound, |_| true, |_| Err(why.into())), Err(why.into()));
         assert_eq!(bound, Some(field()), "nothing written or consumed after {why:?}");
         let writes = std::cell::Cell::new(0);
         assert_eq!(
@@ -224,7 +272,7 @@ fn prewrite_refusals_keep_the_exact_field_for_a_later_success() {
             Ok(Written::Verified),
         );
         assert!(bound.is_none());
-        assert_eq!(write_bound(&mut bound, |_| true, |_| panic!("a completed insertion is never retried")), Err(Refusal::Gone));
+        assert_eq!(write_bound(&mut bound, |_| true, |_| panic!("a completed insertion is never retried")), Err(Refusal::Gone.into()));
         assert_eq!(writes.get(), 1);
     }
 }
@@ -235,7 +283,7 @@ fn every_attempted_write_outcome_consumes_the_field() {
         let mut bound = Some(field());
         assert_eq!(write_bound(&mut bound, |_| true, |_| Ok(outcome)), Ok(outcome));
         assert!(bound.is_none(), "{outcome:?} is terminal, even without verified success");
-        assert_eq!(write_bound(&mut bound, |_| true, |_| panic!("a terminal outcome cannot write twice")), Err(Refusal::Gone));
+        assert_eq!(write_bound(&mut bound, |_| true, |_| panic!("a terminal outcome cannot write twice")), Err(Refusal::Gone.into()));
     }
 }
 
@@ -252,7 +300,7 @@ fn ignored_set_value_with_preexisting_words_is_unconfirmed_and_terminal() {
     });
     assert_eq!(answer, Ok(Written::Unconfirmed));
     assert!(bound.is_none());
-    assert_eq!(write_bound(&mut bound, |_| true, |_| panic!("an uncertain write cannot be retried")), Err(Refusal::Gone));
+    assert_eq!(write_bound(&mut bound, |_| true, |_| panic!("an uncertain write cannot be retried")), Err(Refusal::Gone.into()));
 }
 
 #[test]
@@ -288,8 +336,40 @@ async fn an_offer_queues_the_exact_native_deadline_without_restarting_it() {
     };
     assert_eq!(capture, "cap-current");
     assert_eq!(queued_deadline, expires);
-    reply.send(Err(Refusal::FocusMoved)).unwrap();
-    assert_eq!(offering.await, Err(Refusal::FocusMoved));
+    let refusal = Rejection::checked(Refusal::FocusMoved, &Facts { foreground: Foreground::Other, ..writable() });
+    reply.send(Err(refusal)).unwrap();
+    assert_eq!(offering.await, Err(refusal));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_offer_timeout_cannot_allow_copy_even_if_a_late_check_would() {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let (send, jobs) = mpsc::channel();
+    let dictation = Dictation { jobs: Mutex::new(send) };
+    let mut offering = Box::pin(dictation.offer("cap-current", permit().expires));
+    std::future::poll_fn(|cx| {
+        assert!(offering.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    }).await;
+    let Job::Offer(_, _, reply) = jobs.try_recv().unwrap() else {
+        panic!("expected an offer job");
+    };
+    tokio::time::advance(REPLY_TIMEOUT).await;
+    assert_eq!(offering.await, Err(Refusal::Busy.into()));
+    assert!(reply.is_closed());
+    let late = Rejection::checked(Refusal::FocusMoved, &writable());
+    assert!(late.copy_allowed);
+    assert!(reply.send(Err(late)).is_err(), "a late answer cannot replace the failed-closed timeout");
+}
+
+#[tokio::test]
+async fn an_unavailable_worker_cannot_classify_the_field_as_safe_to_copy() {
+    let (send, jobs) = mpsc::channel();
+    drop(jobs);
+    let dictation = Dictation { jobs: Mutex::new(send) };
+    assert_eq!(dictation.offer("cap-current", permit().expires).await, Err(Refusal::Busy.into()));
 }
 
 #[tokio::test(start_paused = true)]
@@ -425,5 +505,5 @@ async fn a_real_password_box_is_never_offered() {
     dictation.bind(Some("cap-live".into()));
     let offer = dictation.offer("cap-live", permit().expires).await;
     let _ = child.kill();
-    assert_eq!(offer, Err(Refusal::Protected));
+    assert_eq!(offer, Err(Refusal::Protected.into()));
 }

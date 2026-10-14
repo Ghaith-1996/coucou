@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, State, Webview};
 use serde::Serialize;
 
 use super::contracts::{ActionKind, ActionReceipt, ErrorCode, ValidArgs, VoiceEvent, VOICE_EVENT};
-use super::dictation::{Dictation, Refusal, Written};
+use super::dictation::{Dictation, Refusal, Rejection, Written};
 use super::policy::Grant;
 use super::voice::{self, model, ChatDraft, Voice};
 use crate::island::WINDOW_LABEL;
@@ -151,7 +151,7 @@ pub enum InsertOffer {
     /// "Insert into <label>", for the user to confirm.
     Ready { label: String, grant: Grant },
     /// There was a field but it can't take the words (shown on the card).
-    Refused { reason: Refusal },
+    Refused { #[serde(flatten)] refusal: Rejection },
 }
 
 #[tauri::command]
@@ -164,8 +164,8 @@ pub async fn assistant_insert_offer(
     let offer = match dictation.offer(&capture_id, expires).await {
         Ok(offer) => offer,
         // No other app's field had the keyboard: nothing to offer.
-        Err(Refusal::Gone) => return Ok(None),
-        Err(reason) => return Ok(Some(InsertOffer::Refused { reason })),
+        Err(refusal) if refusal.reason == Refusal::Gone => return Ok(None),
+        Err(refusal) => return Ok(Some(InsertOffer::Refused { refusal })),
     };
     let args = serde_json::json!({ "text": text, "targetWindow": offer.target_window, "targetPid": offer.target_pid });
     let grant = voice.propose(&capture_id, ActionKind::InsertText, args)?;
@@ -180,7 +180,7 @@ pub enum InsertResult {
     Done { receipt: ActionReceipt },
     /// Checked again and refused before anything was written. The
     /// transcript is still on the card, untouched.
-    Kept { reason: Refusal },
+    Kept { #[serde(flatten)] refusal: Rejection },
     /// Confirmed but not written: the words went to Coucou's chat field
     /// instead, unsent (`draft`), so they are not lost.
     Failed { receipt: ActionReceipt, draft: Option<ChatDraft> },
@@ -207,7 +207,7 @@ pub async fn assistant_insert_text(
         // Unverified read-back or write timeout: it may be there already,
         // and must never be written twice.
         Ok(Written::Unconfirmed) => InsertResult::Done { receipt: ActionReceipt::unknown(&action_id) },
-        Err(reason) => InsertResult::Kept { reason },
+        Err(refusal) => InsertResult::Kept { refusal },
         Ok(Written::Failed) => InsertResult::Failed {
             receipt: ActionReceipt::failed(&action_id, ErrorCode::Failed),
             draft: voice.fallback_draft(&capture_id, text).ok(),

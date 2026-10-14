@@ -69,10 +69,10 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
     let mut pending: Option<Field> = None;
     let mut bound: Option<Remembered<Field>> = None;
     for job in jobs {
-        // Drop an offered field at its original preview deadline on the next
-        // job. Before then, slow transcription must not age its target out.
-        if bound.as_ref().is_some_and(|target| target.expired(Instant::now())) {
-            bound = None;
+        // Release the element at its original deadline, but keep its capture
+        // so expiry remains a refusal rather than an absent initial target.
+        if let Some(target) = bound.as_mut() {
+            target.expire(Instant::now());
         }
         match job {
             Job::Probe(reply) => {
@@ -81,27 +81,18 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
             }
             Job::Bind(capture) => {
                 let probed = pending.take();
-                match capture {
-                    // A stop press: that capture keeps the field it started with.
-                    Some(id) if bound.as_ref().is_some_and(|target| target.capture == id) => {}
-                    Some(id) => {
-                        bound = probed.map(|field| Remembered::new(id, field));
-                        if bound.is_some() {
-                            log("dictation: field remembered for the capture".into());
-                        }
-                    }
-                    None => {}
+                if bind_capture(&mut bound, capture, probed) {
+                    log("dictation: field remembered for the capture".into());
                 }
             }
             Job::Offer(capture, expires, reply) => {
-                let answer = bound.as_mut().ok_or(Refusal::Gone)
-                    .and_then(|target| target.offer(&capture, expires, Instant::now()))
-                    .map_err(Rejection::from)
-                    .and_then(|field| check(field).map(|_| Offer {
+                let answer = offer_bound(&mut bound, &capture, expires, Instant::now(), |field| {
+                    check(field).map(|_| Offer {
                         label: app_label(field.pid),
                         target_window: field.window.0 as usize as u64,
                         target_pid: field.pid,
-                    }));
+                    })
+                });
                 if let Err(why) = answer {
                     log(format!("dictation: no insertion offered ({})", name(why.reason)));
                 }
@@ -110,9 +101,13 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
             Job::Write(capture, args, permit, reply) => {
                 let answer = write_bound(&mut bound, |target| {
                     target.capture == capture
-                        && target.field.window.0 as usize as u64 == args.target_window
-                        && target.field.pid == args.target_pid
-                }, |target| write(&target.field, &args.text, &permit, &reply));
+                        && target.field.as_ref().is_some_and(|field| {
+                            field.window.0 as usize as u64 == args.target_window && field.pid == args.target_pid
+                        })
+                }, |target| {
+                    let field = target.field.as_ref().ok_or(Refusal::Gone)?;
+                    write(field, &args.text, &permit, &reply)
+                });
                 log(match answer {
                     Ok(Written::Verified) => "dictation: text inserted and read back".into(),
                     Ok(Written::Unconfirmed) => "dictation: text set but not read back".into(),
@@ -153,6 +148,14 @@ fn focused_field(ua: &IUIAutomation2) -> Option<Field> {
 }
 
 fn facts(field: &Field) -> (Facts, Option<IUIAutomationValuePattern>) {
+    let el = &field.element;
+    let element_alive = unsafe { el.CurrentProcessId() }.is_ok_and(|p| p as u32 == field.pid);
+    let enabled = unsafe { el.CurrentIsEnabled() }.is_ok_and(|b| b.as_bool());
+    let pattern = unsafe { el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }.ok();
+    let value_read_only = pattern.as_ref().map(|p| unsafe { p.CurrentIsReadOnly() }.map_or(true, |b| b.as_bool()));
+    let password = unsafe { el.CurrentIsPassword() }.map_or(true, |b| b.as_bool());
+    // Query window/focus after the blocking provider reads, so their latency
+    // cannot leave us relying on a foreground snapshot from before them.
     let window_alive = unsafe { IsWindow(Some(field.window)) }.as_bool() && window_pid(field.window) == field.pid;
     let foreground = unsafe { GetForegroundWindow() };
     let foreground = if foreground == field.window {
@@ -162,12 +165,6 @@ fn facts(field: &Field) -> (Facts, Option<IUIAutomationValuePattern>) {
     } else {
         Foreground::Other
     };
-    let el = &field.element;
-    let element_alive = unsafe { el.CurrentProcessId() }.is_ok_and(|p| p as u32 == field.pid);
-    let password = unsafe { el.CurrentIsPassword() }.map_or(true, |b| b.as_bool());
-    let enabled = unsafe { el.CurrentIsEnabled() }.is_ok_and(|b| b.as_bool());
-    let pattern = unsafe { el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }.ok();
-    let value_read_only = pattern.as_ref().map(|p| unsafe { p.CurrentIsReadOnly() }.map_or(true, |b| b.as_bool()));
     (Facts { window_alive, foreground, element_alive, password, enabled, value_read_only }, pattern)
 }
 
@@ -187,19 +184,27 @@ fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<W
     let current = unsafe { pattern.CurrentValue() }.map_err(|_| Refusal::Gone)?.to_string();
     let caret = caret(&field.element);
     let next = spliced(&current, caret.as_ref().map(|(b, s)| (b.as_str(), s.as_str())), text);
-    // UIA reads can block. Check again immediately before the only effect,
-    // so a cancelled/replaced capture or a timed-out queued job cannot write.
     let next_value = BSTR::from(next.as_str());
-    permit.check()?;
-    if reply.is_closed() { return Err(Refusal::Gone.into()); }
-    if unsafe { pattern.SetValue(&next_value) }.is_err() {
-        return Ok(Written::Failed);
-    }
-    let read_back = unsafe { pattern.CurrentValue() }.is_ok_and(|value| verified(&value.to_string(), &next));
-    // Give the keyboard back to the app the words went to. Coucou has it
-    // (the island's card), so Windows lets it pass it on.
-    let _ = unsafe { SetForegroundWindow(field.window) };
-    Ok(if read_back { Written::Verified } else { Written::Unconfirmed })
+    write_revalidated(
+        &current,
+        || check(field),
+        |pattern| unsafe { pattern.CurrentValue() }.map(|value| value.to_string()).map_err(|_| Refusal::Gone.into()),
+        || {
+            permit.check()?;
+            if reply.is_closed() { return Err(Refusal::Gone); }
+            Ok(())
+        },
+        |pattern| {
+            if unsafe { pattern.SetValue(&next_value) }.is_err() {
+                return Written::Failed;
+            }
+            let read_back = unsafe { pattern.CurrentValue() }.is_ok_and(|value| verified(&value.to_string(), &next));
+            // Give the keyboard back to the app the words went to. Coucou has
+            // it (the island's card), so Windows lets it pass it on.
+            let _ = unsafe { SetForegroundWindow(field.window) };
+            if read_back { Written::Verified } else { Written::Unconfirmed }
+        },
+    )
 }
 
 /// (text before the caret, selected text), from the field's TextPattern.

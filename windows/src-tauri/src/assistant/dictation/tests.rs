@@ -53,7 +53,7 @@ fn read_only_disabled_or_patternless_fields_are_refused() {
 
 #[test]
 fn protected_or_unclassified_targets_never_allow_copy_despite_other_refusals() {
-    for reason in [Refusal::FocusMoved, Refusal::Gone, Refusal::Protected, Refusal::ReadOnly, Refusal::Unsupported, Refusal::Busy] {
+    for reason in [Refusal::FocusMoved, Refusal::Gone, Refusal::Protected, Refusal::ReadOnly, Refusal::Unsupported, Refusal::Busy, Refusal::ValueChanged] {
         assert!(!Rejection::from(reason).copy_allowed, "a refusal name alone is not evidence: {reason:?}");
         for foreground in [Foreground::Target, Foreground::Coucou, Foreground::Other] {
             // UIA also maps a failed CurrentIsPassword read to true.
@@ -77,7 +77,7 @@ fn only_a_live_positively_checked_non_password_target_can_allow_copy() {
         let rejection = Rejection::checked(reason, &facts);
         assert!(rejection.copy_allowed, "a checked non-password field can offer Copy: {reason:?}");
     }
-    for reason in [Refusal::Gone, Refusal::Protected, Refusal::Busy] {
+    for reason in [Refusal::Gone, Refusal::Protected, Refusal::Busy, Refusal::ValueChanged] {
         assert!(!Rejection::checked(reason, &writable()).copy_allowed);
     }
 }
@@ -256,7 +256,7 @@ fn a_missing_field_never_calls_the_writer() {
 
 #[test]
 fn prewrite_refusals_keep_the_exact_field_for_a_later_success() {
-    for why in [Refusal::FocusMoved, Refusal::Gone, Refusal::Protected, Refusal::ReadOnly, Refusal::Unsupported, Refusal::Busy] {
+    for why in [Refusal::FocusMoved, Refusal::Gone, Refusal::Protected, Refusal::ReadOnly, Refusal::Unsupported, Refusal::Busy, Refusal::ValueChanged] {
         let mut bound = Some(field());
         assert_eq!(write_bound(&mut bound, |_| true, |_| Err(why.into())), Err(why.into()));
         assert_eq!(bound, Some(field()), "nothing written or consumed after {why:?}");
@@ -316,6 +316,191 @@ fn a_write_permit_expires_and_cancellation_is_shared_with_the_worker() {
     assert_eq!(expired.check(), Err(Refusal::Gone));
     let boundary = WritePermit { expires: Instant::now(), ..permit() };
     assert_eq!(boundary.check(), Err(Refusal::Gone), "the expiry instant is already too late");
+}
+
+#[test]
+fn a_target_that_changes_during_the_final_value_read_is_never_written() {
+    use std::cell::Cell;
+
+    for changed in [
+        Facts { password: true, ..writable() },
+        Facts { value_read_only: Some(true), ..writable() },
+        Facts { enabled: false, ..writable() },
+        Facts { foreground: Foreground::Other, ..writable() },
+        Facts { window_alive: false, ..writable() },
+        Facts { element_alive: false, ..writable() },
+        Facts { value_read_only: None, ..writable() },
+    ] {
+        let current = Cell::new(writable());
+        let checks = Cell::new(0);
+        let writes = Cell::new(0);
+        let mut bound = Some(field());
+        let answer = write_bound(&mut bound, |_| true, |_| write_revalidated(
+            "Hello",
+            || {
+                checks.set(checks.get() + 1);
+                let facts = current.get();
+                match refusal(&facts) {
+                    Some(reason) => Err(Rejection::checked(reason, &facts)),
+                    None => Ok(checks.get()),
+                }
+            },
+            |pattern| {
+                assert_eq!(*pattern, 1, "reread uses a freshly obtained pattern");
+                current.set(changed);
+                Ok("Hello".into())
+            },
+            || Ok(()),
+            |_| { writes.set(writes.get() + 1); Written::Verified },
+        ));
+        let reason = refusal(&changed).unwrap();
+        assert_eq!(answer, Err(Rejection::checked(reason, &changed)));
+        assert_eq!(checks.get(), 2, "safety facts must be refreshed after the blocking reread");
+        assert_eq!(writes.get(), 0);
+        assert_eq!(bound, Some(field()), "a definitive pre-write refusal keeps the target");
+    }
+}
+
+#[test]
+fn a_changed_value_is_preserved_until_an_explicit_fresh_insertion() {
+    use std::cell::Cell;
+
+    let mut bound = Some(field());
+    *bound.as_ref().unwrap().value.borrow_mut() = "Hello from the app".into();
+    let writes = Cell::new(0);
+    let answer = write_bound(&mut bound, |_| true, |field| write_revalidated(
+        "Hello", // The earlier CurrentValue/TextPattern snapshot.
+        || Ok(()),
+        |_| Ok(field.value.borrow().clone()),
+        || Ok(()),
+        |_| { writes.set(writes.get() + 1); Written::Verified },
+    ));
+    assert_eq!(answer, Err(Refusal::ValueChanged.into()));
+    assert_eq!(writes.get(), 0);
+    assert_eq!(*bound.as_ref().unwrap().value.borrow(), "Hello from the app");
+
+    assert_eq!(write_bound(&mut bound, |_| true, |field| {
+        let current = field.value.borrow().clone();
+        let next = spliced(&current, None, "world");
+        write_revalidated(
+            &current,
+            || Ok(()),
+            |_| Ok(field.value.borrow().clone()),
+            || Ok(()),
+            |_| {
+                writes.set(writes.get() + 1);
+                *field.value.borrow_mut() = next;
+                assert_eq!(*field.value.borrow(), "Hello from the app world");
+                Written::Verified
+            },
+        )
+    }), Ok(Written::Verified));
+    assert_eq!(writes.get(), 1);
+    assert!(bound.is_none());
+}
+
+#[test]
+fn a_revalidation_refusal_keeps_the_same_capture_and_original_deadline() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    let mut bound = Some(Remembered::new("cap-current".into(), "original field"));
+    assert_eq!(bound.as_mut().unwrap().offer("cap-current", expires, now), Ok(&"original field"));
+    let answer = write_bound(&mut bound, |target| target.capture == "cap-current", |_| write_revalidated(
+        "Hello",
+        || Ok(()),
+        |_| Ok("Changed by the app".into()),
+        || Ok(()),
+        |_| panic!("a changed field must be kept, never overwritten"),
+    ));
+    assert_eq!(answer, Err(Refusal::ValueChanged.into()));
+    let target = bound.as_mut().unwrap();
+    assert_eq!(target.capture, "cap-current");
+    assert_eq!(target.expires, Some(expires));
+    assert_eq!(target.offer("cap-current", expires + Duration::from_secs(120), expires), Err(Refusal::Gone));
+    assert_eq!(target.expires, Some(expires), "a refused insertion cannot renew its target");
+}
+
+#[test]
+fn unchanged_revalidation_writes_once_using_the_last_checked_pattern() {
+    use std::cell::Cell;
+
+    for outcome in [Written::Verified, Written::Unconfirmed, Written::Failed] {
+        let mut bound = Some(field());
+        let checks = Cell::new(0);
+        let writes = Cell::new(0);
+        let answer = write_bound(&mut bound, |_| true, |_| write_revalidated(
+            "Hello",
+            || { checks.set(checks.get() + 1); Ok(checks.get()) },
+            |pattern| { assert_eq!(*pattern, 1); Ok("Hello".into()) },
+            || Ok(()),
+            |pattern| {
+                assert_eq!(pattern, 2, "SetValue must not use the earlier pattern");
+                writes.set(writes.get() + 1);
+                outcome
+            },
+        ));
+        assert_eq!(answer, Ok(outcome));
+        assert_eq!(writes.get(), 1);
+        assert!(bound.is_none(), "every attempted effect is terminal, including unknown");
+    }
+}
+
+#[test]
+fn cancellation_deadline_or_closed_reply_during_final_reads_prevents_the_effect() {
+    use std::cell::{Cell, RefCell};
+
+    // Each injection happens inside a read, with no sleep, live UIA, or wall
+    // clock race. The same gate used in production follows every final read.
+    for stop in ["cancel", "expiry", "reply-timeout"] {
+        for stage in ["initial-check", "value", "last-check"] {
+            let permit = permit();
+            let now = Cell::new(permit.expires - Duration::from_secs(1));
+            let (reply, answer) = tokio::sync::oneshot::channel::<()>();
+            let answer = RefCell::new(answer);
+            let interrupt = || match stop {
+                "cancel" => permit.cancelled.store(true, Ordering::SeqCst),
+                "expiry" => now.set(permit.expires),
+                "reply-timeout" => answer.borrow_mut().close(),
+                _ => unreachable!(),
+            };
+            let checks = Cell::new(0);
+            let writes = Cell::new(0);
+            let result = write_revalidated(
+                "Hello",
+                || {
+                    checks.set(checks.get() + 1);
+                    if (stage == "initial-check" && checks.get() == 1) || (stage == "last-check" && checks.get() == 2) {
+                        interrupt();
+                    }
+                    Ok(())
+                },
+                |_| {
+                    if stage == "value" { interrupt(); }
+                    Ok("Hello".into())
+                },
+                || {
+                    permit.check_at(now.get())?;
+                    if reply.is_closed() { return Err(Refusal::Gone); }
+                    Ok(())
+                },
+                |_| { writes.set(writes.get() + 1); Written::Verified },
+            );
+            assert_eq!(result, Err(Refusal::Gone.into()), "{stop} during {stage}");
+            assert_eq!(writes.get(), 0, "{stop} during {stage}");
+            assert_eq!(checks.get(), if stage == "last-check" { 2 } else { 1 });
+        }
+    }
+}
+
+#[test]
+fn an_unreadable_final_value_is_a_definitive_no_write_refusal() {
+    assert_eq!(write_revalidated(
+        "Hello",
+        || Ok(()),
+        |_| Err(Refusal::Gone.into()),
+        || Ok(()),
+        |_| panic!("a failed reread must never call SetValue"),
+    ), Err(Refusal::Gone.into()));
 }
 
 #[tokio::test]
@@ -412,7 +597,8 @@ async fn a_write_reply_timeout_is_terminal_and_closes_the_late_workers_permissio
 async fn nothing_remembered_means_no_offer_and_no_write() {
     let dictation = Dictation::start(|_| {});
     dictation.bind(Some("cap-none".into()));
-    assert!(dictation.offer("cap-none", permit().expires).await.is_err());
+    let offer = dictation.offer("cap-none", permit().expires).await;
+    assert!(matches!(offer, Ok(None) | Err(Rejection { reason: Refusal::Unsupported, copy_allowed: false })));
     let args = InsertTextArgs { text: "hi".into(), target_window: 1, target_pid: 1 };
     assert!(dictation.write("cap-none", args, permit()).await.is_err());
 }
@@ -476,7 +662,7 @@ async fn words_go_into_a_real_text_box_at_its_caret_and_are_read_back() {
     let offer = dictation.offer("cap-live", permit().expires).await;
     let result = match offer {
         // Never write anywhere but the test's own box.
-        Ok(offer) if offer.target_pid == child.id() => {
+        Ok(Some(offer)) if offer.target_pid == child.id() => {
             println!("offered: {}", offer.label);
             let args = InsertTextArgs { text: "big".into(), target_window: offer.target_window, target_pid: offer.target_pid };
             dictation.write("cap-live", args, permit()).await
@@ -506,4 +692,153 @@ async fn a_real_password_box_is_never_offered() {
     let offer = dictation.offer("cap-live", permit().expires).await;
     let _ = child.kill();
     assert_eq!(offer, Err(Refusal::Protected.into()));
+}
+
+#[test]
+fn only_an_absent_binding_has_no_offer() {
+    let now = Instant::now();
+    let mut bound: Option<Remembered<()>> = None;
+    assert_eq!(offer_bound(&mut bound, "cap-none", now, now, |_| {
+        panic!("there is no remembered field to check");
+    }), Ok(None));
+}
+
+#[test]
+fn another_captures_offer_is_refused_without_checking_or_expiring_the_owned_field() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    let mut bound = Some(Remembered::new("cap-current".into(), "original field"));
+    assert_eq!(offer_bound(&mut bound, "cap-old", now, now, |_| {
+        panic!("another capture must not inspect this field");
+    }), Err(Refusal::Gone.into()));
+    let target = bound.as_mut().unwrap();
+    assert_eq!(target.expires, None);
+    assert_eq!(target.offer("cap-current", expires, now), Ok(&"original field"));
+    assert_eq!(offer_bound(&mut bound, "cap-old", now, now, |_| {
+        panic!("another capture must not inspect this field");
+    }), Err(Refusal::Gone.into()));
+    assert_eq!(bound.as_ref().unwrap().expires, Some(expires));
+    assert_eq!(bound.as_ref().unwrap().field, Some("original field"));
+}
+
+#[test]
+fn a_checked_vanished_window_or_element_keeps_its_offer_refusal_without_copy_permission() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    for facts in [Facts { window_alive: false, ..writable() }, Facts { element_alive: false, ..writable() }] {
+        let mut bound = Some(Remembered::new("cap-current".into(), facts));
+        for _ in 0..2 {
+            let answer = offer_bound(&mut bound, "cap-current", expires, now, |facts| {
+                Err(Rejection::checked(refusal(facts).unwrap(), facts))
+            });
+            assert_eq!(answer, Err(Rejection { reason: Refusal::Gone, copy_allowed: false }));
+            assert!(bound.is_some(), "a vanished field is not an absent initial target");
+        }
+    }
+}
+
+#[test]
+fn expiry_releases_the_field_but_keeps_a_refused_offer_for_its_capture() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    let mut bound = Some(Remembered::new("cap-current".into(), "original field"));
+    let expected = Offer { label: "Test app".into(), target_window: 4242, target_pid: 77 };
+    assert_eq!(offer_bound(&mut bound, "cap-current", expires, now, |_| Ok(expected.clone())), Ok(Some(expected)));
+    // The worker releases the UIA element at expiry without losing its owner.
+    bound.as_mut().unwrap().expire(expires);
+    assert_eq!(bound.as_ref().unwrap().field, None);
+    for checked_at in [expires, expires + Duration::from_secs(60)] {
+        assert_eq!(offer_bound(&mut bound, "cap-current", checked_at + Duration::from_secs(120), checked_at, |_| {
+            panic!("an expired field must not be checked or revived");
+        }), Err(Rejection { reason: Refusal::Gone, copy_allowed: false }));
+        assert_eq!(bound.as_ref().unwrap().expires, Some(expires));
+    }
+}
+
+#[test]
+fn a_first_offer_that_arrives_expired_is_gone_rather_than_absent() {
+    let now = Instant::now();
+    let mut bound = Some(Remembered::new("cap-current".into(), "original field"));
+    assert_eq!(offer_bound(&mut bound, "cap-current", now, now, |_| {
+        panic!("an already expired field must not be checked");
+    }), Err(Refusal::Gone.into()));
+    assert_eq!(bound.as_ref().unwrap().field, None);
+    assert_eq!(bound.as_ref().unwrap().capture, "cap-current");
+}
+
+#[tokio::test]
+async fn queued_offers_preserve_the_difference_between_absent_and_gone() {
+    use std::future::Future;
+    use std::task::Poll;
+
+    for answer in [Ok(None), Err(Refusal::Gone.into())] {
+        let (send, jobs) = mpsc::channel();
+        let dictation = Dictation { jobs: Mutex::new(send) };
+        let mut offering = Box::pin(dictation.offer("cap-current", permit().expires));
+        std::future::poll_fn(|cx| {
+            assert!(offering.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        }).await;
+        let Job::Offer(_, _, reply) = jobs.try_recv().unwrap() else {
+            panic!("expected an offer job");
+        };
+        reply.send(answer.clone()).unwrap();
+        assert_eq!(offering.await, answer);
+    }
+}
+
+#[test]
+fn a_stop_binding_cannot_revive_an_expired_field_but_a_new_capture_can_replace_it() {
+    let now = Instant::now();
+    let mut bound = Some(Remembered::new("cap-current".into(), "original field"));
+    assert_eq!(bound.as_mut().unwrap().offer("cap-current", now, now), Err(Refusal::Gone));
+    assert!(!bind_capture(&mut bound, Some("cap-current".into()), Some("replacement field")));
+    assert_eq!(bound.as_ref().unwrap().field, None);
+    assert_eq!(offer_bound(&mut bound, "cap-current", now + Duration::from_secs(120), now, |_| {
+        panic!("a stop press cannot revive an expired remembered target");
+    }), Err(Refusal::Gone.into()));
+    assert!(bind_capture(&mut bound, Some("cap-new".into()), Some("new field")));
+    assert_eq!(bound.as_mut().unwrap().offer("cap-new", now + Duration::from_secs(120), now), Ok(&"new field"));
+}
+
+#[test]
+fn an_absent_initial_target_keeps_its_capture_across_offers_and_stop_bindings() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    let mut bound: Option<Remembered<&str>> = None;
+    assert!(!bind_capture(&mut bound, Some("cap-empty".into()), None));
+    assert_eq!(bound.as_ref().unwrap().capture, "cap-empty");
+    for checked_at in [now, expires, expires + Duration::from_secs(120)] {
+        assert_eq!(offer_bound(&mut bound, "cap-empty", expires, checked_at, |_| {
+            panic!("an initially absent field cannot be checked");
+        }), Ok(None));
+        bound.as_mut().unwrap().expire(checked_at);
+        assert_eq!(bound.as_ref().unwrap().expires, None, "absence cannot become an expired target");
+    }
+    assert!(!bind_capture(&mut bound, Some("cap-empty".into()), Some("different field")));
+    assert_eq!(bound.as_ref().unwrap().field, None, "a stop press cannot adopt a field that was not captured");
+    assert_eq!(offer_bound(&mut bound, "cap-empty", expires, now, |_| {
+        panic!("the stop press must leave the capture without a field");
+    }), Ok(None));
+    assert_eq!(offer_bound(&mut bound, "cap-old", expires, now, |_| {
+        panic!("a different capture must not inspect this binding");
+    }), Err(Refusal::Gone.into()));
+    assert_eq!(bound.as_ref().unwrap().capture, "cap-empty");
+    assert_eq!(bound.as_ref().unwrap().expires, None);
+    assert!(bind_capture(&mut bound, Some("cap-new".into()), Some("new field")));
+    assert_eq!(bound.as_mut().unwrap().offer("cap-new", expires, now), Ok(&"new field"));
+}
+
+#[test]
+fn a_new_capture_without_a_field_replaces_an_expired_capture_with_initial_absence() {
+    let now = Instant::now();
+    let mut bound = Some(Remembered::new("cap-expired".into(), "old field"));
+    assert_eq!(bound.as_mut().unwrap().offer("cap-expired", now, now), Err(Refusal::Gone));
+    assert!(!bind_capture(&mut bound, Some("cap-empty".into()), None));
+    assert_eq!(offer_bound(&mut bound, "cap-empty", now + Duration::from_secs(120), now, |_| {
+        panic!("the new capture never had a field");
+    }), Ok(None));
+    assert_eq!(offer_bound(&mut bound, "cap-expired", now, now, |_| {
+        panic!("the old capture cannot inspect its replacement");
+    }), Err(Refusal::Gone.into()));
 }

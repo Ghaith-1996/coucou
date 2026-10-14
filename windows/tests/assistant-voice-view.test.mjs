@@ -135,6 +135,32 @@ for (const reason of ["focus-moved", "busy", "gone", "protected", "read-only", "
   });
 }
 
+test("a value changed during insertion keeps the named retry and explanation without Copy", async () => {
+  await preview({ status: "ready", label: "Notepad", grant: GRANT });
+  answers.set("assistant_insert_text", { status: "kept", reason: "value-changed", copyAllowed: false });
+  button("Insert into Notepad").fire("click");
+  await flush();
+  assert.equal(view.el.querySelector(".sub").textContent, "The field changed. Nothing was typed. Check it, then Insert again.");
+  assert.deepEqual(labels(), ["Insert into Notepad", "Use in chat", "Cancel"]);
+  assert.equal(Voice.event.transcript, "keep these words");
+  assert.equal(sent("assistant_insert_text").length, 1, "no automatic retry overwrites the app's edit");
+  await voiceCopy();
+  assert.deepEqual(copied, []);
+  answers.set("assistant_insert_text", { status: "done", receipt: { actionId: GRANT.actionId, outcome: "unknown" } });
+  button("Insert into Notepad").fire("click");
+  await flush();
+  assert.equal(sent("assistant_insert_text").length, 2, "a separate click retries with fresh native reads");
+  assert.equal(Voice.event, null, "unknown remains terminal");
+});
+
+test("even a contradictory value-changed reply cannot enable Copy", async () => {
+  await preview({ status: "refused", reason: "value-changed", copyAllowed: true });
+  assert.equal(button("Copy"), undefined);
+  assert.ok(button("Retry"));
+  await voiceCopy();
+  assert.deepEqual(copied, []);
+});
+
 test("pending insertion disables Use in chat while leaving Cancel available", async () => {
   await preview({ status: "ready", label: "Notepad", grant: GRANT });
   const pending = Promise.withResolvers();
@@ -286,3 +312,46 @@ for (const reason of ["protected", "busy", "unsupported"]) {
     assert.equal(Voice.event, null);
   });
 }
+
+
+test("an initially absent target leaves the transcript without a vanished-field explanation", async () => {
+  await preview(null);
+  assert.equal(Voice.insert, null);
+  assert.equal(view.el.querySelector(".sub").textContent, "");
+  assert.deepEqual(labels(), ["Use in chat", "Cancel"]);
+  assert.equal(Voice.event.transcript, "keep these words");
+  await voiceCopy();
+  assert.deepEqual(copied, []);
+  assert.equal(sent("assistant_insert_text").length, 0);
+});
+
+test("a vanished remembered target keeps its explanation and transcript without Copy or Retry", async () => {
+  await preview({ status: "refused", reason: "gone", copyAllowed: false });
+  assert.deepEqual(Voice.insert, { status: "refused", reason: "gone", copyAllowed: false });
+  assert.equal(view.el.querySelector(".sub").textContent, "That field is gone. Nothing was typed.");
+  assert.deepEqual(labels(), ["Use in chat", "Cancel"]);
+  assert.equal(Voice.event.transcript, "keep these words");
+  assert.equal(State.mode, "expanded");
+  assert.equal(State.isPinned, true);
+  await voiceCopy();
+  assert.deepEqual(copied, []);
+  assert.equal(sent("assistant_insert_text").length, 0);
+  assert.equal(sent("assistant_voice_use").length, 0);
+});
+
+test("a field that disappears during re-offer replaces earlier Copy permission with the explanation", async () => {
+  await preview({ status: "refused", reason: "focus-moved", copyAllowed: true });
+  const staleCopy = button("Copy");
+  answers.set("assistant_insert_offer", { status: "refused", reason: "gone", copyAllowed: false });
+  button("Retry").fire("click");
+  await flush();
+  assert.equal(view.el.querySelector(".sub").textContent, "That field is gone. Nothing was typed.");
+  assert.deepEqual(labels(), ["Use in chat", "Cancel"]);
+  staleCopy.fire("click");
+  await voiceCopy();
+  await flush();
+  assert.deepEqual(copied, []);
+  assert.equal(Voice.event.transcript, "keep these words");
+  assert.equal(sent("assistant_insert_offer").length, 2);
+  assert.equal(sent("assistant_insert_text").length, 0);
+});

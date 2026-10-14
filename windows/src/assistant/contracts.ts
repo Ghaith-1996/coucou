@@ -75,7 +75,7 @@ export interface AppGrant {
 }
 
 /** Why another app's field can't take dictated words (dictation.rs `Refusal`). Nothing was written. */
-export type InsertRefusal = "focus-moved" | "gone" | "protected" | "read-only" | "unsupported" | "busy";
+export type InsertRefusal = "focus-moved" | "gone" | "protected" | "read-only" | "unsupported" | "busy" | "value-changed";
 
 /** assistant_insert_offer: "Insert into <label>", or why the field can't take it.
  * `copyAllowed` requires native evidence from this check of a non-protected field.

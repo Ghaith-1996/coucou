@@ -27,6 +27,7 @@ const REFUSALS: Record<InsertRefusal, string> = {
   "read-only": N_("That field is read-only."),
   unsupported: N_("This field doesn't take dictated text. Use it in chat."),
   busy: N_("The app didn't answer. Nothing was typed."),
+  "value-changed": N_("The field changed. Nothing was typed. Check it, then Insert again."),
 };
 
 function clock(ms: number): string {

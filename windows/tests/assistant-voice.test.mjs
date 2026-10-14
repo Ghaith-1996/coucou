@@ -949,22 +949,24 @@ for (const reason of ["gone", "read-only", "unsupported"]) {
   });
 }
 
-test("a busy insertion retains its named grant for a separate retry", async () => {
-  await startListening();
-  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
-  emit("assistant-voice", ev("cap-1", "preview", { transcript: "keep these words" }));
-  await flush();
-  answers.set("assistant_insert_text", { status: "kept", reason: "busy" });
-  await voiceInsert();
-  assert.deepEqual(Voice.insert, { status: "ready", label: "Notepad", grant: GRANT, reason: "busy" });
-  assert.equal(Voice.event.state, "preview");
-  assert.equal(State.isPinned, true);
-  assert.equal(sent("assistant_insert_text").length, 1);
-  answers.set("assistant_insert_text", { status: "done", receipt: { actionId: "act-retry", outcome: "unknown" } });
-  await voiceInsert();
-  assert.equal(sent("assistant_insert_text").length, 2);
-  assert.equal(Voice.event, null);
-});
+for (const reason of ["busy", "value-changed"]) {
+  test(`a ${reason} insertion retains its named grant for a separate retry`, async () => {
+    await startListening();
+    answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "keep these words" }));
+    await flush();
+    answers.set("assistant_insert_text", { status: "kept", reason, copyAllowed: false });
+    await voiceInsert();
+    assert.deepEqual(Voice.insert, { status: "ready", label: "Notepad", grant: GRANT, reason });
+    assert.equal(Voice.event.state, "preview");
+    assert.equal(State.isPinned, true);
+    assert.equal(sent("assistant_insert_text").length, 1);
+    answers.set("assistant_insert_text", { status: "done", receipt: { actionId: "act-retry", outcome: "unknown" } });
+    await voiceInsert();
+    assert.equal(sent("assistant_insert_text").length, 2);
+    assert.equal(Voice.event, null);
+  });
+}
 
 for (const reason of ["gone", "protected", "read-only", "unsupported"]) {
   test(`an initial ${reason} refusal cannot re-offer the field`, async () => {

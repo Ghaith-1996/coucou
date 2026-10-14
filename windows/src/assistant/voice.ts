@@ -120,7 +120,7 @@ export type InsertOffer =
 
 /** Only these refusals can change while the same remembered field stays valid. */
 export function canRetryInsert(reason: InsertRefusal): boolean {
-  return reason === "focus-moved" || reason === "busy";
+  return reason === "focus-moved" || reason === "busy" || reason === "value-changed";
 }
 
 /** Copy requires positive evidence from the current native refusal, never
@@ -128,7 +128,7 @@ export function canRetryInsert(reason: InsertRefusal): boolean {
  */
 export function canCopyInsert(offer: InsertOffer | null): boolean {
   return offer?.status === "refused" && offer.copyAllowed === true
-    && offer.reason !== "protected" && offer.reason !== "gone" && offer.reason !== "busy";
+    && offer.reason !== "protected" && offer.reason !== "gone" && offer.reason !== "busy" && offer.reason !== "value-changed";
 }
 
 function waitingCard(): IslandViewName | null {

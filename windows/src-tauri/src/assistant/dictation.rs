@@ -53,6 +53,8 @@ pub enum Refusal {
     Unsupported,
     /// The app didn't answer in time.
     Busy,
+    /// The field changed while UI Automation was reading it. Retry explicitly.
+    ValueChanged,
 }
 
 /// A refusal is not evidence that copying is safe: timeouts, missing fields
@@ -77,7 +79,7 @@ impl Rejection {
         Self {
             reason,
             copy_allowed: facts.window_alive && facts.element_alive && !facts.password
-                && !matches!(reason, Refusal::Protected | Refusal::Gone | Refusal::Busy),
+                && !matches!(reason, Refusal::Protected | Refusal::Gone | Refusal::Busy | Refusal::ValueChanged),
         }
     }
 }
@@ -197,25 +199,59 @@ pub fn verified(value: &str, intended: &str) -> bool {
 /// it, and stale captures cannot change the current field's lifetime.
 struct Remembered<T> {
     capture: String,
-    field: T,
+    // None without a deadline means this capture started without a target;
+    // None with a deadline means expiry released its remembered UIA element.
+    // Both retain the capture so a stop press cannot adopt a different field.
+    field: Option<T>,
     expires: Option<Instant>,
 }
 
 impl<T> Remembered<T> {
     fn new(capture: String, field: T) -> Self {
-        Self { capture, field, expires: None }
+        Self { capture, field: Some(field), expires: None }
     }
 
     fn expired(&self, now: Instant) -> bool {
         self.expires.is_some_and(|expires| now >= expires)
     }
 
+    fn expire(&mut self, now: Instant) {
+        if self.expired(now) { self.field = None; }
+    }
+
     fn offer(&mut self, capture: &str, expires: Instant, now: Instant) -> Result<&T, Refusal> {
         if self.capture != capture { return Err(Refusal::Gone); }
         self.expires = Some(self.expires.map_or(expires, |original| original.min(expires)));
-        if self.expired(now) { return Err(Refusal::Gone); }
-        Ok(&self.field)
+        self.expire(now);
+        self.field.as_ref().ok_or(Refusal::Gone)
     }
+}
+
+/// A repeated stop binding cannot replace the original field or revive an
+/// expired one. Returns whether a new capture remembered a field.
+fn bind_capture<T>(bound: &mut Option<Remembered<T>>, capture: Option<String>, probed: Option<T>) -> bool {
+    let Some(capture) = capture else { return false };
+    if bound.as_ref().is_some_and(|target| target.capture == capture) { return false; }
+    *bound = Some(match probed {
+        Some(field) => Remembered::new(capture, field),
+        None => Remembered { capture, field: None, expires: None },
+    });
+    bound.as_ref().is_some_and(|target| target.field.is_some())
+}
+
+/// Only no initially captured field means no offer. Ownership, expiry and UIA
+/// checks retain their refusal instead of hiding a vanished field's reason.
+fn offer_bound<T>(
+    bound: &mut Option<Remembered<T>>,
+    capture: &str,
+    expires: Instant,
+    now: Instant,
+    check: impl FnOnce(&T) -> Result<Offer, Rejection>,
+) -> Result<Option<Offer>, Rejection> {
+    let Some(target) = bound.as_mut() else { return Ok(None) };
+    if target.capture != capture { return Err(Refusal::Gone.into()); }
+    if target.field.is_none() && target.expires.is_none() { return Ok(None); }
+    check(target.offer(capture, expires, now)?).map(Some)
 }
 
 /// Valid only for the outstanding confirmation, until cancellation or its
@@ -228,12 +264,46 @@ pub struct WritePermit {
 
 impl WritePermit {
     fn check(&self) -> Result<(), Refusal> {
-        if self.cancelled.load(Ordering::SeqCst) || Instant::now() >= self.expires {
+        self.check_at(Instant::now())
+    }
+
+    fn check_at(&self, now: Instant) -> Result<(), Refusal> {
+        if self.cancelled.load(Ordering::SeqCst) || now >= self.expires {
             Err(Refusal::Gone)
         } else {
             Ok(())
         }
     }
+}
+
+/// Revalidate after the potentially slow value/selection reads used to build
+/// the insertion. The writer receives only the freshly checked pattern, and
+/// every blocking final read is followed by the cancellation/deadline gate.
+/// UIA has no atomic compare-and-set: another app can still change after its
+/// last answer. Refuse observed changes instead of overwriting stale text.
+fn write_revalidated<P>(
+    expected: &str,
+    mut check_target: impl FnMut() -> Result<P, Rejection>,
+    read_value: impl FnOnce(&P) -> Result<String, Rejection>,
+    permitted: impl Fn() -> Result<(), Refusal>,
+    write: impl FnOnce(P) -> Written,
+) -> Result<Written, Rejection> {
+    permitted()?;
+    let pattern = check_target()?;
+    permitted()?;
+    let current = read_value(&pattern)?;
+    permitted()?;
+    // Read mutable safety facts after CurrentValue: it can block while the
+    // target becomes a password/read-only field, disappears or loses focus.
+    let pattern = check_target()?;
+    permitted()?;
+    if current != expected {
+        return Err(Refusal::ValueChanged.into());
+    }
+    // Comparing a large field can itself take time. No work that depends on
+    // the transcript remains between this final gate and the single effect.
+    permitted()?;
+    Ok(write(pattern))
 }
 
 /// Ownership is checked before consuming anything. Only a definitive
@@ -259,7 +329,7 @@ enum Job {
     Probe(Reply<()>),
     /// The capture that probe was for (None: no capture started).
     Bind(Option<String>),
-    Offer(String, Instant, Reply<Result<Offer, Rejection>>),
+    Offer(String, Instant, Reply<Result<Option<Offer>, Rejection>>),
     /// Checked again, then written.
     Write(String, InsertTextArgs, WritePermit, Reply<Result<Written, Rejection>>),
 }
@@ -309,7 +379,7 @@ impl Dictation {
     /// The app this capture's field belongs to, if the field can take text.
     /// `expires` is the original preview deadline supplied by Voice, never by
     /// the page and never computed anew when the user retries an offer.
-    pub async fn offer(&self, capture_id: &str, expires: Instant) -> Result<Offer, Rejection> {
+    pub async fn offer(&self, capture_id: &str, expires: Instant) -> Result<Option<Offer>, Rejection> {
         let capture = capture_id.to_string();
         self.ask(|reply| Job::Offer(capture, expires, reply), Err(Refusal::Busy.into())).await
     }

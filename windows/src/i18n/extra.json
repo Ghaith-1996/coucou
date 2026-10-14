@@ -4329,6 +4329,17 @@
    "ru": "Это поле не принимает надиктованный текст. Используйте в чате.",
    "id": "Kolom ini tidak menerima teks dikte. Gunakan di obrolan."
   },
+  "The field changed. Nothing was typed. Check it, then Insert again.": {
+   "zh-Hans": "输入框的内容已更改。没有输入任何内容。请检查后再次插入。",
+   "hi": "फ़ील्ड बदल गई है। कुछ भी टाइप नहीं हुआ। उसे जाँचें, फिर दोबारा डालें।",
+   "es": "El campo cambió. No se escribió nada. Revísalo y vuelve a pulsar Insertar.",
+   "ar": "تغيّر الحقل. لم تُكتب أي كلمة. تحقّق منه ثم اضغط إدراج مرة أخرى.",
+   "fr": "Le champ a changé. Rien n'a été tapé. Vérifiez-le, puis cliquez à nouveau sur Insérer.",
+   "bn": "ঘরটি বদলে গেছে। কিছুই লেখা হয়নি। দেখে নিয়ে আবার বসান চাপুন।",
+   "pt-BR": "O campo mudou. Nada foi digitado. Confira e toque em Inserir novamente.",
+   "ru": "Поле изменилось. Ничего не было введено. Проверьте его и снова нажмите «Вставить».",
+   "id": "Kolom berubah. Tidak ada yang diketik. Periksa, lalu Sisipkan lagi."
+  },
   "The app didn't answer. Nothing was typed.": {
    "zh-Hans": "该应用没有响应。没有输入任何内容。",
    "hi": "ऐप ने जवाब नहीं दिया। कुछ भी टाइप नहीं हुआ।",

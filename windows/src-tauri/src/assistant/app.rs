@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, State, Webview};
 use serde::Serialize;
 
 use super::contracts::{ActionKind, ActionReceipt, ErrorCode, ValidArgs, VoiceEvent, VOICE_EVENT};
-use super::dictation::{Dictation, Refusal, Rejection, Written};
+use super::dictation::{Dictation, Rejection, Written};
 use super::policy::Grant;
 use super::voice::{self, model, ChatDraft, Voice};
 use crate::island::WINDOW_LABEL;
@@ -162,9 +162,9 @@ pub async fn assistant_insert_offer(
 ) -> Result<Option<InsertOffer>, ErrorCode> {
     let (text, expires) = voice.insertion_preview(&capture_id)?;
     let offer = match dictation.offer(&capture_id, expires).await {
-        Ok(offer) => offer,
+        Ok(Some(offer)) => offer,
         // No other app's field had the keyboard: nothing to offer.
-        Err(refusal) if refusal.reason == Refusal::Gone => return Ok(None),
+        Ok(None) => return Ok(None),
         Err(refusal) => return Ok(Some(InsertOffer::Refused { refusal })),
     };
     let args = serde_json::json!({ "text": text, "targetWindow": offer.target_window, "targetPid": offer.target_pid });

@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Bumped when the closed action registry or an available shape changes.
-/// Version 2 adds the `pill-set` kind and its arguments to the frozen v1 registry.
-pub const CONTRACT_VERSION: u32 = 2;
+/// Version 2 adds the `pill-set` kind and its arguments to the frozen v1
+/// registry; version 3 adds `switch-tab`.
+pub const CONTRACT_VERSION: u32 = 3;
 
 /// The event the island listens to for voice capture.
 pub const VOICE_EVENT: &str = "assistant-voice";
@@ -49,14 +50,18 @@ pub enum ActionKind {
     /// Attach a screen region the user picked to Coucou's chat, as an image
     /// for the next question (region.rs), after the user saw it and confirmed.
     AskRegion,
+    /// Bring one of the user's browser tabs to the front (browser.rs), as
+    /// the chat proposed and the user confirmed.
+    SwitchTab,
 }
 
-pub const ACTION_KINDS: [ActionKind; 5] = [
+pub const ACTION_KINDS: [ActionKind; 6] = [
     ActionKind::ChatDraft,
     ActionKind::PillSet,
     ActionKind::InsertText,
     ActionKind::LaunchApp,
     ActionKind::AskRegion,
+    ActionKind::SwitchTab,
 ];
 
 impl ActionKind {
@@ -65,7 +70,7 @@ impl ActionKind {
     pub fn available(self) -> bool {
         matches!(
             self,
-            ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::AskRegion
+            ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::AskRegion | ActionKind::SwitchTab
         )
     }
 
@@ -125,6 +130,17 @@ pub struct LaunchAppArgs {
     pub app_id: String,
 }
 
+/// One tab of the user's browser: its window, its id there ("window.position",
+/// browser.rs) and the title the user confirmed. Switching re-reads the tabs
+/// and refuses if that id no longer has that title.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SwitchTabArgs {
+    pub window: u64,
+    pub tab_id: String,
+    pub title: String,
+}
+
 /// A region in physical pixels of one monitor, relative to its top-left
 /// corner. The question is typed in the chat afterwards, not part of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +162,7 @@ pub enum ValidArgs {
     InsertText(InsertTextArgs),
     LaunchApp(LaunchAppArgs),
     AskRegion(AskRegionArgs),
+    SwitchTab(SwitchTabArgs),
 }
 
 // ── Decisions and receipts ───────────────────────────────────────────────────

@@ -129,6 +129,110 @@ fn spacing_respects_punctuation_and_brackets() {
 }
 
 #[test]
+fn straight_quotes_keep_words_inside_and_outside_the_delimiters() {
+    for quote in ['\'', '"'] {
+        let value = format!("He said {quote}hello{quote}");
+        let opening = format!("He said {quote}");
+        let closing = format!("He said {quote}hello");
+        assert_eq!(spliced(&value, None, "world"), format!("{value} world"));
+        assert_eq!(spliced(&value, Some((&opening, "")), "dear"), format!("He said {quote}dear hello{quote}"));
+        assert_eq!(spliced(&value, Some((&closing, "")), "world"), format!("He said {quote}hello world{quote}"));
+        assert_eq!(spliced(&value, Some(("He said ", "")), "plainly"), format!("He said plainly {quote}hello{quote}"));
+        assert_eq!(spliced(&format!("{quote}{quote}"), Some((&quote.to_string(), "")), "hello"), format!("{quote}hello{quote}"));
+    }
+}
+
+#[test]
+fn inserted_quotes_get_context_at_both_splice_boundaries() {
+    for quote in ['\'', '"'] {
+        let quoted = format!("{quote}middle{quote}");
+        assert_eq!(spliced("before after", Some(("before ", "")), &quoted), format!("before {quoted} after"));
+        assert_eq!(spliced("beforeafter", Some(("before", "")), &quoted), format!("before {quoted} after"));
+        let before = format!("He said {quote}hello");
+        assert_eq!(spliced(&before, None, &format!("{quote}, friend")), format!("{before}{quote}, friend"));
+        assert_eq!(spliced("before world", Some(("before ", "")), &format!("say {quote}")), format!("before say {quote}world"));
+    }
+}
+
+#[test]
+fn directional_quote_pairs_keep_inside_and_outside_spacing() {
+    for (opening, closing) in [('“', '”'), ('‘', '’'), ('«', '»')] {
+        let value = format!("He said {opening}hello{closing}");
+        let inside_start = format!("He said {opening}");
+        let inside_end = format!("He said {opening}hello");
+        assert_eq!(spliced(&value, None, "world"), format!("{value} world"));
+        assert_eq!(spliced(&value, Some((&inside_start, "")), "dear"), format!("He said {opening}dear hello{closing}"));
+        assert_eq!(spliced(&value, Some((&inside_end, "")), "world"), format!("He said {opening}hello world{closing}"));
+        assert_eq!(spliced(&value, Some(("He said ", "")), "plainly"), format!("He said plainly {opening}hello{closing}"));
+        assert_eq!(spliced("beforeafter", Some(("before", "")), &format!("{opening}middle{closing}")),
+            format!("before {opening}middle{closing} after"));
+    }
+}
+
+#[test]
+fn directional_quotes_preserve_existing_whitespace() {
+    for (opening, closing) in [('“', '”'), ('‘', '’'), ('«', '»')] {
+        let before = format!("{opening} hello");
+        let value = format!("{before} {closing}");
+        assert_eq!(spliced(&value, Some((&before, "")), "world"), format!("{opening} hello world {closing}"));
+        assert_eq!(spliced(&value, Some((&opening.to_string(), "")), "dear"), format!("{opening}dear hello {closing}"));
+        assert_eq!(spliced(&format!("{value}\n"), None, "world"), format!("{value}\nworld"));
+    }
+}
+
+#[test]
+fn apostrophes_inside_words_do_not_change_quote_context() {
+    for (value, before, expected) in [
+        ("can't say 'hello'", "can't say 'hello", "can't say 'hello world'"),
+        ("l'homme dit 'bonjour'", "l'homme dit 'bonjour", "l'homme dit 'bonjour world'"),
+        ("l'été dit 'bonjour'", "l'été dit 'bonjour", "l'été dit 'bonjour world'"),
+        ("He said 'can't'", "He said 'can't", "He said 'can't world'"),
+        ("He said 'l'homme'", "He said 'l'homme", "He said 'l'homme world'"),
+    ] {
+        assert_eq!(spliced(value, Some((before, "")), "world"), expected);
+        assert_eq!(spliced(value, None, "world"), format!("{value} world"));
+    }
+    assert_eq!(spliced("before after", Some(("before ", "")), "'can't'"), "before 'can't' after");
+    assert_eq!(spliced("He said 'hello'", Some(("He said 'hello", "")), "don't stop"), "He said 'hello don't stop'");
+}
+
+#[test]
+fn unmatched_possessive_apostrophes_are_not_opening_quotes() {
+    assert_eq!(spliced("dogs'", None, "tails"), "dogs' tails");
+    assert_eq!(spliced("dog's", None, "tail"), "dog's tail");
+    assert_eq!(spliced("dogs' 'tails'", None, "wag"), "dogs' 'tails' wag");
+    assert_eq!(spliced("dogs' 'tails'", Some(("dogs' ", "")), "long"), "dogs' long 'tails'");
+    assert_eq!(spliced("before after", Some(("before ", "")), "dogs'"), "before dogs' after");
+}
+
+#[test]
+fn opposite_quote_marks_keep_independent_context() {
+    for (outer, inner) in [('"', '\''), ('\'', '"')] {
+        let value = format!("He said {outer}{inner}hello{inner}{outer}");
+        let inside = format!("He said {outer}{inner}hello");
+        let outside = format!("{inside}{inner}");
+        assert_eq!(spliced(&value, None, "world"), format!("{value} world"));
+        assert_eq!(spliced(&value, Some((&inside, "")), "world"), format!("He said {outer}{inner}hello world{inner}{outer}"));
+        assert_eq!(spliced(&value, Some((&outside, "")), "world"), format!("{outside} world{outer}"));
+        assert_eq!(spliced("before after", Some(("before ", "")), &format!("{outer}{inner}hello{inner}{outer}")),
+            format!("before {outer}{inner}hello{inner}{outer} after"));
+    }
+}
+
+#[test]
+fn quoted_splices_preserve_whitespace_unicode_and_selection_fallbacks() {
+    assert_eq!(spliced("\"hello\"\n", None, "world"), "\"hello\"\nworld");
+    assert_eq!(spliced("\"hello \"", Some(("\"hello ", "")), "world"), "\"hello world\"");
+    assert_eq!(spliced("\"hello\"", Some(("\"", "hello")), "café"), "\"café\"");
+    assert_eq!(spliced("\"hello\"", Some(("", "\"hello")), "café \"bonjour"), "café \"bonjour\"");
+    assert_eq!(spliced("\"hello\"", Some(("different", "")), "world"), "\"hello\" world");
+    assert_eq!(spliced("\"hello\"", Some(("\"", "different")), "world"), "\"hello\" world");
+    assert_eq!(spliced("\"café\"", Some(("\"café", "")), "crème"), "\"café crème\"");
+    assert_eq!(spliced("\"日本\"", Some(("\"日", "")), "の"), "\"日の本\"");
+    assert_eq!(spliced("(\"hello\")", Some(("(\"hello", "")), "world"), "(\"hello world\")");
+}
+
+#[test]
 fn non_ascii_text_splits_on_character_boundaries() {
     assert_eq!(spliced("Café crème", Some(("Café ", "")), "très"), "Café très crème");
     assert_eq!(spliced("日本", Some(("日", "")), "の"), "日の本");
@@ -1099,4 +1203,25 @@ async fn an_unavailable_copy_worker_fails_closed() {
     drop(jobs);
     let dictation = Dictation::new(send);
     assert_eq!(dictation.check_copy("cap-current", permit().expires).await, Err(Refusal::Busy));
+}
+
+#[test]
+fn checking_copy_preserves_an_owned_absent_target_across_offers_and_stop() {
+    let now = Instant::now();
+    let expires = now + Duration::from_secs(120);
+    let mut bound: Option<Remembered<&str>> = None;
+    assert!(!bind_capture(&mut bound, Some("cap-absent".into()), None));
+    for capture in ["cap-stale", "cap-absent", "cap-absent"] {
+        assert_eq!(copy_bound(&mut bound, capture, expires, || now,
+            |_| panic!("an absent target cannot be checked")), Err(Refusal::Gone));
+        let target = bound.as_ref().unwrap();
+        assert_eq!(target.capture, "cap-absent");
+        assert!(target.field.is_none());
+        assert!(target.expires.is_none(), "a Copy check cannot invent an expiry marker");
+        assert_eq!(offer_bound(&mut bound, "cap-absent", expires, now,
+            |_| panic!("an absent target cannot be offered")), Ok(None));
+    }
+    assert!(!bind_capture(&mut bound, Some("cap-absent".into()), Some("field focused on stop")));
+    assert_eq!(offer_bound(&mut bound, "cap-absent", expires, now,
+        |_| panic!("stop cannot replace the absent target")), Ok(None));
 }

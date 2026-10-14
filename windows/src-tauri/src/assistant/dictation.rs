@@ -161,24 +161,53 @@ pub fn spliced(value: &str, caret: Option<(&str, &str)>, text: &str) -> String {
         }
         _ => (value, ""),
     };
-    let lead = if needs_space(before, text) { " " } else { "" };
-    let trail = if needs_space(text, after) { " " } else { "" };
+    let lead = if needs_space("", before, text) { " " } else { "" };
+    let trail = if needs_space(before, text, after) { " " } else { "" };
     format!("{before}{lead}{text}{trail}{after}")
 }
 
 /// A space between two runs of words that would otherwise touch: not after
 /// a space or a line break, not before punctuation that hugs the word, and
 /// not in Chinese or Japanese, which are written without spaces.
-fn needs_space(left: &str, right: &str) -> bool {
+/// `prefix` supplies quote context before the left run at the second splice.
+fn needs_space(prefix: &str, left: &str, right: &str) -> bool {
     let (Some(l), Some(r)) = (left.chars().next_back(), right.chars().next()) else {
         return false;
     };
     !l.is_whitespace()
         && !r.is_whitespace()
-        && !matches!(r, ',' | '.' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '…')
-        && !matches!(l, '(' | '[' | '{' | '\'' | '"' | '«' | '“')
+        && !matches!(r, ',' | '.' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '…' | '»' | '”' | '’')
+        && !matches!(l, '(' | '[' | '{' | '«' | '“' | '‘')
         && !unspaced(l)
         && !unspaced(r)
+        && !(matches!(l, '\'' | '"') && unclosed_quote(prefix, left, l))
+        && !(matches!(r, '\'' | '"') && unclosed_quote(prefix, left, r))
+}
+
+/// ASCII marks have no intrinsic direction. Balance each kind independently,
+/// ignoring word-internal apostrophes and treating unmatched marks after a
+/// word as closers (including possessives such as dogs'). Keep the two runs
+/// separate: inserting a quoted word beside another word is not a contraction.
+/// This is a prose-spacing heuristic, not a parser: partial words, elisions,
+/// same-mark nesting and escaped/code quotes can remain ambiguous.
+fn unclosed_quote(prefix: &str, left: &str, quote: char) -> bool {
+    let mut open = false;
+    for run in [prefix, left] {
+        let mut previous: Option<char> = None;
+        let mut chars = run.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == quote {
+                let after_word = previous.is_some_and(char::is_alphanumeric);
+                let within_word = quote == '\'' && after_word
+                    && chars.peek().is_some_and(|next| next.is_alphanumeric());
+                if !within_word && (open || !after_word) {
+                    open = !open;
+                }
+            }
+            previous = Some(c);
+        }
+    }
+    open
 }
 
 /// Kana, CJK ideographs and full-width forms.
@@ -313,6 +342,10 @@ fn copy_bound<T>(
     check: impl FnOnce(&T) -> Result<(), Refusal>,
 ) -> Result<(), Refusal> {
     let target = bound.as_mut().ok_or(Refusal::Gone)?;
+    // An absent initial target is an owned marker, not an expired field.
+    // This read-only check must not assign it a deadline via `offer` and
+    // change subsequent offers from absent to gone.
+    if target.field.is_none() { return Err(Refusal::Gone); }
     let result = check(target.offer(capture, expires, now())?);
     target.expire(now());
     if target.field.is_none() { return Err(Refusal::Gone); }

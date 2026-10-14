@@ -636,12 +636,12 @@ async fn chatgpt_connect(app: AppHandle) -> Result<chatgpt::Status, String> {
     Ok(status)
 }
 
-/// True when OpenAI confirmed the revocation.
+/// Reports remote revocation and local credential cleanup separately.
 #[tauri::command]
-async fn chatgpt_disconnect(app: AppHandle) -> bool {
-    let confirmed = chatgpt::disconnect().await;
+async fn chatgpt_disconnect(app: AppHandle) -> chatgpt::DisconnectResult {
+    let result = chatgpt::disconnect().await;
     let _ = app.emit("chatgpt-status", chatgpt::status());
-    confirmed
+    result
 }
 
 /// The account's catalog, Luna and Sol marked when it lacks them.
@@ -961,6 +961,9 @@ pub fn run() {
             phone_link::phone_chat_set_enabled,
             phone_link::phone_chat_set_models,
             assistant::app::assistant_voice_toggle,
+            assistant::app::assistant_voice_hands_free,
+            assistant::app::assistant_voice_converse,
+            assistant::speech::speech_say,
             assistant::app::assistant_voice_stop,
             assistant::app::assistant_voice_cancel,
             assistant::app::assistant_voice_use,

@@ -7,6 +7,7 @@
 // file.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,10 @@ pub const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TITLE_CHARS: usize = 120;
 pub const MAX_LISTED: usize = 500;
+
+// Save and rename both read before writing. Keep that whole operation together
+// so an in-flight message save cannot undo a title change (or lose messages).
+static WRITES: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +97,19 @@ fn path(dir: &Path, id: &str) -> Option<PathBuf> {
 
 pub fn save(dir: &Path, c: &Conversation) -> Result<(), String> {
     validate(c)?;
+    let _guard = WRITES.lock().map_err(|_| "conversation store unavailable")?;
+    let mut c = c.clone();
+    let target = path(dir, &c.id).ok_or("bad conversation id")?;
+    if target.try_exists().map_err(|e| e.to_string())? {
+        // Only rename changes an existing title. The view may have captured
+        // its save before a rename completed, even after reopening the chat.
+        c.title = load(dir, &c.id)?.title;
+    }
+    write(dir, &c)
+}
+
+fn write(dir: &Path, c: &Conversation) -> Result<(), String> {
+    validate(c)?;
     let bytes = serde_json::to_vec(c).map_err(|e| e.to_string())?;
     if bytes.len() > MAX_FILE_BYTES {
         return Err("conversation too large".into());
@@ -136,12 +154,14 @@ pub fn list(dir: &Path) -> Vec<Summary> {
 }
 
 pub fn rename(dir: &Path, id: &str, title: &str) -> Result<(), String> {
+    let _guard = WRITES.lock().map_err(|_| "conversation store unavailable")?;
     let mut c = load(dir, id)?;
     c.title = title.trim().to_string();
-    save(dir, &c)
+    write(dir, &c)
 }
 
 pub fn delete(dir: &Path, id: &str) -> Result<(), String> {
+    let _guard = WRITES.lock().map_err(|_| "conversation store unavailable")?;
     let file = path(dir, id).ok_or("bad conversation id")?;
     match std::fs::remove_file(file) {
         Ok(()) => Ok(()),
@@ -208,6 +228,56 @@ mod tests {
         delete(&dir, "c-0000000000000001").unwrap();
         assert_eq!(list(&dir).len(), 1);
         assert!(!dir.join("c-0000000000000001.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_message_saves_keep_the_latest_explicit_title() {
+        let dir = scratch("title");
+        let mut stale = conv("c-0000000000000003", 10);
+        save(&dir, &stale).unwrap();
+        rename(&dir, &stale.id, "Lisbon trip").unwrap();
+
+        // A reply or Stop may already have captured the old title in the view.
+        stale.updated_at = 20;
+        stale.messages.push(msg("user", "What next?"));
+        stale.messages.push(SavedMessage { stopped: true, ..msg("assistant", "A partial answer") });
+        save(&dir, &stale).unwrap();
+        let reopened = load(&dir, &stale.id).unwrap();
+        assert_eq!(reopened.title, "Lisbon trip");
+        assert_eq!(reopened.messages, stale.messages);
+        assert_eq!(reopened.updated_at, 20);
+        assert_eq!(reopened.created_at, stale.created_at);
+
+        // The explicit rename still works; another stale save cannot undo it.
+        rename(&dir, &stale.id, "Lisbon holiday").unwrap();
+        save(&dir, &reopened).unwrap();
+        assert_eq!(load(&dir, &stale.id).unwrap().title, "Lisbon holiday");
+        assert_eq!(list(&dir)[0].title, "Lisbon holiday");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overlapping_rename_and_save_keep_both_the_title_and_messages() {
+        let dir = scratch("title-race");
+        let mut stale = conv("c-0000000000000004", 10);
+        save(&dir, &stale).unwrap();
+        stale.messages.push(msg("user", "What next?"));
+        stale.messages.push(msg("assistant", "Day two"));
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                barrier.wait();
+                save(&dir, &stale).unwrap();
+            });
+            scope.spawn(|| {
+                barrier.wait();
+                rename(&dir, &stale.id, "Lisbon trip").unwrap();
+            });
+        });
+        let back = load(&dir, &stale.id).unwrap();
+        assert_eq!(back.title, "Lisbon trip");
+        assert_eq!(back.messages, stale.messages);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

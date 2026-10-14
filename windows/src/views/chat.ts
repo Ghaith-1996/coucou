@@ -30,6 +30,7 @@ import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
 import { voiceShortcut } from "../assistant/voice";
 import { startRegion } from "../assistant/region";
+import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -40,6 +41,13 @@ const STRINGS = {
   stop: N_("Stop"),
   voice: N_("Start voice capture"),
   region: N_("Ask about a screen region"),
+  audio: N_("Audio mode: talk with the chat"),
+  audioListening: N_("Listening…"),
+  audioTranscribing: N_("Transcribing…"),
+  audioThinking: N_("Thinking…"),
+  audioSpeaking: N_("Speaking — tap to interrupt"),
+  audioEnd: N_("End"),
+  audioSilence: N_("Audio mode ended: nothing was heard."),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
@@ -61,6 +69,12 @@ const STRINGS = {
   delete: N_("Delete"),
   confirmDelete: N_("Delete?"),
   regenerate: N_("Regenerate"),
+  regenerateFailed: N_("Could not regenerate this answer. Please try again."),
+  notSaved: N_("Conversation not saved"),
+  saveFailed: N_("Your latest messages are only available here. Copy them before leaving this conversation or closing Coucou. {error}"),
+  historyFull: N_("The 400-message storage limit was reached."),
+  restoredTitle: N_("Reopened as text only"),
+  restoredBody: N_("Original attachments are unavailable in this chat. Drop the file again to start a new chat with it."),
   stopped: N_("Stopped"),
   welcomeTitle: N_("You're using your ChatGPT plan"),
   welcomeBody: N_("Eligible AI requests in Coucou use the usage included in your ChatGPT plan or credits balance."),
@@ -345,14 +359,27 @@ function buildPicker(onChange: () => void): Picker {
 
 /** When the conversation on screen was first saved. */
 let chatCreatedAt = 0;
+/** Its generated or explicitly renamed title, kept when more messages arrive. */
+let chatTitle = "";
+/** New/open invalidates old saves; regeneration stays in the same conversation. */
+let chatSession = 0;
+/** Only the latest save may change the active conversation's warning. */
+let saveAttempt = 0;
+let saveFailure: { id: string; error: string } | null = null;
+/** Disk history has no attachment bytes, including records saved by older versions. */
+let reopenedChatId: string | null = null;
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
+  chatSession++;
   State.chatHistory = [];
   State.chatId = null;
   State.droppedFile = null;
   State.promptContext = null;
+  saveFailure = null;
+  reopenedChatId = null;
   void Bridge.chatReset();
+  State.notify();
 }
 
 /** Saves the conversation on screen (after an answer, a Stop or a rename). */
@@ -362,8 +389,22 @@ function saveConversation() {
   if (!State.chatId) {
     State.chatId = newChatId();
     chatCreatedAt = Date.now();
+    chatTitle = titleFor(messages);
   }
-  void Bridge.chatHistorySave(toSaved(State.chatId, titleFor(messages), chatCreatedAt || Date.now(), messages)).catch(() => {});
+  const id = State.chatId;
+  const attempt = ++saveAttempt;
+  const session = chatSession;
+  const isCurrent = () => attempt === saveAttempt && session === chatSession && State.chatId === id;
+  void Bridge.chatHistorySave(toSaved(id, chatTitle, chatCreatedAt || Date.now(), messages)).then(() => {
+    if (!isCurrent()) return;
+    saveFailure = null;
+    State.notify();
+  }).catch((err) => {
+    if (!isCurrent()) return;
+    saveFailure = { id, error: String(err).replace(/^Error:\s*/, "") };
+    Sound.play("error");
+    State.notify();
+  });
 }
 
 interface HistoryPanel {
@@ -403,7 +444,9 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       const done = async (keep: boolean) => {
         const title = keep ? cleanTitle(input.value) : null;
         if (title && title !== s.title) {
-          await Bridge.chatHistoryRename(s.id, title).catch(() => {});
+          await Bridge.chatHistoryRename(s.id, title).then(() => {
+            if (State.chatId === s.id) chatTitle = title;
+          }).catch(() => {});
         }
         void draw();
       };
@@ -445,10 +488,14 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   async function open_(id: string) {
     try {
       const saved = await Bridge.chatHistoryOpen(id);
+      chatSession++;
       State.chatHistory = fromSaved(saved, nextId);
       nextId += saved.messages.length;
       State.chatId = saved.id;
+      reopenedChatId = saved.id;
       chatCreatedAt = saved.createdAt;
+      chatTitle = saved.title;
+      saveFailure = null;
       State.droppedFile = null;
       State.promptContext = null;
       Sound.play("blip");
@@ -529,7 +576,21 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     "aria-label": tl(STRINGS.region),
     onclick: () => void startRegion(),
   }, svg(ICONS.region, 15, { stroke: 1.8 })) : null;
-  const bar = h("div", { class: "chat-bar" }, input, region, voice, send);
+  const audioBtn = HOST_OS === "windows" ? h("button", {
+    type: "button",
+    class: "audio-btn",
+    title: tl(STRINGS.audio),
+    "aria-label": tl(STRINGS.audio),
+    onclick: () => toggleAudioMode(),
+  }, svg(ICONS.wave, 15, { stroke: 1.8 })) : null;
+  const bar = h("div", { class: "chat-bar" }, input, region, audioBtn, voice, send);
+  // Audio mode's state, above the bar while it is on.
+  const audioLabel = h("span", { class: "audio-label" });
+  const audioDot = h("i", { class: "audio-dot" });
+  const audioStatus = h("button", { type: "button", class: "audio-status", onclick: () => interruptAudio() }, audioDot, audioLabel);
+  const audioEnd = h("button", { type: "button", class: "audio-end", text: t(STRINGS.audioEnd), onclick: () => stopAudioMode() });
+  const audioRow = h("div", { class: "audio-row" }, audioStatus, audioEnd);
+  audioRow.hidden = true;
 
   const modelDot = h("i", { class: "model-dot" });
   const modelName = h("span", { class: "model-name" });
@@ -547,6 +608,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   const modelRow = h("div", { class: "model-row" }, historyBtn, h("span", { class: "model-spacer" }), effort, modelBtn);
 
   const notice = h("div", { class: "chat-notice-slot" });
+  const restoredNotice = h("div", { class: "chat-notice-slot" });
   const body = h("div", { class: "chat-body" });
   const picker = buildPicker(() => {
     body.classList.toggle("picking", picker.isOpen || history.isOpen);
@@ -564,12 +626,13 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       input.focus();
     },
   );
-  body.append(chipRow, notice, log, picker.el, history.el, modelRow, bar);
+  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, modelRow, audioRow, bar);
 
   const el = h("div", { class: "view" }, h("div", { class: "card wash chat-card" }, body));
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
 
   let sending = false;
+  let undoPending = false;
   let stopRequested = false;
   // Reserve the composer before the native microphone startup can yield.
   let startingVoice = false;
@@ -577,6 +640,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   // A streaming provider answers token by token: where its text so far is shown.
   let live: HTMLElement | null = null;
   let liveText = "";
+  /** A file drop or reset can replace the transcript while IPC is pending. */
+  let answerIsCurrent: (() => boolean) | null = null;
   /** ChatGPT said its usage limit is reached: the notice offers "Manage usage". */
   let usageLimit = false;
   let effortKey = "";
@@ -620,7 +685,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.disabled = sending;
     if (voice) voice.disabled = sending || startingVoice;
     // While an answer comes, the send button is Stop.
-    send.disabled = startingVoice;
+    send.disabled = startingVoice || undoPending;
     send.classList.toggle("stop", sending);
     const label = t(sending ? STRINGS.stop : STRINGS.send);
     send.title = label;
@@ -629,15 +694,36 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     drawEffort();
   }
 
-  /** The welcome or the usage limit, above the conversation, when ChatGPT is on. */
+  /** Save failures for every provider, or ChatGPT's welcome and usage limit. */
   function drawNotice() {
+    const restored = State.chatId !== null && State.chatId === reopenedChatId ? State.chatId : "";
+    if (restoredNotice.dataset.chat !== restored) {
+      restoredNotice.dataset.chat = restored;
+      clear(restoredNotice);
+      if (restored) restoredNotice.append(h("div", { class: "chat-notice chat-restored", role: "status" },
+        h("div", { class: "chat-notice-title", text: tl(STRINGS.restoredTitle) }),
+        h("div", { class: "chat-notice-body", text: tl(STRINGS.restoredBody) }),
+      ));
+      onHeightChange();
+    }
+    const failure = saveFailure?.id === State.chatId ? saveFailure : null;
     let want = "";
-    if (onChatGpt() && usageLimit) want = "limit";
+    if (failure) want = `save:${failure.error}`;
+    else if (onChatGpt() && usageLimit) want = "limit";
     else if (onChatGpt() && chatgpt?.showWelcome) want = "welcome";
     if (notice.dataset.kind === want) return;
     notice.dataset.kind = want;
     clear(notice);
     if (!want) return;
+    if (failure) {
+      const error = failure.error === "too many messages" ? t(STRINGS.historyFull) : failure.error;
+      notice.append(h("div", { class: "chat-notice warn", role: "alert" },
+        h("div", { class: "chat-notice-title", text: t(STRINGS.notSaved) }),
+        h("div", { class: "chat-notice-body", text: t(STRINGS.saveFailed, { error }) }),
+      ));
+      onHeightChange();
+      return;
+    }
     const manage = h("button", {
       class: "picker-link",
       text: tl(STRINGS.manageUsage),
@@ -698,7 +784,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   });
 
   void onEvent<string>("chat-delta", (text) => {
-    if (!sending || !text) return; // nothing visible yet: the dots stay
+    if (!sending || undoPending || !answerIsCurrent?.() || !text) return; // no current answer yet: the dots stay
     liveText = text;
     if (!live) {
       live = h("div", { class: "reply" });
@@ -709,6 +795,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     log.scrollTop = log.scrollHeight;
   });
   void onEvent<null>("chatgpt-usage-limit", () => {
+    if (!answerIsCurrent?.()) return;
     usageLimit = true;
     drawNotice();
   });
@@ -718,12 +805,16 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.notify();
   });
 
-  async function ask(query: string) {
+  async function ask(query: string): Promise<string | null> {
     if (picker.isOpen) picker.close();
     if (history.isOpen) history.close();
     sending = true;
     stopRequested = false;
     liveText = "";
+    const messages = State.chatHistory;
+    const session = chatSession;
+    const isCurrent = () => State.chatHistory === messages && chatSession === session;
+    answerIsCurrent = isCurrent;
     drawModelButton();
     Sound.play("send");
 
@@ -742,17 +833,22 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     onHeightChange();
 
     const file = State.droppedFile;
-    const context: ChatContext | null =
-      State.chatHistory.length === 1 && file ? { kind: "file", name: file.name, path: file.path } : null;
+    // Stop/failure can leave visible messages without a committed native turn.
+    // Rust decides whether this candidate belongs on its first completed turn.
+    const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
+    let answer: string | null = null;
 
     try {
       const reply = await Bridge.chatSend(query, context);
+      if (!isCurrent()) return null;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text, ...answeredBy });
       State.stateOverride = null;
       usageLimit = false;
       Sound.play("finish");
       saveConversation();
+      answer = reply.text;
     } catch (err) {
+      if (!isCurrent()) return null;
       State.stateOverride = null;
       if (stopRequested) {
         // What arrived before Stop stays on screen, marked; the model never sees it again.
@@ -769,14 +865,21 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     } finally {
       sending = false;
       stopRequested = false;
+      // A reset can replace the transcript while this request still owns the
+      // thinking state. Release that state, but preserve any newer override.
+      if (State.stateOverride === "thinking") State.stateOverride = null;
       live = null;
+      answerIsCurrent = null;
       renderedCount = -1; // the finished answer replaces the streamed one
       drawModelButton();
       State.notify();
       onHeightChange();
       input.focus();
     }
+    return answer;
   }
+
+  setAudioAsk((text) => (sending || undoPending ? Promise.resolve(null) : ask(text)));
 
   async function submit() {
     const query = input.value.trim();
@@ -787,18 +890,46 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   /** The last answer again, with the model and effort picked now. */
   async function regenerate() {
-    if (sending) return;
+    if (sending || startingVoice) return;
     const messages = State.chatHistory;
     const answer = messages[messages.length - 1];
     const question = messages[messages.length - 2];
     if (answer?.role !== "assistant" || question?.role !== "user") return;
-    // A stopped answer never entered the model's history.
-    if (!answer.stopped) await Bridge.chatUndoLast();
+    // Reserve every entry point before native undo yields. It is an atomic
+    // preparation, not an answer to Stop; keep the visible turn until success.
+    sending = true;
+    undoPending = true;
+    State.stateOverride = "thinking";
+    drawModelButton();
+    State.notify();
+    let undone = false;
+    try {
+      // A stopped answer never entered the model's history.
+      undone = !!answer.stopped || (await Bridge.chatUndoLast()) === true;
+    } catch {
+      // A rejected command must not discard the displayed answer either.
+    }
+    undoPending = false;
+    if (!undone || State.chatHistory !== messages) {
+      sending = false;
+      State.stateOverride = null;
+      renderedCount = -1;
+      if (!undone && State.chatHistory === messages && State.view === "prompt") {
+        State.noteMessage = t(STRINGS.regenerateFailed);
+        State.view = "note";
+        Sound.play("error");
+      }
+      drawModelButton();
+      State.notify();
+      onHeightChange();
+      return;
+    }
     State.chatHistory = messages.slice(0, -2);
     await ask(question.content);
   }
 
   send.addEventListener("click", () => {
+    if (undoPending) return;
     if (sending) {
       stopRequested = true;
       void Bridge.chatStop();
@@ -830,7 +961,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       e.preventDefault();
       if (picker.isOpen) picker.close();
       if (history.isOpen) history.close();
-    } else if (key === "Escape" && sending) {
+    } else if (key === "Escape" && sending && !undoPending) {
       e.preventDefault();
       stopRequested = true;
       void Bridge.chatStop();
@@ -840,9 +971,26 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   refreshChatGpt();
 
+  function drawAudio() {
+    const on = AudioMode.state !== "off";
+    audioRow.hidden = !on && !AudioMode.note;
+    audioBtn?.classList.toggle("on", on);
+    audioRow.dataset.state = AudioMode.state;
+    audioDot.style.transform = AudioMode.state === "listening" ? `scale(${1 + AudioMode.level * 1.5})` : "";
+    audioLabel.textContent = t(
+      AudioMode.state === "listening" ? STRINGS.audioListening
+      : AudioMode.state === "transcribing" ? STRINGS.audioTranscribing
+      : AudioMode.state === "thinking" ? STRINGS.audioThinking
+      : AudioMode.state === "speaking" ? STRINGS.audioSpeaking
+      : AudioMode.note === "silence" ? STRINGS.audioSilence : "",
+    );
+    audioEnd.hidden = !on;
+  }
+
   return {
     el,
     sync() {
+      drawAudio();
       const file = State.droppedFile;
       const wantChip = file?.name ?? "";
       if (chipRow.dataset.label !== wantChip) {

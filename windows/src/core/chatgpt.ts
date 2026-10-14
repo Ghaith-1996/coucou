@@ -57,11 +57,20 @@ export function modelLabel(model: string): string {
 /** chatgpt.rs `Status`: never a token. */
 export interface ChatGptStatus {
   connected: boolean;
+  /** Either saved credential remains, even if only the sign-in hint does. */
+  hasSavedCredentials: boolean;
   email: string | null;
   planEnabled: boolean;
   needsReconnect: boolean;
   showWelcome: boolean;
   manageUsageUrl: string;
+}
+
+/** chatgpt.rs `DisconnectResult`: independent outcomes, never credentials. */
+export interface ChatGptDisconnectResult {
+  /** Null means there was no refresh token to revoke. */
+  revocationConfirmed: boolean | null;
+  localCleanupSucceeded: boolean;
 }
 
 /** chatgpt.rs `CatalogModel`. */

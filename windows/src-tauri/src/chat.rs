@@ -121,6 +121,15 @@ impl Chat {
         }
     }
 
+    /// The view can retain an unanswered/stopped question, so only committed
+    /// native history decides whether to attach context. Later file candidates
+    /// must not be reread or validated: context is only added on the first turn,
+    /// and the original dropped file may no longer exist.
+    fn context_for_turn(&self, context: Option<ChatContext>) -> Result<Option<ChatContext>, String> {
+        let first = self.inner.lock().unwrap().plain.is_empty();
+        context.filter(|_| first).map(checked_context).transpose()
+    }
+
     /// Records a finished turn: the user message and the answer in the
     /// provider's format, and their plain text. Only a successful turn is
     /// recorded, so the history always matches what the model saw.
@@ -239,7 +248,7 @@ pub async fn send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let context = context.map(checked_context).transpose()?;
+    let context = chat.context_for_turn(context)?;
     let provider = settings.chat_provider.as_str();
     let model = model_for(settings, provider);
     if provider == ANTHROPIC || provider.is_empty() {
@@ -404,6 +413,31 @@ mod tests {
         assert!(chat.undo_last());
         assert!(!chat.undo_last(), "nothing left");
         assert!(chat.begin("chatgpt").first);
+    }
+
+    #[test]
+    fn context_eligibility_follows_committed_turns_and_skips_unused_file_validation() {
+        let chat = Chat::default();
+        let window = ChatContext::Window { app_name: "Code".into(), title: "notes".into(), url: None };
+        assert!(chat.context_for_turn(Some(window.clone())).unwrap().is_some());
+        let _stopped = chat.begin("chatgpt");
+        let _failed = chat.begin("chatgpt");
+        assert!(chat.context_for_turn(Some(window.clone())).unwrap().is_some(), "Stop/failure does not commit a turn");
+
+        let retry = chat.begin("chatgpt");
+        chat.commit(&retry, json!({"role":"user","content":"q"}), json!({"role":"assistant","content":"a"}), "q", "a");
+        let missing = ChatContext::File { name: "gone.png".into(), path: String::new() };
+        assert!(chat.context_for_turn(Some(missing.clone())).unwrap().is_none(), "an unused attachment need not still exist");
+        assert!(chat.context_for_turn(Some(window.clone())).unwrap().is_none(), "a later turn never duplicates the context");
+
+        assert!(chat.undo_last());
+        assert!(chat.context_for_turn(Some(window.clone())).unwrap().is_some(), "regenerating the first turn restores eligibility");
+        assert!(chat.context_for_turn(Some(missing.clone())).is_err(), "first-turn file validation is still required");
+        chat.restore(&[("saved question".into(), "saved answer".into())]);
+        assert!(chat.context_for_turn(Some(missing.clone())).unwrap().is_none());
+        chat.reset();
+        assert!(chat.context_for_turn(Some(window)).unwrap().is_some());
+        assert!(chat.context_for_turn(Some(missing)).is_err());
     }
 
     #[test]

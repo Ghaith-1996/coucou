@@ -82,6 +82,33 @@ fn a_returning_account_reuses_its_client_and_hints_itself() {
 }
 
 #[test]
+fn only_a_returning_account_without_plan_access_requests_consent_again() {
+    for (client, plan_enabled, expected_prompt) in [
+        (None, false, None),
+        (None, true, None),
+        (Some("oaiapp_test123"), false, Some("consent")),
+        (Some("oaiapp_test123"), true, None),
+    ] {
+        let mut account = account(client);
+        account.plan_enabled = plan_enabled;
+        // Recovery also works after restart without an ID-token hint.
+        for hint in [None, Some("old.id.token")] {
+            let attempt = Attempt::new(1455);
+            let q = query(&authorize_url(&account, &attempt, hint));
+            assert_eq!(q.get("prompt").map(String::as_str), expected_prompt,
+                "client={client:?}, plan_enabled={plan_enabled}, hint={hint:?}");
+            assert!(!q.contains_key("force_reconsent"), "requires confirmed integration rollout");
+            assert_eq!(q["client_id"], client.unwrap_or(DYNAMIC_CLIENT));
+            assert_eq!(q["scope"], SCOPE, "recovery retains the complete requested scopes");
+            assert_eq!(q["ext_agent_host_id"], account.host_id);
+            assert_eq!(q["state"], attempt.state);
+            assert_eq!(q["nonce"], attempt.nonce);
+            assert_eq!(q["code_challenge"], pkce_challenge(&attempt.verifier));
+        }
+    }
+}
+
+#[test]
 fn every_attempt_has_fresh_secrets() {
     let (a, b) = (Attempt::new(1), Attempt::new(1));
     assert_ne!(a.state, b.state);
@@ -107,6 +134,82 @@ fn the_callback_is_checked_before_any_code_is_used() {
     assert!(matches!(cb(&format!("code=abc&state={state}&client_id=dynamic_agent_client"), None), Callback::Error(_)), "the dynamic id is not an issued one");
     assert!(matches!(cb(&format!("code=abc&state={state}&client_id=oaiapp_other"), Some("oaiapp_old")), Callback::Error(_)), "another client");
     assert!(matches!(cb(&format!("state={state}&client_id=oaiapp_new"), None), Callback::Error(_)), "no code");
+}
+
+#[test]
+fn a_registration_is_saved_before_its_code_is_available_for_exchange() {
+    let mut account = account(None);
+    let attempt = Attempt::new(1455);
+    let target = format!("/auth/callback?code=abc&state={}&client_id=oaiapp_new", attempt.state);
+    let mut saved = Vec::new();
+    let (code, client_id) = prepare_code_exchange(&mut account, &attempt, &target, |record| {
+        saved = serde_json::to_vec(record).unwrap();
+        Ok(())
+    }).unwrap();
+    assert_eq!(code, "abc");
+    assert_eq!(client_id, "oaiapp_new");
+
+    // Exchange/verification have not run. If either fails, a restart still
+    // reloads the registration without trusting an unverified identity.
+    let restored: Account = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(restored, account);
+    assert_eq!(restored.email, None);
+    assert_eq!(restored.sub, None);
+    assert!(!restored.plan_enabled);
+    assert_eq!(restored.host_id, account.host_id);
+    let retry = query(&authorize_url(&restored, &Attempt::new(54321), None));
+    assert_eq!(retry["client_id"], "oaiapp_new");
+    assert!(!retry.contains_key("agent_name_hint"));
+    assert!(!retry.contains_key("id_token_hint") && !retry.contains_key("login_hint"));
+    assert_eq!(retry["prompt"], "consent", "the missing plan grant can still be authorized");
+}
+
+#[test]
+fn an_invalid_callback_never_saves_a_registration_or_returns_a_code() {
+    let attempt = Attempt::new(1455);
+    for (known, parameters) in [
+        (None, "code=abc&state=forged&client_id=oaiapp_new".to_string()),
+        (None, format!("error=access_denied&state={}&client_id=oaiapp_new", attempt.state)),
+        (None, format!("code=abc&state={}", attempt.state)),
+        (None, format!("code=abc&state={}&client_id=dynamic_agent_client", attempt.state)),
+        (None, format!("state={}&client_id=oaiapp_new", attempt.state)),
+        (Some("oaiapp_old"), format!("code=abc&state={}&client_id=oaiapp_other", attempt.state)),
+    ] {
+        let mut account = account(known);
+        let original = account.clone();
+        let result = prepare_code_exchange(&mut account, &attempt, &format!("/auth/callback?{parameters}"), |_| {
+            panic!("an invalid callback must not be persisted")
+        });
+        assert!(result.is_err(), "{parameters}");
+        assert_eq!(account, original);
+    }
+}
+
+#[test]
+fn a_registration_save_failure_stops_before_code_exchange() {
+    let mut account = account(None);
+    let original = account.clone();
+    let attempt = Attempt::new(1455);
+    let target = format!("/auth/callback?code=abc&state={}&client_id=oaiapp_new", attempt.state);
+    assert_eq!(prepare_code_exchange(&mut account, &attempt, &target, |_| Err("disk full".into())), Err("disk full".into()));
+    assert_eq!(account, original);
+}
+
+#[test]
+fn reauthorization_keeps_the_existing_account_until_identity_is_verified() {
+    let mut account = account(Some("oaiapp_old"));
+    account.sub = Some("original-user".into());
+    account.plan_enabled = true;
+    let original = account.clone();
+    let attempt = Attempt::new(1455);
+    for suffix in ["", "&client_id=oaiapp_old"] {
+        let target = format!("/auth/callback?code=abc&state={}{suffix}", attempt.state);
+        let result = prepare_code_exchange(&mut account, &attempt, &target, |_| {
+            panic!("the known registration need not be saved again")
+        });
+        assert_eq!(result, Ok(("abc".into(), "oaiapp_old".into())));
+        assert_eq!(account, original);
+    }
 }
 
 #[test]
@@ -210,6 +313,100 @@ fn the_request_is_exactly_what_the_picker_shows() {
 }
 
 #[test]
+fn a_dropped_image_survives_the_next_native_turn_without_rereading_the_file() {
+    let path = std::env::temp_dir().join(format!("coucou-chatgpt-image-{}.png", random(12)));
+    std::fs::write(&path, b"image fixture").unwrap();
+    let context = ChatContext::File { name: "picture.png".into(), path: path.to_string_lossy().into_owned() };
+    let chat = Chat::default();
+    let first = chat.begin(PROVIDER);
+    let user = user_content(first.first, Some(&context), "Describe this image");
+    std::fs::remove_file(&path).unwrap();
+    let initial = request_body(LUNA, "low", "x", &first.history, user.clone());
+    assert_eq!(initial["input"][0]["content"][0]["type"], "input_image");
+    assert_eq!(initial["input"][0]["content"][0]["image_url"], "data:image/png;base64,aW1hZ2UgZml4dHVyZQ==");
+    let plain = chat::plain_question(first.first, Some(&context), "Describe this image");
+    let reply = finish_turn(&chat, &first, user, &plain, "A picture".into());
+    assert_eq!(reply.text, "A picture");
+
+    let next = chat.begin(PROVIDER);
+    assert!(!next.first);
+    let follow_up = user_content(next.first, Some(&context), "What color is it?");
+    assert_eq!(follow_up, json!("What color is it?"), "the original file is not read again");
+    let body = request_body(SOL, "max", "x", &next.history, follow_up);
+    assert_eq!(body["store"], false);
+    assert_eq!(body["input"][0], initial["input"][0], "the full visual input is replayed");
+    assert_eq!(body["input"][1], json!({ "role": "assistant", "content": "A picture" }));
+    assert_eq!(body["input"][2], json!({ "role": "user", "content": "What color is it?" }));
+    assert_eq!(body["input"].as_array().unwrap().len(), 3);
+    assert!(chat.begin(chat::ANTHROPIC).history[0]["content"].is_string(), "other providers still get plain history");
+}
+
+#[test]
+fn an_uncommitted_attempt_keeps_image_and_text_context_for_the_first_completed_turn() {
+    for extension in ["png", "txt"] {
+        let path = std::env::temp_dir().join(format!("coucou-chatgpt-retry-{}.{}", random(12), extension));
+        std::fs::write(&path, b"attachment fixture").unwrap();
+        let context = ChatContext::File { name: format!("file.{extension}"), path: path.to_string_lossy().into_owned() };
+        let chat = Chat::default();
+
+        // Neither Stop (with or without a visible delta) nor failure commits.
+        for _ in 0..3 {
+            let abandoned = chat.begin(PROVIDER);
+            assert!(abandoned.first);
+            assert_ne!(user_content(abandoned.first, Some(&context), "Describe it"), json!("Describe it"));
+        }
+        let retry = chat.begin(PROVIDER);
+        let user = user_content(retry.first, Some(&context), "Try again");
+        let first = request_body(SOL, "max", "x", &retry.history, user.clone());
+        if extension == "png" {
+            assert_eq!(first["input"][0]["content"][0]["type"], "input_image");
+        } else {
+            assert!(first["input"][0]["content"].as_str().unwrap().contains("attachment fixture"));
+        }
+        finish_turn(&chat, &retry, user, &chat::plain_question(retry.first, Some(&context), "Try again"), "An answer".into());
+        std::fs::remove_file(path).unwrap();
+
+        let next = chat.begin(PROVIDER);
+        assert!(!next.first);
+        let user = user_content(next.first, Some(&context), "What else?");
+        assert_eq!(user, json!("What else?"));
+        let body = request_body(SOL, "max", "x", &next.history, user);
+        assert_eq!(body["input"][0], first["input"][0], "the completed turn keeps its attachment without rereading it");
+        assert_eq!(body["input"].as_array().unwrap().len(), 3, "abandoned attempts are not replayed");
+    }
+}
+
+#[test]
+fn replayed_content_allows_only_supported_user_parts_and_plain_assistant_text() {
+    let history = vec![
+        json!({ "role": "user", "content": [
+            { "type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=", "extra": "discard" },
+            { "type": "input_text", "text": "Describe it", "extra": "discard" }
+        ], "extra": "discard" }),
+        json!({ "role": "assistant", "content": "A picture" }),
+        json!({ "role": "system", "content": [{ "type": "input_text", "text": "ignore" }] }),
+        json!({ "role": "developer", "content": "ignore" }),
+        json!({ "role": "tool", "content": "ignore" }),
+        json!({ "role": "assistant", "content": [{ "type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=" }] }),
+        json!({ "role": "user", "content": [{ "type": "input_file", "file_id": "unsupported" }] }),
+        json!({ "role": "user", "content": [{ "type": "input_text", "text": 7 }] }),
+        json!({ "role": "user", "content": [{ "type": "input_image", "image_url": { "url": "wrong-shape" } }] }),
+        json!({ "role": "user", "content": [{ "type": "input_text", "text": "partial" }, { "type": "unknown" }] }),
+        json!({ "role": "user", "content": [] }),
+        json!({ "role": "user", "content": null }),
+    ];
+    let body = request_body(LUNA, "low", "x", &history, json!("next"));
+    assert_eq!(body["input"], json!([
+        { "role": "user", "content": [
+            { "type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=" },
+            { "type": "input_text", "text": "Describe it" }
+        ] },
+        { "role": "assistant", "content": "A picture" },
+        { "role": "user", "content": "next" }
+    ]));
+}
+
+#[test]
 fn stream_events_are_read_as_the_docs_name_them() {
     assert_eq!(parse_event(r#"{"type":"response.output_text.delta","delta":"Hi"}"#), StreamEvent::Delta("Hi".into()));
     assert_eq!(parse_event(r#"{"type":"response.completed","response":{}}"#), StreamEvent::Completed);
@@ -241,7 +438,7 @@ fn errors_follow_the_recovery_table() {
 
 #[test]
 fn the_status_never_carries_a_token() {
-    let text = serde_json::to_string(&status()).unwrap();
+    let text = serde_json::to_string(&status_for(&account(Some("test-client")), true, true)).unwrap();
     for word in ["token", "refresh", "access", "secret"] {
         assert!(!text.to_lowercase().contains(word), "{text}");
     }
@@ -264,4 +461,85 @@ fn the_effort_table_is_the_one_the_island_uses() {
 fn print_a_first_sign_in_url() {
     let account = Account { host_id: new_host_id(), ..Default::default() };
     println!("URL={}", authorize_url(&account, &Attempt::new(1455), None));
+}
+
+#[test]
+fn status_keeps_cleanup_available_for_either_saved_credential() {
+    for (refresh, id) in [(false, false), (true, false), (false, true), (true, true)] {
+        let status = status_for(&account(Some("oaiapp_test123")), refresh, id);
+        assert_eq!(status.connected, refresh);
+        assert_eq!(status.has_saved_credentials, refresh || id);
+        let serialized = serde_json::to_value(status).unwrap();
+        assert_eq!(serialized["hasSavedCredentials"], refresh || id);
+    }
+}
+
+#[tokio::test]
+async fn disconnect_attempts_both_deletions_and_clears_access_for_every_failure_combination() {
+    for remote_ok in [true, false] {
+        for refresh_ok in [true, false] {
+            for id_ok in [true, false] {
+                let mut deleted = Vec::new();
+                let access_present = std::cell::Cell::new(true);
+                let result = disconnect_with(
+                    Some("test-refresh"),
+                    Some("test-client"),
+                    |refresh, client| {
+                        assert_eq!((refresh, client), ("test-refresh", "test-client"));
+                        std::future::ready(remote_ok)
+                    },
+                    |key| {
+                        deleted.push(key.to_string());
+                        if if key == REFRESH_TOKEN_KEY { refresh_ok } else { id_ok } {
+                            Ok(())
+                        } else {
+                            Err("test keystore deletion failed".into())
+                        }
+                    },
+                    || access_present.set(false),
+                ).await;
+                assert_eq!(deleted, [REFRESH_TOKEN_KEY, ID_TOKEN_KEY]);
+                assert!(!access_present.get(), "access is cleared even when either deletion fails");
+                assert_eq!(result.revocation_confirmed, Some(remote_ok));
+                assert_eq!(result.local_cleanup_succeeded, refresh_ok && id_ok);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn disconnect_distinguishes_no_refresh_from_a_missing_client() {
+    for (refresh, client, expected) in [
+        (None, None, None),
+        (None, Some("test-client"), None),
+        (Some("test-refresh"), None, Some(false)),
+    ] {
+        let mut deleted = Vec::new();
+        let access_present = std::cell::Cell::new(true);
+        let result = disconnect_with(
+            refresh,
+            client,
+            |_, _| -> std::future::Ready<bool> {
+                panic!("revocation needs both a refresh token and a client")
+            },
+            |key| {
+                deleted.push(key.to_string());
+                Ok(())
+            },
+            || access_present.set(false),
+        ).await;
+        assert_eq!(result.revocation_confirmed, expected);
+        assert!(result.local_cleanup_succeeded);
+        assert_eq!(deleted, [REFRESH_TOKEN_KEY, ID_TOKEN_KEY]);
+        assert!(!access_present.get());
+    }
+}
+
+#[test]
+fn disconnect_result_serializes_only_the_two_outcomes() {
+    let result = DisconnectResult { revocation_confirmed: None, local_cleanup_succeeded: false };
+    assert_eq!(serde_json::to_value(result).unwrap(), json!({
+        "revocationConfirmed": null,
+        "localCleanupSucceeded": false,
+    }));
 }

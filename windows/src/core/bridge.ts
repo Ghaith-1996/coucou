@@ -10,7 +10,7 @@ import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
 import type { ActionReceipt, AppGrant, InsertOfferReply, InsertTextReply, RegionRect } from "../assistant/contracts";
-import type { ChatGptModel, ChatGptStatus } from "./chatgpt";
+import type { ChatGptDisconnectResult, ChatGptModel, ChatGptStatus } from "./chatgpt";
 import type { ChatMessage } from "./state";
 
 /** chat_store.rs `Summary`. */
@@ -364,7 +364,7 @@ export const Bridge = {
   /** Stops the answer under way, whoever is answering. */
   chatStop: () => call<void>("chat_stop"),
   /** Regenerate: the last question and answer leave the model's history. */
-  chatUndoLast: () => call<boolean>("chat_undo_last"),
+  chatUndoLast: () => callOrThrow<boolean>("chat_undo_last"),
   /** Saved conversations (chat_store.rs). */
   chatHistoryList: () => call<ConversationSummary[]>("chat_history_list"),
   chatHistorySave: (conversation: SavedConversation) => callOrThrow<void>("chat_history_save", { conversation }),
@@ -375,8 +375,8 @@ export const Bridge = {
   /** ChatGPT sign-in (chatgpt.rs): only a status ever comes back, never a token. */
   chatgptStatus: () => call<ChatGptStatus>("chatgpt_status"),
   chatgptConnect: () => callOrThrow<ChatGptStatus>("chatgpt_connect"),
-  /** True when OpenAI confirmed the revocation. */
-  chatgptDisconnect: () => call<boolean>("chatgpt_disconnect"),
+  /** Remote revocation and local cleanup are separate; IPC errors propagate. */
+  chatgptDisconnect: () => callOrThrow<ChatGptDisconnectResult>("chatgpt_disconnect"),
   chatgptModels: () => callOrThrow<ChatGptModel[]>("chatgpt_models"),
   chatgptWelcomed: () => call<void>("chatgpt_welcomed"),
   /**
@@ -417,6 +417,13 @@ export const Bridge = {
   /** Starts a voice capture, or stops the one listening. The capture id, or null when busy. */
   voiceToggle: () => call<string | null>("assistant_voice_toggle"),
   voiceStop: (captureId: string) => call<void>("assistant_voice_stop", { captureId }),
+  /** Audio mode: a capture that ends by itself after speech and a pause. The capture id, or null. */
+  voiceHandsFree: () => call<string | null>("assistant_voice_hands_free"),
+  /** Audio mode: the transcript, as the next chat message. Throws with the refusal code. */
+  voiceConverse: (captureId: string) => callOrThrow<string>("assistant_voice_converse", { captureId }),
+  /** Audio mode: `text` read aloud by a Windows voice, as a WAV data URL. */
+  speechSay: (text: string) =>
+    callOrThrow<{ audio: string; language: string; matched: boolean }>("speech_say", { text }),
   /** Ends the capture and drops its audio or transcript. Never an action. */
   voiceCancel: (captureId: string) => call<void>("assistant_voice_cancel", { captureId }),
   /** The transcript as a chat draft Rust's policy allowed; throws with the refusal code. */

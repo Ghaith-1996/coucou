@@ -4406,16 +4406,27 @@
    "ru": "При входе использование тарифа не было разрешено.",
    "id": "Penggunaan paket tidak diizinkan saat masuk."
   },
-  "Signed out here, but remote revocation was not confirmed. You can also disconnect Coucou in ChatGPT's settings.": {
-   "zh-Hans": "已在此处退出，但远程撤销未得到确认。你也可以在 ChatGPT 的设置中断开 Coucou。",
-   "hi": "यहाँ साइन आउट हो गया, पर दूरस्थ रद्दीकरण की पुष्टि नहीं हुई। आप ChatGPT की सेटिंग्स में भी Coucou को डिस्कनेक्ट कर सकते हैं।",
-   "es": "Se cerró la sesión aquí, pero no se confirmó la revocación remota. También puedes desconectar Coucou en los ajustes de ChatGPT.",
-   "ar": "تم تسجيل الخروج هنا، لكن لم يتم تأكيد الإلغاء عن بُعد. يمكنك أيضًا فصل Coucou من إعدادات ChatGPT.",
-   "fr": "Déconnecté ici, mais la révocation à distance n'a pas été confirmée. Tu peux aussi déconnecter Coucou dans les réglages de ChatGPT.",
-   "bn": "এখানে সাইন আউট হয়েছে, কিন্তু দূরবর্তী প্রত্যাহার নিশ্চিত হয়নি। ChatGPT-এর সেটিংসেও Coucou বিচ্ছিন্ন করতে পারেন।",
-   "pt-BR": "Você saiu aqui, mas a revogação remota não foi confirmada. Você também pode desconectar o Coucou nas configurações do ChatGPT.",
-   "ru": "Выход выполнен здесь, но удалённый отзыв не подтверждён. Можно также отключить Coucou в настройках ChatGPT.",
-   "id": "Sudah keluar di sini, tetapi pencabutan jarak jauh tidak dikonfirmasi. Anda juga bisa memutuskan Coucou di pengaturan ChatGPT."
+  "Remote revocation was not confirmed. You can also disconnect Coucou in ChatGPT's settings.": {
+   "zh-Hans": "未能确认远程撤销。你也可以在 ChatGPT 设置中断开 Coucou 的连接。",
+   "hi": "रिमोट एक्सेस रद्द होने की पुष्टि नहीं हुई। आप ChatGPT की सेटिंग्स में भी Coucou को डिस्कनेक्ट कर सकते हैं।",
+   "es": "No se confirmó la revocación remota. También puedes desconectar Coucou en los ajustes de ChatGPT.",
+   "ar": "لم يتم تأكيد إلغاء الوصول عن بُعد. يمكنك أيضًا فصل Coucou من إعدادات ChatGPT.",
+   "fr": "La révocation à distance n'a pas été confirmée. Vous pouvez aussi déconnecter Coucou dans les réglages de ChatGPT.",
+   "bn": "দূরবর্তী অ্যাক্সেস বাতিল হওয়ার নিশ্চিতকরণ পাওয়া যায়নি। আপনি ChatGPT-এর সেটিংস থেকেও Coucou সংযোগ বিচ্ছিন্ন করতে পারেন।",
+   "pt-BR": "A revogação remota não foi confirmada. Você também pode desconectar o Coucou nas configurações do ChatGPT.",
+   "ru": "Отзыв доступа на сервере не подтверждён. Вы также можете отключить Coucou в настройках ChatGPT.",
+   "id": "Pencabutan akses jarak jauh belum dikonfirmasi. Anda juga dapat memutuskan Coucou di pengaturan ChatGPT."
+  },
+  "Couldn't remove all saved ChatGPT credentials from this device. Try Disconnect again.": {
+   "zh-Hans": "无法从此设备删除所有已保存的 ChatGPT 登录凭据。请再次尝试断开连接。",
+   "hi": "इस डिवाइस से ChatGPT की सभी सहेजी गई लॉगिन जानकारी हटाई नहीं जा सकी। फिर से डिस्कनेक्ट करने का प्रयास करें।",
+   "es": "No se pudieron eliminar todas las credenciales de ChatGPT guardadas en este dispositivo. Intenta desconectar de nuevo.",
+   "ar": "تعذّر إزالة جميع بيانات اعتماد ChatGPT المحفوظة من هذا الجهاز. حاول الفصل مرة أخرى.",
+   "fr": "Impossible de supprimer tous les identifiants ChatGPT enregistrés sur cet appareil. Réessayez de vous déconnecter.",
+   "bn": "এই ডিভাইস থেকে ChatGPT-এর সব সংরক্ষিত লগইন তথ্য সরানো যায়নি। আবার সংযোগ বিচ্ছিন্ন করার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível remover todas as credenciais do ChatGPT salvas neste dispositivo. Tente desconectar novamente.",
+   "ru": "Не удалось удалить все сохранённые учётные данные ChatGPT с этого устройства. Попробуйте отключиться ещё раз.",
+   "id": "Tidak dapat menghapus semua kredensial ChatGPT yang tersimpan dari perangkat ini. Coba putuskan lagi."
   },
   "You're using your ChatGPT plan": {
    "zh-Hans": "你正在使用你的 ChatGPT 套餐",
@@ -4988,6 +4999,127 @@
    "pt-BR": "Arraste sobre o que for privado para cobrir de preto. Nada é enviado até você fazer a pergunta, para {model}.",
    "ru": "Проведите по личному, чтобы закрасить его чёрным. Ничего не отправляется, пока вы не зададите вопрос — модели {model}.",
    "id": "Seret di atas hal pribadi untuk menghitamkannya. Tidak ada yang dikirim sampai Anda bertanya, ke {model}."
+  },
+  "Could not regenerate this answer. Please try again.": {
+   "zh-Hans": "无法重新生成此回答。请重试。",
+   "hi": "यह जवाब फिर से जनरेट नहीं हो सका। कृपया फिर से कोशिश करें।",
+   "es": "No se pudo regenerar esta respuesta. Vuelve a intentarlo.",
+   "ar": "تعذرت إعادة إنشاء هذه الإجابة. يُرجى المحاولة مجددًا.",
+   "fr": "Impossible de régénérer cette réponse. Réessayez.",
+   "bn": "এই উত্তরটি আবার তৈরি করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível gerar esta resposta novamente. Tente de novo.",
+   "ru": "Не удалось заново создать этот ответ. Попробуйте ещё раз.",
+   "id": "Tidak dapat membuat ulang jawaban ini. Silakan coba lagi."
+  },
+  "Conversation not saved": {
+   "zh-Hans": "对话未保存",
+   "hi": "बातचीत सहेजी नहीं गई",
+   "es": "Conversación no guardada",
+   "ar": "لم تُحفظ المحادثة",
+   "fr": "Conversation non enregistrée",
+   "bn": "কথোপকথন সংরক্ষিত হয়নি",
+   "pt-BR": "Conversa não salva",
+   "ru": "Разговор не сохранён",
+   "id": "Percakapan tidak tersimpan"
+  },
+  "Your latest messages are only available here. Copy them before leaving this conversation or closing Coucou. {error}": {
+   "zh-Hans": "你的最新消息仅在此处可用。离开此对话或关闭 Coucou 之前，请先复制这些消息。{error}",
+   "hi": "आपके हाल के संदेश सिर्फ़ यहीं उपलब्ध हैं। इस बातचीत को छोड़ने या Coucou बंद करने से पहले उन्हें कॉपी कर लें। {error}",
+   "es": "Tus últimos mensajes solo están disponibles aquí. Cópialos antes de salir de esta conversación o cerrar Coucou. {error}",
+   "ar": "رسائلك الأخيرة متاحة هنا فقط. انسخها قبل مغادرة هذه المحادثة أو إغلاق Coucou. {error}",
+   "fr": "Vos derniers messages sont uniquement disponibles ici. Copiez-les avant de quitter cette conversation ou de fermer Coucou. {error}",
+   "bn": "আপনার সাম্প্রতিক বার্তাগুলি শুধু এখানেই আছে। এই কথোপকথন ছেড়ে যাওয়ার বা Coucou বন্ধ করার আগে সেগুলি কপি করে নিন। {error}",
+   "pt-BR": "Suas mensagens mais recentes só estão disponíveis aqui. Copie-as antes de sair desta conversa ou fechar o Coucou. {error}",
+   "ru": "Ваши последние сообщения доступны только здесь. Скопируйте их, прежде чем покинуть этот разговор или закрыть Coucou. {error}",
+   "id": "Pesan terbaru Anda hanya tersedia di sini. Salin sebelum meninggalkan percakapan ini atau menutup Coucou. {error}"
+  },
+  "The 400-message storage limit was reached.": {
+   "zh-Hans": "已达到 400 条消息的存储上限。",
+   "hi": "400 संदेशों की स्टोरेज सीमा पूरी हो गई है।",
+   "es": "Se alcanzó el límite de almacenamiento de 400 mensajes.",
+   "ar": "تم بلوغ حد التخزين البالغ 400 رسالة.",
+   "fr": "La limite de stockage de 400 messages a été atteinte.",
+   "bn": "৪০০টি বার্তা সংরক্ষণের সীমায় পৌঁছেছে।",
+   "pt-BR": "O limite de armazenamento de 400 mensagens foi atingido.",
+   "ru": "Достигнут лимит хранения в 400 сообщений.",
+   "id": "Batas penyimpanan 400 pesan telah tercapai."
+  },
+  "Reopened as text only": {
+   "zh-Hans": "已仅恢复文本",
+   "hi": "सिर्फ़ टेक्स्ट के रूप में फिर से खोला गया",
+   "es": "Reabierta solo como texto",
+   "ar": "أُعيد فتحها كنص فقط",
+   "fr": "Rouverte en texte seul",
+   "bn": "শুধু লেখা হিসেবে আবার খোলা হয়েছে",
+   "pt-BR": "Reaberta somente como texto",
+   "ru": "Открыт заново только текст",
+   "id": "Dibuka kembali sebagai teks saja"
+  },
+  "Original attachments are unavailable in this chat. Drop the file again to start a new chat with it.": {
+   "zh-Hans": "此对话中无法使用原始附件。请再次拖入文件，以开始包含该文件的新对话。",
+   "hi": "इस चैट में मूल अटैचमेंट उपलब्ध नहीं हैं। फ़ाइल के साथ नई चैट शुरू करने के लिए उसे फिर से ड्रॉप करें।",
+   "es": "Los archivos adjuntos originales no están disponibles en este chat. Vuelve a soltar el archivo para iniciar un nuevo chat con él.",
+   "ar": "المرفقات الأصلية غير متاحة في هذه المحادثة. أفلت الملف مرة أخرى لبدء محادثة جديدة به.",
+   "fr": "Les pièces jointes d’origine ne sont pas disponibles dans cette conversation. Déposez à nouveau le fichier pour démarrer une nouvelle conversation avec lui.",
+   "bn": "এই চ্যাটে মূল সংযুক্তিগুলি পাওয়া যাবে না। ফাইলটি নিয়ে নতুন চ্যাট শুরু করতে সেটি আবার ড্রপ করুন।",
+   "pt-BR": "Os anexos originais não estão disponíveis nesta conversa. Solte o arquivo novamente para iniciar uma nova conversa com ele.",
+   "ru": "Исходные вложения недоступны в этом чате. Перетащите файл ещё раз, чтобы начать с ним новый чат.",
+   "id": "Lampiran asli tidak tersedia dalam percakapan ini. Jatuhkan file lagi untuk memulai percakapan baru dengannya."
+  },
+  "Audio mode: talk with the chat": {
+   "zh-Hans": "语音模式：与聊天对话",
+   "hi": "ऑडियो मोड: चैट से बात करें",
+   "es": "Modo de voz: habla con el chat",
+   "ar": "الوضع الصوتي: تحدّث مع الدردشة",
+   "fr": "Mode audio : parler avec le chat",
+   "bn": "অডিও মোড: চ্যাটের সাথে কথা বলুন",
+   "pt-BR": "Modo de áudio: converse com o chat",
+   "ru": "Голосовой режим: говорите с чатом",
+   "id": "Mode audio: bicara dengan obrolan"
+  },
+  "Thinking…": {
+   "zh-Hans": "思考中…",
+   "hi": "सोच रहा है…",
+   "es": "Pensando…",
+   "ar": "يفكّر…",
+   "fr": "Réflexion…",
+   "bn": "ভাবছে…",
+   "pt-BR": "Pensando…",
+   "ru": "Думаю…",
+   "id": "Berpikir…"
+  },
+  "Speaking — tap to interrupt": {
+   "zh-Hans": "正在说话 — 点按可打断",
+   "hi": "बोल रहा है — रोकने के लिए टैप करें",
+   "es": "Hablando — toca para interrumpir",
+   "ar": "يتحدث — انقر للمقاطعة",
+   "fr": "Parle — touchez pour interrompre",
+   "bn": "বলছে — থামাতে ট্যাপ করুন",
+   "pt-BR": "Falando — toque para interromper",
+   "ru": "Говорю — нажмите, чтобы прервать",
+   "id": "Berbicara — ketuk untuk menyela"
+  },
+  "End": {
+   "zh-Hans": "结束",
+   "hi": "समाप्त",
+   "es": "Terminar",
+   "ar": "إنهاء",
+   "fr": "Terminer",
+   "bn": "শেষ",
+   "pt-BR": "Encerrar",
+   "ru": "Завершить",
+   "id": "Akhiri"
+  },
+  "Audio mode ended: nothing was heard.": {
+   "zh-Hans": "语音模式已结束：没有听到任何声音。",
+   "hi": "ऑडियो मोड बंद हुआ: कुछ सुनाई नहीं दिया।",
+   "es": "Modo de voz terminado: no se oyó nada.",
+   "ar": "انتهى الوضع الصوتي: لم يُسمع شيء.",
+   "fr": "Mode audio terminé : rien n'a été entendu.",
+   "bn": "অডিও মোড শেষ: কিছুই শোনা যায়নি।",
+   "pt-BR": "Modo de áudio encerrado: nada foi ouvido.",
+   "ru": "Голосовой режим завершён: ничего не было слышно.",
+   "id": "Mode audio berakhir: tidak ada yang terdengar."
   }
  }
 }

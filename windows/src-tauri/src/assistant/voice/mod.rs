@@ -178,6 +178,17 @@ impl Voice {
     /// The shortcut or the mic button: starts a capture, or stops the one
     /// that is listening. Returns the capture id it started or stopped.
     pub fn toggle(&self) -> Option<String> {
+        self.begin(false)
+    }
+
+    /// Audio mode: a capture that stops by itself once the user has spoken
+    /// and paused (`Endpoint`), or ends with `silence` when nothing is said.
+    /// Like `toggle`, a call while one is listening stops it.
+    pub fn listen_hands_free(&self) -> Option<String> {
+        self.begin(true)
+    }
+
+    fn begin(&self, hands_free: bool) -> Option<String> {
         let mut phase = self.0.phase.lock().unwrap();
         match &*phase {
             Phase::Listening { id, signal } => {
@@ -200,7 +211,7 @@ impl Voice {
                 let capture_id = id.clone();
                 let spawned = std::thread::Builder::new()
                     .name("coucou-voice".into())
-                    .spawn(move || run_capture(inner, capture_id, signal));
+                    .spawn(move || run_capture(inner, capture_id, signal, hands_free));
                 if spawned.is_err() {
                     *self.0.phase.lock().unwrap() = Phase::Idle;
                     (self.0.log)("voice: could not start the capture thread".into());
@@ -366,6 +377,25 @@ impl Voice {
         Ok(ChatDraft { action_id: action.id, text })
     }
 
+    /// Audio mode: the transcript, taken off the card, to be sent to the
+    /// chat as the user's message. Audio mode is the user's explicit choice
+    /// to talk to the chat, so no confirmation; it is never an assistant
+    /// action and never reaches anything but the chat. A simulated
+    /// transcript is never sent.
+    pub fn converse(&self, capture_id: &str) -> Result<String, ErrorCode> {
+        {
+            let phase = self.0.phase.lock().unwrap();
+            if let Phase::Preview { id, transcript, .. } = &*phase {
+                if id == capture_id && transcript.simulated {
+                    return Err(ErrorCode::Unavailable);
+                }
+            }
+        }
+        let transcript = self.take_preview(capture_id)?;
+        (self.0.log)("voice: transcript sent to the chat (audio mode)".into());
+        Ok(transcript.text)
+    }
+
     /// The transcript waiting on the island for this capture, taken off it:
     /// the card goes back to idle whatever comes next.
     fn take_preview(&self, capture_id: &str) -> Result<Transcript, ErrorCode> {
@@ -469,7 +499,7 @@ fn code_name(code: ErrorCode) -> String {
 
 /// The capture thread: opens the microphone, reads until stopped, cancelled
 /// or at the limit, closes it, then transcribes.
-fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>) {
+fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>, hands_free: bool) {
     let emit = |event: VoiceEvent| inner.sink.emit(&event);
     let still_ours = |phase: &Phase| phase.id() == Some(id.as_str());
 
@@ -502,6 +532,8 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>) {
     let mut last_level = Instant::now();
     let mut level_from = 0usize;
     let max_samples = (MAX_CAPTURE.as_secs_f64() * rate as f64) as usize;
+    let mut endpoint = hands_free.then(|| Endpoint::new(rate));
+    let mut heard_from = 0usize;
     let outcome = loop {
         match signal.load(Ordering::SeqCst) {
             CANCEL => break Ok(false),
@@ -514,6 +546,15 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>) {
         if samples.len() >= max_samples || started.elapsed() >= MAX_CAPTURE {
             samples.truncate(max_samples);
             break Ok(true);
+        }
+        if let Some(endpoint) = endpoint.as_mut() {
+            let end = endpoint.feed(&samples[heard_from..]);
+            heard_from = samples.len();
+            match end {
+                Some(Heard::Spoke) => break Ok(true),
+                Some(Heard::Nothing) => break Err(VoiceError::Silence),
+                None => {}
+            }
         }
         if last_level.elapsed() >= LEVEL_EVERY {
             let level = (rms(&samples[level_from..]) * 8.0).min(1.0) as f64;
@@ -591,6 +632,81 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>) {
             drop(phase);
             fail(error);
         }
+    }
+}
+
+/// What a hands-free capture heard so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Heard {
+    /// Speech, then a pause long enough to be the end of it.
+    Spoke,
+    /// No speech at all for NOTHING_FOR.
+    Nothing,
+}
+
+/// A pause this long after speech ends the turn.
+pub const PAUSE: Duration = Duration::from_millis(1100);
+/// Less speech than this is a cough or a click, not a turn.
+pub const MIN_SPEECH: Duration = Duration::from_millis(300);
+/// No speech for this long: the user isn't talking, the capture ends.
+pub const NOTHING_FOR: Duration = Duration::from_secs(12);
+/// Speech is this many times louder than the room, and never quieter than
+/// SPEECH_RMS.
+pub const SPEECH_OVER_NOISE: f32 = 3.0;
+pub const SPEECH_RMS: f32 = 0.012;
+/// The room is never taken for louder than this, so a bad estimate can't
+/// hide speech.
+pub const NOISE_CAP: f32 = 0.03;
+
+/// End-of-speech detection for audio mode, on 50 ms windows: the room's
+/// noise is learned from the quiet windows, speech is clearly above it.
+pub struct Endpoint {
+    window: usize,
+    pending: Vec<f32>,
+    noise: Option<f32>,
+    speech_ms: u64,
+    quiet_ms: u64,
+    total_ms: u64,
+}
+
+impl Endpoint {
+    pub fn new(rate: u32) -> Self {
+        Self { window: (rate as usize / 20).max(1), pending: Vec::new(), noise: None, speech_ms: 0, quiet_ms: 0, total_ms: 0 }
+    }
+
+    /// Takes the samples that arrived since the last call.
+    pub fn feed(&mut self, samples: &[f32]) -> Option<Heard> {
+        self.pending.extend_from_slice(samples);
+        let mut at = 0;
+        while self.pending.len() - at >= self.window {
+            let level = rms(&self.pending[at..at + self.window]);
+            at += self.window;
+            self.total_ms += 50;
+            // Before the room is known, the window itself, capped: speech at
+            // the very start still counts, a noisy room still doesn't.
+            let floor = self.noise.unwrap_or(level).min(NOISE_CAP);
+            if level >= (floor * SPEECH_OVER_NOISE).max(SPEECH_RMS) {
+                self.speech_ms += 50;
+                self.quiet_ms = 0;
+            } else {
+                // The room, slowly: a quiet window moves the estimate a little.
+                self.noise = Some(match self.noise {
+                    None => level,
+                    Some(n) => n * 0.95 + level * 0.05,
+                });
+                self.quiet_ms += 50;
+            }
+            if self.speech_ms >= MIN_SPEECH.as_millis() as u64 && self.quiet_ms >= PAUSE.as_millis() as u64 {
+                self.pending.clear();
+                return Some(Heard::Spoke);
+            }
+            if self.speech_ms < MIN_SPEECH.as_millis() as u64 && self.total_ms >= NOTHING_FOR.as_millis() as u64 {
+                self.pending.clear();
+                return Some(Heard::Nothing);
+            }
+        }
+        self.pending.drain(..at);
+        None
     }
 }
 

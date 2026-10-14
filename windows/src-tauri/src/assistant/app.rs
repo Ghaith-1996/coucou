@@ -58,6 +58,19 @@ pub async fn assistant_voice_toggle(voice: State<'_, Voice>, dictation: State<'_
     Ok(id)
 }
 
+/// Audio mode's microphone: a capture that ends by itself after the user
+/// spoke and paused, or with `silence` when nothing was said.
+#[tauri::command]
+pub fn assistant_voice_hands_free(voice: State<Voice>) -> Option<String> {
+    voice.listen_hands_free()
+}
+
+/// Audio mode: the transcript, as the user's next chat message.
+#[tauri::command]
+pub fn assistant_voice_converse(voice: State<Voice>, capture_id: String) -> Result<String, ErrorCode> {
+    voice.converse(&capture_id)
+}
+
 #[tauri::command]
 pub fn assistant_voice_stop(voice: State<Voice>, capture_id: String) {
     voice.stop(&capture_id);

@@ -741,4 +741,90 @@ fn text_that_could_not_be_inserted_becomes_an_allowed_chat_draft() {
     assert_eq!(draft.text, "keep me");
     assert!(draft.action_id.starts_with("act-"));
     assert_eq!(h.voice.fallback_draft("cap-dictate", " ".into()).unwrap_err(), ErrorCode::InvalidArgs);
+// ── Audio mode: hands-free captures ─────────────────────────────────────────
+
+fn tone(ms: u64, amplitude: f32) -> Vec<f32> {
+    let n = RATE as u64 * ms / 1000;
+    (0..n).map(|i| if i % 2 == 0 { amplitude } else { -amplitude }).collect()
+}
+
+#[test]
+fn speech_then_a_pause_ends_the_turn() {
+    let mut e = Endpoint::new(RATE);
+    assert_eq!(e.feed(&tone(400, 0.002)), None, "room noise");
+    assert_eq!(e.feed(&tone(800, 0.2)), None, "talking");
+    assert_eq!(e.feed(&tone(600, 0.002)), None, "a short pause is not the end");
+    assert_eq!(e.feed(&tone(300, 0.2)), None, "talking again");
+    assert_eq!(e.feed(&tone(1200, 0.002)), Some(Heard::Spoke));
+}
+
+#[test]
+fn a_cough_is_not_a_turn_and_silence_ends_the_capture() {
+    let mut e = Endpoint::new(RATE);
+    assert_eq!(e.feed(&tone(150, 0.3)), None);
+    assert_eq!(e.feed(&tone(2000, 0.001)), None, "too little speech to end on");
+    let mut heard = None;
+    for _ in 0..20 {
+        heard = heard.or(e.feed(&tone(1000, 0.001)));
+    }
+    assert_eq!(heard, Some(Heard::Nothing));
+}
+
+#[test]
+fn speech_is_measured_against_the_room() {
+    // A noisy room (0.02) is not speech; talking well above it is.
+    let mut e = Endpoint::new(RATE);
+    assert_eq!(e.feed(&tone(1000, 0.02)), None);
+    assert_eq!(e.feed(&tone(500, 0.2)), None);
+    assert_eq!(e.feed(&tone(1200, 0.02)), Some(Heard::Spoke));
+}
+
+#[test]
+fn samples_arriving_in_odd_sizes_are_counted_once() {
+    let mut e = Endpoint::new(RATE);
+    let speech = tone(500, 0.2);
+    for piece in speech.chunks(37) {
+        assert_eq!(e.feed(piece), None);
+    }
+    let pause = tone(1150, 0.0);
+    let mut heard = None;
+    for piece in pause.chunks(101) {
+        heard = heard.or(e.feed(piece));
+    }
+    assert_eq!(heard, Some(Heard::Spoke));
+}
+
+#[test]
+fn a_hands_free_capture_stops_by_itself_after_speech() {
+    let h = harness(speaking(600));
+    let id = h.voice.listen_hands_free().unwrap();
+    h.wait(VoiceState::Listening);
+    // No stop press: the pause after speech ends it.
+    let preview = h.wait(VoiceState::Preview);
+    assert_eq!(preview.capture_id, id);
+}
+
+#[test]
+fn a_hands_free_capture_with_nothing_said_ends_in_silence() {
+    let h = harness(SimMic::new(RATE, vec![Chunk::Silence(RATE as usize * 13)]));
+    h.voice.listen_hands_free().unwrap();
+    let error = h.wait(VoiceState::Error);
+    assert_eq!(error.error, Some(VoiceError::Silence));
+}
+
+#[test]
+fn audio_mode_sends_a_real_transcript_once_and_never_a_simulated_one() {
+    let h = harness(speaking(0));
+    *h.voice.0.phase.lock().unwrap() = Phase::Preview {
+        id: "cap-talk".into(),
+        transcript: Transcript { text: "What time is it in Tokyo?".into(), simulated: false },
+        since: Instant::now(),
+    };
+    assert_eq!(h.voice.converse("cap-other"), Err(ErrorCode::Expired));
+    assert_eq!(h.voice.converse("cap-talk").unwrap(), "What time is it in Tokyo?");
+    assert_eq!(h.voice.converse("cap-talk"), Err(ErrorCode::Expired), "only once");
+
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    assert_eq!(h.voice.converse(&id), Err(ErrorCode::Unavailable), "simulated");
 }

@@ -741,6 +741,8 @@ fn text_that_could_not_be_inserted_becomes_an_allowed_chat_draft() {
     assert_eq!(draft.text, "keep me");
     assert!(draft.action_id.starts_with("act-"));
     assert_eq!(h.voice.fallback_draft("cap-dictate", " ".into()).unwrap_err(), ErrorCode::InvalidArgs);
+}
+
 // ── Audio mode: hands-free captures ─────────────────────────────────────────
 
 fn tone(ms: u64, amplitude: f32) -> Vec<f32> {

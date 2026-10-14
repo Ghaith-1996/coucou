@@ -376,6 +376,69 @@ fn an_uncommitted_attempt_keeps_image_and_text_context_for_the_first_completed_t
     }
 }
 
+// The provider is polled directly by chat_send's select, not spawned. Every
+// provider commits synchronously immediately before returning Ready. Cover
+// both possible polling orders without relying on select's random choice.
+#[tokio::test]
+async fn a_completed_turn_wins_even_if_stop_arrives_between_commit_and_ready() {
+    for stop_first in [false, true] {
+        let chat = Chat::default();
+        let turn = chat.begin(PROVIDER);
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let provider = async {
+            let reply = finish_turn(&chat, &turn, json!("question"), "question", "complete answer".into());
+            stop.send(()).unwrap();
+            // No await here: this is the real providers' commit boundary.
+            reply
+        };
+        let reply = if stop_first {
+            tokio::select! { biased;
+                _ = stopped => None,
+                reply = provider => Some(reply),
+            }
+        } else {
+            tokio::select! { biased;
+                reply = provider => Some(reply),
+                _ = stopped => None,
+            }
+        }.expect("Stop cannot supersede the same poll that committed and returned Ready");
+        assert_eq!(reply.text, "complete answer");
+        assert_eq!(chat.begin(PROVIDER).history, vec![
+            json!({"role": "user", "content": "question"}),
+            json!({"role": "assistant", "content": "complete answer"}),
+        ]);
+    }
+}
+
+#[tokio::test]
+async fn stop_at_a_real_suspension_point_leaves_the_turn_uncommitted() {
+    for stop_first in [false, true] {
+        let chat = Chat::default();
+        let turn = chat.begin(PROVIDER);
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let provider = async {
+            stop.send(()).unwrap();
+            std::future::pending::<()>().await;
+            finish_turn(&chat, &turn, json!("question"), "question", "unreachable".into())
+        };
+        let reply = if stop_first {
+            tokio::select! { biased;
+                _ = stopped => None,
+                reply = provider => Some(reply),
+            }
+        } else {
+            tokio::select! { biased;
+                reply = provider => Some(reply),
+                _ = stopped => None,
+            }
+        };
+        assert!(reply.is_none());
+        let next = chat.begin(PROVIDER);
+        assert!(next.first);
+        assert!(next.history.is_empty());
+    }
+}
+
 #[test]
 fn replayed_content_allows_only_supported_user_parts_and_plain_assistant_text() {
     let history = vec![

@@ -239,6 +239,55 @@ fn bind_capture<T>(bound: &mut Option<Remembered<T>>, capture: Option<String>, p
     bound.as_ref().is_some_and(|target| target.field.is_some())
 }
 
+/// Probe snapshots belong to one toggle attempt, never to whichever Bind
+/// happens to arrive next. Only a timely reply may supply its capture's field.
+struct CaptureTargets<T> {
+    latest_probe: u64,
+    settled: u64,
+    pending: Option<(u64, T)>,
+    bound: Option<Remembered<T>>,
+}
+
+impl<T> CaptureTargets<T> {
+    fn new() -> Self {
+        Self { latest_probe: 0, settled: 0, pending: None, bound: None }
+    }
+
+    fn probe(&mut self, id: u64, reply: Reply<bool>, focused: impl FnOnce() -> Option<T>) {
+        if id <= self.latest_probe {
+            let _ = reply.send(false);
+            return;
+        }
+        self.latest_probe = id;
+        // Clear even when this caller already timed out or was cancelled:
+        // an earlier caller may have disappeared after receiving its reply.
+        self.pending = None;
+        if reply.is_closed() { return; }
+        let field = focused();
+        // A provider may block past the caller's timeout. Never keep its late
+        // field. A timeout racing a successful send is also rejected by Bind's
+        // explicit `answered` flag, supplied by the awaiting caller.
+        if reply.is_closed() { return; }
+        if reply.send(true).is_ok() {
+            self.pending = field.map(|field| (id, field));
+        }
+    }
+
+    fn bind(&mut self, probe: u64, answered: bool, capture: Option<String>) -> bool {
+        if probe <= self.settled { return false; }
+        self.settled = probe;
+        let field = if self.pending.as_ref().is_some_and(|(id, _)| *id == probe) {
+            self.pending.take().and_then(|(_, field)| answered.then_some(field))
+        } else {
+            None
+        };
+        // None disposes of this attempt's snapshot after a failed start.
+        // A timed-out new capture remembers absence; a stop retains its first
+        // binding, including that absence or an expired field.
+        bind_capture(&mut self.bound, capture, field)
+    }
+}
+
 /// Only no initially captured field means no offer. Ownership, expiry and UIA
 /// checks retain their refusal instead of hiding a vanished field's reason.
 fn offer_bound<T>(
@@ -380,9 +429,10 @@ type Reply<T> = tokio::sync::oneshot::Sender<T>;
 enum Job {
     /// Remember the field that has the keyboard now, for the capture about
     /// to start. Replies once it is remembered (or there is none).
-    Probe(Reply<()>),
-    /// The capture that probe was for (None: no capture started).
-    Bind(Option<String>),
+    Probe(u64, Reply<bool>),
+    /// The capture for this exact attempt (None: no capture started).
+    /// A timeout still binds the capture, but never a field.
+    Bind { probe: u64, answered: bool, capture: Option<String> },
     Offer(String, Instant, Reply<Result<Option<Offer>, Rejection>>),
     /// Fresh evidence for one Copy click; never reads or writes field text.
     CheckCopy(String, Instant, Reply<Result<(), Refusal>>),
@@ -393,6 +443,8 @@ enum Job {
 /// The app's handle on the UI Automation thread. Cheap to share.
 pub struct Dictation {
     jobs: Mutex<mpsc::Sender<Job>>,
+    /// Only toggles wait here. Cancel, writes, offers and Copy remain independent.
+    capture_sequence: tokio::sync::Mutex<u64>,
 }
 
 impl Dictation {
@@ -405,7 +457,11 @@ impl Dictation {
         if spawned.is_err() {
             log("dictation: could not start its thread".into());
         }
-        Self { jobs: Mutex::new(send) }
+        Self::new(send)
+    }
+
+    fn new(send: mpsc::Sender<Job>) -> Self {
+        Self { jobs: Mutex::new(send), capture_sequence: tokio::sync::Mutex::new(0) }
     }
 
     fn send(&self, job: Job) {
@@ -421,15 +477,18 @@ impl Dictation {
         }
     }
 
-    /// Before a capture starts: remember the field that has the keyboard.
-    pub async fn probe(&self) {
-        self.ask(Job::Probe, ()).await;
-    }
-
-    /// The capture the last probe was for. A stop press returns the capture
-    /// that is already remembered, which keeps its field.
-    pub fn bind(&self, capture_id: Option<String>) {
-        self.send(Job::Bind(capture_id));
+    /// Keep probe → capture → bind in one ordered operation. Dropping the
+    /// future closes its reply and releases coordination before any capture
+    /// starts. There is no await between the actual toggle and its binding.
+    /// Probe failure must never prevent recording; it binds an absent target.
+    pub async fn toggle_capture(&self, toggle: impl FnOnce() -> Option<String>) -> Option<String> {
+        let mut sequence = self.capture_sequence.lock().await;
+        *sequence += 1;
+        let probe = *sequence;
+        let answered = self.ask(|reply| Job::Probe(probe, reply), false).await;
+        let capture = toggle();
+        self.send(Job::Bind { probe, answered, capture: capture.clone() });
+        capture
     }
 
     /// The app this capture's field belongs to, if the field can take text.
@@ -466,8 +525,8 @@ fn run(jobs: mpsc::Receiver<Job>, log: fn(String)) {
 fn run(jobs: mpsc::Receiver<Job>, _log: fn(String)) {
     for job in jobs {
         match job {
-            Job::Probe(reply) => drop(reply.send(())),
-            Job::Bind(_) => {}
+            Job::Probe(_, reply) => drop(reply.send(false)),
+            Job::Bind { .. } => {}
             Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported.into()))),
             Job::CheckCopy(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported))),
             Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone.into()))),
@@ -480,3 +539,6 @@ mod uia;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod probe_tests;

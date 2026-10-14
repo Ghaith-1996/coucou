@@ -606,7 +606,7 @@ async fn a_caller_timeout_during_readback_never_restores_focus_when_the_worker_r
     use std::task::Poll;
 
     let (send, jobs) = mpsc::channel();
-    let dictation = Dictation { jobs: Mutex::new(send) };
+    let dictation = Dictation::new(send);
     let args = InsertTextArgs { text: "world".into(), target_window: 4242, target_pid: 77 };
     let mut writing = Box::pin(dictation.write("cap-current", args, permit()));
     std::future::poll_fn(|cx| {
@@ -657,7 +657,7 @@ async fn an_offer_queues_the_exact_native_deadline_without_restarting_it() {
     use std::task::Poll;
 
     let (send, jobs) = mpsc::channel();
-    let dictation = Dictation { jobs: Mutex::new(send) };
+    let dictation = Dictation::new(send);
     let expires = Instant::now() + Duration::from_secs(10);
     let mut offering = Box::pin(dictation.offer("cap-current", expires));
     std::future::poll_fn(|cx| {
@@ -680,7 +680,7 @@ async fn an_offer_timeout_cannot_allow_copy_even_if_a_late_check_would() {
     use std::task::Poll;
 
     let (send, jobs) = mpsc::channel();
-    let dictation = Dictation { jobs: Mutex::new(send) };
+    let dictation = Dictation::new(send);
     let mut offering = Box::pin(dictation.offer("cap-current", permit().expires));
     std::future::poll_fn(|cx| {
         assert!(offering.as_mut().poll(cx).is_pending());
@@ -701,7 +701,7 @@ async fn an_offer_timeout_cannot_allow_copy_even_if_a_late_check_would() {
 async fn an_unavailable_worker_cannot_classify_the_field_as_safe_to_copy() {
     let (send, jobs) = mpsc::channel();
     drop(jobs);
-    let dictation = Dictation { jobs: Mutex::new(send) };
+    let dictation = Dictation::new(send);
     assert_eq!(dictation.offer("cap-current", permit().expires).await, Err(Refusal::Busy.into()));
 }
 
@@ -712,7 +712,7 @@ async fn a_write_reply_timeout_is_terminal_and_closes_the_late_workers_permissio
 
     // Inject only a job channel: no desktop, COM thread, or real field.
     let (send, jobs) = mpsc::channel();
-    let dictation = Dictation { jobs: Mutex::new(send) };
+    let dictation = Dictation::new(send);
     let permit = permit();
     let cancelled = permit.cancelled.clone();
     let args = InsertTextArgs { text: "Only once".into(), target_window: 4242, target_pid: 77 };
@@ -744,7 +744,7 @@ async fn a_write_reply_timeout_is_terminal_and_closes_the_late_workers_permissio
 #[tokio::test]
 async fn nothing_remembered_means_no_offer_and_no_write() {
     let dictation = Dictation::start(|_| {});
-    dictation.bind(Some("cap-none".into()));
+    // No probe or target binding is needed to refuse an unknown capture.
     let offer = dictation.offer("cap-none", permit().expires).await;
     assert!(matches!(offer, Ok(None) | Err(Rejection { reason: Refusal::Unsupported, copy_allowed: false })));
     let args = InsertTextArgs { text: "hi".into(), target_window: 1, target_pid: 1 };
@@ -805,8 +805,7 @@ async fn words_go_into_a_real_text_box_at_its_caret_and_are_read_back() {
         return;
     }
     let dictation = Dictation::start(|line| println!("{line}"));
-    dictation.probe().await;
-    dictation.bind(Some("cap-live".into()));
+    dictation.toggle_capture(|| Some("cap-live".into())).await;
     let offer = dictation.offer("cap-live", permit().expires).await;
     let result = match offer {
         // Never write anywhere but the test's own box.
@@ -835,8 +834,7 @@ async fn a_real_password_box_is_never_offered() {
         return;
     }
     let dictation = Dictation::start(|line| println!("{line}"));
-    dictation.probe().await;
-    dictation.bind(Some("cap-live".into()));
+    dictation.toggle_capture(|| Some("cap-live".into())).await;
     let offer = dictation.offer("cap-live", permit().expires).await;
     let _ = child.kill();
     assert_eq!(offer, Err(Refusal::Protected.into()));
@@ -921,7 +919,7 @@ async fn queued_offers_preserve_the_difference_between_absent_and_gone() {
 
     for answer in [Ok(None), Err(Refusal::Gone.into())] {
         let (send, jobs) = mpsc::channel();
-        let dictation = Dictation { jobs: Mutex::new(send) };
+        let dictation = Dictation::new(send);
         let mut offering = Box::pin(dictation.offer("cap-current", permit().expires));
         std::future::poll_fn(|cx| {
             assert!(offering.as_mut().poll(cx).is_pending());
@@ -1076,7 +1074,7 @@ async fn a_copy_check_timeout_discards_late_positive_evidence() {
     use std::future::Future;
     use std::task::Poll;
     let (send, jobs) = mpsc::channel();
-    let dictation = Dictation { jobs: Mutex::new(send) };
+    let dictation = Dictation::new(send);
     let expires = permit().expires;
     let mut checking = Box::pin(dictation.check_copy("cap-current", expires));
     std::future::poll_fn(|cx| {
@@ -1099,6 +1097,6 @@ async fn a_copy_check_timeout_discards_late_positive_evidence() {
 async fn an_unavailable_copy_worker_fails_closed() {
     let (send, jobs) = mpsc::channel();
     drop(jobs);
-    let dictation = Dictation { jobs: Mutex::new(send) };
+    let dictation = Dictation::new(send);
     assert_eq!(dictation.check_copy("cap-current", permit().expires).await, Err(Refusal::Busy));
 }

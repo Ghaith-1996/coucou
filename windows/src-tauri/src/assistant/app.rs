@@ -53,10 +53,7 @@ pub fn voice(app: &AppHandle) -> Voice {
 #[tauri::command]
 pub async fn assistant_voice_toggle(voice: State<'_, Voice>, dictation: State<'_, Dictation>) -> Result<Option<String>, ()> {
     voice.cancel_preview();
-    dictation.probe().await;
-    let id = voice.toggle();
-    dictation.bind(id.clone());
-    Ok(id)
+    Ok(dictation.toggle_capture(|| voice.toggle()).await)
 }
 
 #[tauri::command]

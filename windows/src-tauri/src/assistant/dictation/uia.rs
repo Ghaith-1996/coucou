@@ -56,8 +56,8 @@ fn automation() -> windows::core::Result<IUIAutomation2> {
 fn refuse_all(jobs: mpsc::Receiver<Job>) {
     for job in jobs {
         match job {
-            Job::Probe(reply) => drop(reply.send(())),
-            Job::Bind(_) => {}
+            Job::Probe(_, reply) => drop(reply.send(false)),
+            Job::Bind { .. } => {}
             Job::Offer(_, _, reply) => drop(reply.send(Err(Refusal::Unsupported.into()))),
             Job::CheckCopy(_, _, reply) => drop(reply.send(Err(Refusal::Busy))),
             Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone.into()))),
@@ -66,28 +66,22 @@ fn refuse_all(jobs: mpsc::Receiver<Job>) {
 }
 
 fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
-    // The latest probe, until a capture claims it; then the capture's field.
-    let mut pending: Option<Field> = None;
-    let mut bound: Option<Remembered<Field>> = None;
+    let mut targets = CaptureTargets::new();
     for job in jobs {
         // Release the element at its original deadline, but keep its capture
         // so expiry remains a refusal rather than an absent initial target.
-        if let Some(target) = bound.as_mut() {
+        if let Some(target) = targets.bound.as_mut() {
             target.expire(Instant::now());
         }
         match job {
-            Job::Probe(reply) => {
-                pending = focused_field(ua);
-                let _ = reply.send(());
-            }
-            Job::Bind(capture) => {
-                let probed = pending.take();
-                if bind_capture(&mut bound, capture, probed) {
+            Job::Probe(id, reply) => targets.probe(id, reply, || focused_field(ua)),
+            Job::Bind { probe, answered, capture } => {
+                if targets.bind(probe, answered, capture) {
                     log("dictation: field remembered for the capture".into());
                 }
             }
             Job::Offer(capture, expires, reply) => {
-                let answer = offer_bound(&mut bound, &capture, expires, Instant::now(), |field| {
+                let answer = offer_bound(&mut targets.bound, &capture, expires, Instant::now(), |field| {
                     check(field).map(|_| Offer {
                         label: app_label(field.pid),
                         target_window: field.window.0 as usize as u64,
@@ -101,7 +95,7 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
             }
             Job::CheckCopy(capture, expires, reply) => {
                 if reply.is_closed() { continue; }
-                let answer = copy_bound(&mut bound, &capture, expires, Instant::now, |field| {
+                let answer = copy_bound(&mut targets.bound, &capture, expires, Instant::now, |field| {
                     copy_revalidated(
                         || unsafe { field.element.CurrentProcessId() }
                             .map(|pid| pid as u32 == field.pid).map_err(|_| Refusal::Busy),
@@ -113,7 +107,7 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
                 let _ = reply.send(answer);
             }
             Job::Write(capture, args, permit, reply) => {
-                let answer = write_bound(&mut bound, |target| {
+                let answer = write_bound(&mut targets.bound, |target| {
                     target.capture == capture
                         && target.field.as_ref().is_some_and(|field| {
                             field.window.0 as usize as u64 == args.target_window && field.pid == args.target_pid

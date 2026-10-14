@@ -1971,3 +1971,59 @@ test("audio input cannot send while a saved conversation is still opening", asyn
   await flush();
   assert.equal(State.chatId, CURRENT);
 });
+
+test("audio mode cannot start during history restoration, but can start afterward", async (t) => {
+  const audio = await import("../src/assistant/audio-mode.ts");
+  audio.resetAudioModeForTests({ play: async () => {}, stop() {} });
+  audio.registerAudioMode({ setPinned() {}, takeKeyboard() {} });
+  t.after(() => { audio.stopAudioMode(); audio.resetAudioModeForTests(); });
+  observeView(t);
+  State.mode = "expanded";
+  State.pendingApproval = null;
+  answers.assistant_voice_hands_free = () => "audio-after-history";
+  seed(CURRENT, "Lisbon trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = () => pending.promise;
+  await open(CURRENT);
+  assert.equal($(".audio-btn").disabled, true);
+  $(".audio-btn").fire("click"); // A stale/programmatic click must also be refused.
+  await flush();
+  assert.equal(sent("assistant_voice_hands_free").length, 0);
+  assert.equal(audio.AudioMode.state, "off");
+  pending.resolve(pending.saved);
+  await flush();
+  assert.equal($(".audio-btn").disabled, false);
+  $(".audio-btn").fire("click");
+  await flush();
+  assert.equal(sent("assistant_voice_hands_free").length, 1);
+  assert.equal(audio.AudioMode.state, "listening");
+  $(".audio-btn").fire("click");
+  await flush();
+  assert.equal(audio.AudioMode.state, "off");
+});
+
+for (const alreadyListening of [false, true]) {
+  test(`a pending chat answer ${alreadyListening ? "keeps audio Stop usable" : "blocks starting audio mode"}`, async (t) => {
+    const audio = await import("../src/assistant/audio-mode.ts");
+    audio.resetAudioModeForTests({ play: async () => {}, stop() {} });
+    audio.registerAudioMode({ setPinned() {}, takeKeyboard() {} });
+    t.after(() => { audio.stopAudioMode(); audio.resetAudioModeForTests(); });
+    observeView(t);
+    State.mode = "expanded";
+    State.pendingApproval = null;
+    answers.assistant_voice_hands_free = () => "audio-during-answer";
+    if (alreadyListening) await audio.startAudioMode();
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve({ text: "Finished" }); await flush(); });
+    answers.chat_send = () => pending.promise;
+    await send("A typed question");
+    assert.equal($(".audio-btn").disabled, !alreadyListening);
+    $(".audio-btn").fire("click");
+    await flush();
+    assert.equal(sent("assistant_voice_hands_free").length, alreadyListening ? 1 : 0);
+    assert.equal(audio.AudioMode.state, "off");
+    pending.resolve({ text: "Finished" });
+    await flush();
+    assert.equal($(".audio-btn").disabled, false);
+  });
+}

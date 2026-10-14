@@ -849,7 +849,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     class: "audio-btn",
     title: tl(STRINGS.audio),
     "aria-label": tl(STRINGS.audio),
-    onclick: () => toggleAudioMode(),
+    onclick: () => {
+      if (AudioMode.state === "off" && (sending || undoPending || startingVoice || history.isOpening)) return;
+      toggleAudioMode();
+    },
   }, svg(ICONS.wave, 15, { stroke: 1.8 })) : null;
   const bar = h("div", { class: "chat-bar" }, input, audioBtn, voice, send);
   // Audio mode's state, above the bar while it is on.
@@ -956,6 +959,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     modelBtn.disabled = sending;
     historyBtn.disabled = sending;
     if (voice) voice.disabled = sending || startingVoice || history.isOpening;
+    if (audioBtn) audioBtn.disabled = AudioMode.state === "off" && (sending || undoPending || startingVoice || history.isOpening);
     // While an answer comes, the send button is Stop.
     send.disabled = startingVoice || undoPending || history.isOpening;
     send.classList.toggle("stop", sending);

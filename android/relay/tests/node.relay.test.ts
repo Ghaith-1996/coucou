@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { startRelay } from "../tools/dev-relay.ts";
-import { ACCESS, behaviour, offer, proofOf, randomRoom, type Conn, type Harness, type Msg, type Options } from "./behaviour.ts";
+import { ACCESS, behaviour, offer, open, proofOf, randomRoom, type Conn, type Harness, type Msg, type Options } from "./behaviour.ts";
 
 let relay: Awaited<ReturnType<typeof startRelay>>;
 
@@ -74,6 +74,67 @@ const harness = async (): Promise<Harness> => {
 behaviour("Node twin", harness);
 
 describe("Node twin only", () => {
+  it("keeps bursts in wire order even when asynchronous access checks would finish backwards", async () => {
+    const h = await harness();
+    try {
+      const room = randomRoom();
+      const pc = await open(h, room, "pc");
+      const phone = await open(h, room, "phone");
+      await pc.next();
+      await phone.next();
+      const original = crypto.subtle.digest.bind(crypto.subtle);
+      const pending: (() => Promise<void>)[] = [];
+      // Connect first, then hold any per-frame digest completions. Assign slots on CALL so crypto worker timing cannot
+      // affect the test; release each real digest in reverse wire order. A synchronous frame path needs no releases.
+      const digest = vi.spyOn(crypto.subtle, "digest").mockImplementation((...args) => {
+        const result = original(...args);
+        return new Promise<ArrayBuffer>((resolve, reject) => {
+          pending.push(() => result.then(resolve, reject));
+          if (pending.length === 5) {
+            void (async () => {
+              for (let i = pending.length - 1; i >= 0; i--) await pending[i]();
+            })();
+          }
+        });
+      });
+      try {
+        const frames = Array.from({ length: 5 }, (_, i) => new Uint8Array(40_090).fill(i));
+        for (const [sender, receiver] of [[pc, phone], [phone, pc]]) {
+          for (const frame of frames) sender.send(frame);
+          for (const frame of frames) expect(await receiver.next()).toEqual({ kind: "binary", data: frame });
+        }
+      } finally {
+        digest.mockRestore();
+      }
+    } finally {
+      await h.stop();
+    }
+  });
+
+  it("matches the shared access generation for every admitted key and revokes removed keys immediately", async () => {
+    // Admission uses the shared WebCrypto generation; forwarding must compute the same tag, including after rotation.
+    const h = await harness();
+    try {
+      for (const key of [ACCESS, "a".repeat(16), "_-09AZaz".repeat(16)]) {
+        await h.setAccessKey(key);
+        const room = randomRoom();
+        const pc = await open(h, room, "pc", { key });
+        const phone = await open(h, room, "phone", { key });
+        await pc.next();
+        await phone.next();
+        pc.send(new Uint8Array([42]));
+        expect(await phone.next()).toEqual({ kind: "binary", data: new Uint8Array([42]) });
+        await h.setAccessKey(undefined);
+        pc.send(new Uint8Array([43]));
+        expect(await pc.next()).toEqual({ kind: "close", code: 1008, reason: "access key changed" });
+        expect(await phone.next()).toEqual({ kind: "text", data: '{"peer":"offline"}' });
+        phone.close();
+      }
+    } finally {
+      await h.stop();
+    }
+  });
+
   it("answers 429 after too many new connections from one address, before checking the key", async () => {
     const r = await startRelay({ accessKey: ACCESS, connectsPerMinute: 3 });
     try {

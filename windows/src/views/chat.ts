@@ -881,6 +881,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   });
   const history = buildHistory(
     () => {
+      // Restoring another conversation ends the old spoken turn immediately,
+      // including microphone startup or transcript work that has not returned.
+      if (history.isOpening) stopAudioMode();
       body.classList.toggle("picking", picker.isOpen || history.isOpen);
       drawModelButton();
     },

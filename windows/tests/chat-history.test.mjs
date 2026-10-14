@@ -509,11 +509,140 @@ function renameButton(id) {
   return historyRow(id).find(".history-act").find((button) => button.getAttribute("aria-label") === "Rename");
 }
 
-function pressKey(input, key) {
-  for (const listener of input.listeners.get("keydown") ?? []) {
-    listener({ key, stopPropagation() {}, preventDefault() {} });
+function pressKey(target, key, { repeat = false } = {}) {
+  const event = {
+    key, target, repeat, defaultPrevented: false, propagationStopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.propagationStopped = true; },
+  };
+  for (let node = target; node; node = node.parentNode) {
+    event.currentTarget = node;
+    for (const listener of node.listeners.get("keydown") ?? []) listener(event);
+    if (event.propagationStopped) break;
   }
+  return event;
 }
+
+for (const key of ["Enter", " "]) {
+  test(`history rows open with ${key === " " ? "Space" : key} and suppress repeated activation`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    await history();
+    const row = historyRow(CURRENT);
+    assert.equal(row.getAttribute("role"), "button");
+    assert.equal(row.getAttribute("tabindex"), "0");
+    const pending = deferredOpen(t, CURRENT);
+    answers.chat_history_open = () => pending.promise;
+    const event = pressKey(row, key);
+    assert.equal(event.defaultPrevented, true, "activation must not scroll the history panel");
+    assert.equal(pressKey(row, key, { repeat: true }).defaultPrevented, true);
+    await flush();
+    assert.deepEqual(sent("chat_history_open"), [{ id: CURRENT }]);
+    assert.equal($(".chat-input").disabled, true);
+    assert.equal($(".send-btn").disabled, true);
+    pending.resolve(pending.saved);
+    await flush();
+    assert.deepEqual(sent("chat_history_open"), [{ id: CURRENT }], "held keys must not enqueue another open");
+    assert.equal(State.chatId, CURRENT);
+    assert.deepEqual(nativeHistory, pending.saved.messages);
+    assert.equal(view.el.find(".chat-row").length, 2);
+    assert.equal($(".history").classList.contains("on"), false);
+    assert.equal($(".chat-input").disabled, false);
+  });
+
+  test(`history row ${key === " " ? "Space" : key} ignores nested action buttons and the rename input`, async () => {
+    seed(CURRENT, "Lisbon trip");
+    await history();
+    const row = historyRow(CURRENT);
+    for (const button of row.find(".history-act")) {
+      assert.equal(pressKey(button, key).defaultPrevented, false, "native button activation stays available");
+    }
+    assert.equal(sent("chat_history_open").length, 0);
+    renameButton(CURRENT).fire("click");
+    const input = $(".history-rename");
+    input.value = "Lisbon holiday";
+    pressKey(input, key);
+    if (key === " ") input.fire("blur");
+    await flush();
+    assert.equal(sent("chat_history_open").length, 0);
+    assert.equal(records.get(CURRENT).title, "Lisbon holiday");
+  });
+}
+
+test("history rows leave other keys and closed-panel key presses alone", async () => {
+  seed(CURRENT, "Lisbon trip");
+  await history();
+  const row = historyRow(CURRENT);
+  for (const key of ["Tab", "Escape", "ArrowDown", "a"]) {
+    assert.equal(pressKey(row, key).defaultPrevented, false);
+  }
+  $(".history-btn").fire("click");
+  for (const key of ["Enter", " "]) assert.equal(pressKey(row, key).defaultPrevented, false);
+  await flush();
+  assert.equal(sent("chat_history_open").length, 0);
+  assert.equal(State.chatId, null);
+});
+
+test("keyboard history selection queues behind a pending open without bypassing its reservation", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  seed(OTHER, "Paris trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = ({ id }) => id === CURRENT ? pending.promise : structuredClone(records.get(id));
+  await open(CURRENT);
+  pressKey(historyRow(OTHER), " ");
+  await flush();
+  assert.deepEqual(sent("chat_history_open"), [{ id: CURRENT }]);
+  assert.equal($(".chat-input").disabled, true);
+  pending.resolve(pending.saved);
+  await flush();
+  assert.deepEqual(sent("chat_history_open"), [{ id: CURRENT }, { id: OTHER }]);
+  assert.equal(State.chatId, OTHER);
+  assert.deepEqual(nativeHistory, records.get(OTHER).messages);
+  assert.equal($(".chat-input").disabled, false);
+});
+
+test("keyboard history activation respects pending deletion and recovers after its failure", async (t) => {
+  seed(CURRENT, "Lisbon trip");
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve(); await flush(); });
+  answers.chat_history_delete = () => pending.promise;
+  await confirmDelete(CURRENT);
+  for (const key of ["Enter", " "]) pressKey(historyRow(CURRENT), key);
+  await flush();
+  assert.equal(sent("chat_history_open").length, 0);
+  pending.reject(new Error("Delete unavailable"));
+  await flush();
+  pressKey(historyRow(CURRENT), "Enter");
+  await flush();
+  assert.deepEqual(sent("chat_history_open"), [{ id: CURRENT }]);
+  assert.equal(State.chatId, CURRENT);
+});
+
+test("a failed keyboard history open releases the composer and permits retry", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  seed(OTHER, "Paris trip");
+  await open(CURRENT);
+  const messages = State.chatHistory;
+  answers.chat_history_open = () => Promise.reject(new Error("Paris unavailable"));
+  await history();
+  pressKey(historyRow(OTHER), "Enter");
+  await flush();
+  assert.equal(State.chatId, CURRENT);
+  assert.equal(State.chatHistory, messages);
+  assert.match($(".history").textContent, /Paris unavailable/);
+  assert.equal($(".chat-input").disabled, false);
+  assert.equal($(".send-btn").disabled, false);
+  $(".history-btn").fire("click");
+  delete answers.chat_history_open;
+  await history();
+  pressKey(historyRow(OTHER), " ");
+  await flush();
+  assert.equal(State.chatId, OTHER);
+  assert.deepEqual(nativeHistory, records.get(OTHER).messages);
+  assert.equal($(".history").classList.contains("on"), false);
+});
 
 test("a failed rename shows its error and retries the typed title without changing the saved title", async () => {
   seed(CURRENT, "Lisbon trip");

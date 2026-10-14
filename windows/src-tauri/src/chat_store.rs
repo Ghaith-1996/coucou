@@ -3,9 +3,10 @@
 // the chat's history, renamed or deleted. The island builds the record (it
 // knows which model and effort answered each message); Rust checks it before
 // writing: the id names the file, so it must be exactly `c-` + 16 hex digits,
-// and every size is capped. Nothing else is stored, and deleting removes the
-// file.
+// and every size is capped. Small, disposable summaries under .summaries
+// speed up history pages; the transcript JSON remains the source of truth.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -16,6 +17,8 @@ pub const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TITLE_CHARS: usize = 120;
 pub const MAX_LISTED: usize = 500;
+const MAX_SUMMARY_BYTES: usize = 2048;
+const SUMMARY_VERSION: u8 = 1;
 
 // Keep reads and read-modify-writes together. Reopening during a save must
 // wait for its new transcript, not restore an older one that can overwrite it.
@@ -48,13 +51,122 @@ pub struct Conversation {
     pub messages: Vec<SavedMessage>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
     pub id: String,
     pub title: String,
     pub updated_at: u64,
     pub count: usize,
+}
+
+// A change detector, not a content hash: deliberately preserving all these
+// filesystem attributes can defeat it. Cached metadata is disposable; loading
+// a conversation always reads and validates its actual transcript.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Fingerprint {
+    len: u64,
+    modified: std::time::SystemTime,
+    created: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedSummary {
+    version: u8,
+    fingerprint: Fingerprint,
+    // None means bytes were read successfully but failed validation. Never
+    // persist transient I/O failures: access may recover without a file change.
+    // Require the field even though its value can be null for an invalid body.
+    #[serde(deserialize_with = "Option::deserialize")]
+    summary: Option<Summary>,
+}
+
+fn fingerprint(metadata: &std::fs::Metadata) -> Option<Fingerprint> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    if !metadata.is_file() { return None; }
+    Some(Fingerprint {
+        len: metadata.len(),
+        modified: metadata.modified().ok()?,
+        created: metadata.created().ok(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+    })
+}
+
+fn file_fingerprint(file: &Path) -> Option<Fingerprint> {
+    fingerprint(&std::fs::metadata(file).ok()?)
+}
+
+fn summary_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(".summaries").join(format!("{id}.json"))
+}
+
+fn summary(c: &Conversation) -> Summary {
+    Summary { id: c.id.clone(), title: c.title.clone(), updated_at: c.updated_at, count: c.messages.len() }
+}
+
+fn read_summary(dir: &Path, id: &str, current: &Fingerprint) -> Option<CachedSummary> {
+    let file = std::fs::File::open(summary_path(dir, id)).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_SUMMARY_BYTES as u64 { return None; }
+    let mut bytes = Vec::new();
+    file.take(MAX_SUMMARY_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > MAX_SUMMARY_BYTES { return None; }
+    let cached: CachedSummary = serde_json::from_slice(&bytes).ok()?;
+    if cached.version != SUMMARY_VERSION || &cached.fingerprint != current { return None; }
+    if cached.summary.as_ref().is_some_and(|s| s.id != id || !title_ok(&s.title) || s.count > MAX_MESSAGES) {
+        return None;
+    }
+    Some(cached)
+}
+
+// Best effort: failing to create/replace metadata must never fail a successful
+// transcript save or make a valid conversation inaccessible.
+fn write_summary(dir: &Path, id: &str, fingerprint: Fingerprint, summary: Option<Summary>) -> Option<()> {
+    let bytes = serde_json::to_vec(&CachedSummary { version: SUMMARY_VERSION, fingerprint, summary }).ok()?;
+    if bytes.len() > MAX_SUMMARY_BYTES { return None; }
+    let target = summary_path(dir, id);
+    std::fs::create_dir_all(target.parent()?).ok()?;
+    let tmp = target.with_extension("tmp");
+    std::fs::write(&tmp, bytes).ok()?;
+    let result = std::fs::rename(&tmp, &target);
+    if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+    result.ok()
+}
+
+fn list_summary_locked(dir: &Path, id: &str) -> Option<Summary> {
+    let file = path(dir, id)?;
+    let metadata = std::fs::metadata(&file).ok()?;
+    if !metadata.is_file() { return None; }
+    let before = fingerprint(&metadata);
+    if let Some(current) = &before {
+        if current.len > MAX_FILE_BYTES as u64 { return None; }
+        if let Some(cached) = read_summary(dir, id, current) {
+            if file_fingerprint(&file).as_ref() == Some(current) { return cached.summary; }
+        }
+    }
+    let bytes = read_transcript(&file).ok()?;
+    let result = parse_transcript(&bytes, id).ok().map(|c| summary(&c));
+    // An external writer does not hold STORE. Only certify metadata when the
+    // file fingerprint is unchanged across the full read and validation.
+    if let Some(current) = before {
+        if file_fingerprint(&file).as_ref() == Some(&current) {
+            let _ = write_summary(dir, id, current, result.clone());
+        }
+    }
+    result
 }
 
 /// Continue after this ordering key, even if its conversation was deleted.
@@ -128,7 +240,30 @@ fn write_locked(dir: &Path, c: &Conversation) -> Result<(), String> {
     // Written whole, then renamed: a crash never leaves half a file.
     let tmp = dir.join(format!("{}.tmp", c.id));
     std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &target).map_err(|e| e.to_string())
+    // The write handle is closed before checking timestamps (Windows updates
+    // last-write time on close). Keep an optional read handle through rename.
+    let written = std::fs::File::open(&tmp).ok().and_then(|file| {
+        let before = fingerprint(&file.metadata().ok()?)?;
+        Some((file, before))
+    });
+    // Invalidate known-old metadata before committing, including when its
+    // best-effort refresh later fails and filesystem timestamps are coarse.
+    let _ = std::fs::remove_file(summary_path(dir, &c.id));
+    std::fs::rename(&tmp, &target).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    tests::after_transcript_write();
+    // The same handle detects an external in-place edit; the path comparison
+    // detects replacement. Rename may change ctime (Unix) or tunnel creation
+    // time (Windows), so compare size/mtime across rename on this stable handle.
+    if let Some((file, before)) = written {
+        if let Some(current) = file.metadata().ok().and_then(|m| fingerprint(&m)) {
+            if before.len == current.len && before.modified == current.modified
+                && file_fingerprint(&target).as_ref() == Some(&current) {
+                let _ = write_summary(dir, &c.id, current, Some(summary(c)));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn load(dir: &Path, id: &str) -> Result<Conversation, String> {
@@ -138,11 +273,26 @@ pub fn load(dir: &Path, id: &str) -> Result<Conversation, String> {
 
 fn load_locked(dir: &Path, id: &str) -> Result<Conversation, String> {
     let file = path(dir, id).ok_or("bad conversation id")?;
-    let bytes = std::fs::read(file).map_err(|_| crate::i18n::t("This conversation is gone."))?;
+    let bytes = read_transcript(&file).map_err(|_| crate::i18n::t("This conversation is gone."))?;
+    parse_transcript(&bytes, id)
+}
+
+fn read_transcript(file: &Path) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(file)?;
+    #[cfg(test)]
+    tests::transcript_read();
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    #[cfg(test)]
+    tests::after_transcript_read();
+    Ok(bytes)
+}
+
+fn parse_transcript(bytes: &[u8], id: &str) -> Result<Conversation, String> {
     if bytes.len() > MAX_FILE_BYTES {
         return Err("conversation too large".into());
     }
-    let c: Conversation = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let c: Conversation = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     validate(&c)?;
     if c.id != id {
         return Err("bad conversation id".into());
@@ -167,12 +317,12 @@ pub fn list(dir: &Path, before: Option<&ListCursor>) -> Result<Vec<Summary>, Str
         let entry = entry.map_err(|e| e.to_string())?;
         let Ok(name) = entry.file_name().into_string() else { continue };
         let Some(id) = name.strip_suffix(".json") else { continue };
-        let Ok(c) = load_locked(dir, id) else { continue };
-        if before.is_some_and(|cursor| c.updated_at > cursor.updated_at
-            || (c.updated_at == cursor.updated_at && c.id <= cursor.id)) {
+        let Some(row) = list_summary_locked(dir, id) else { continue };
+        if before.is_some_and(|cursor| row.updated_at > cursor.updated_at
+            || (row.updated_at == cursor.updated_at && row.id <= cursor.id)) {
             continue;
         }
-        out.push(Summary { id: c.id, title: c.title, updated_at: c.updated_at, count: c.messages.len() });
+        out.push(row);
     }
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
     out.truncate(MAX_LISTED);
@@ -190,10 +340,14 @@ pub fn delete(dir: &Path, id: &str) -> Result<(), String> {
     let _guard = STORE.lock().map_err(|_| "conversation store unavailable")?;
     let file = path(dir, id).ok_or("bad conversation id")?;
     match std::fs::remove_file(file) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
+        Ok(()) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) => return Err(e.to_string()),
     }
+    let cached = summary_path(dir, id);
+    let _ = std::fs::remove_file(&cached);
+    let _ = std::fs::remove_file(cached.with_extension("tmp"));
+    Ok(())
 }
 
 /// The turns to give the model again when a conversation is reopened:
@@ -218,6 +372,29 @@ pub fn context_turns(c: &Conversation) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static TRANSCRIPT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static AFTER_TRANSCRIPT_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+        static AFTER_TRANSCRIPT_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn transcript_read() {
+        TRANSCRIPT_READS.with(|reads| reads.set(reads.get() + 1));
+    }
+
+    pub(super) fn after_transcript_read() {
+        let callback = AFTER_TRANSCRIPT_READ.with(|callback| callback.borrow_mut().take());
+        if let Some(callback) = callback { callback(); }
+    }
+
+    pub(super) fn after_transcript_write() {
+        let callback = AFTER_TRANSCRIPT_WRITE.with(|callback| callback.borrow_mut().take());
+        if let Some(callback) = callback { callback(); }
+    }
+
+    fn reset_reads() { TRANSCRIPT_READS.with(|reads| reads.set(0)); }
+    fn read_count() -> usize { TRANSCRIPT_READS.with(std::cell::Cell::get) }
 
     fn msg(role: &str, content: &str) -> SavedMessage {
         SavedMessage { role: role.into(), content: content.into(), provider: None, model: None, effort: None, stopped: false }
@@ -264,6 +441,7 @@ mod tests {
         for n in (0..count).rev() {
             save(&dir, &conv(&format!("c-{n:016x}"), if n < 3 { 20 } else { 10 })).unwrap();
         }
+        reset_reads();
         let mut ids = Vec::new();
         let mut before = None;
         loop {
@@ -274,8 +452,11 @@ mod tests {
             before = Some(ListCursor { updated_at: last.updated_at, id: last.id.clone() });
             ids.extend(page.into_iter().map(|s| s.id));
         }
+        assert_eq!(read_count(), 0, "every page uses summaries written by save");
         assert_eq!(ids, (0..count).map(|n| format!("c-{n:016x}")).collect::<Vec<_>>());
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), count, "listing never deletes files");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json")).count(),
+            count, "listing never deletes transcript files");
         assert_eq!(load(&dir, ids.last().unwrap()).unwrap().messages.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -294,7 +475,9 @@ mod tests {
         delete(&dir, &before.id).unwrap();
         delete(&dir, &first[0].id).unwrap();
         save(&dir, &conv("c-ffffffffffffffff", 30)).unwrap();
+        reset_reads();
         let page = list(&dir, Some(&before)).unwrap();
+        assert_eq!(read_count(), 0, "mutations keep summary metadata current");
         assert_eq!(page.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
             [older, format!("c-{:016x}", MAX_LISTED + 1)]);
         assert_eq!(page[0].title, "An older title");
@@ -318,6 +501,319 @@ mod tests {
         let invalid = ListCursor { updated_at: 10, id: "../../other".into() };
         assert!(list(&dir, Some(&invalid)).is_err());
         assert_eq!(load(&dir, &c.id).unwrap(), c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn durable_summaries_list_without_reading_transcripts_in_a_fresh_process() {
+        const CHILD_DIR: &str = "COUCOU_TEST_CHAT_SUMMARIES_DIR";
+        if let Some(dir) = std::env::var_os(CHILD_DIR) {
+            reset_reads();
+            let rows = list(Path::new(&dir), None).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].title, "Saved before restart");
+            assert_eq!(read_count(), 0, "a new process needs no transcript bodies");
+            return;
+        }
+        let dir = scratch("summary-restart");
+        let mut c = conv("c-0000000000000010", 10);
+        c.title = "Saved before restart".into();
+        c.messages = (0..12).map(|_| msg("user", &"x".repeat(MAX_MESSAGE_BYTES))).collect();
+        save(&dir, &c).unwrap();
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap()[0].title, c.title);
+        assert_eq!(list(&dir, None).unwrap()[0].count, c.messages.len());
+        assert_eq!(read_count(), 0, "cold and warm listings use on-disk metadata");
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "chat_store::tests::durable_summaries_list_without_reading_transcripts_in_a_fresh_process", "--nocapture"])
+            .env(CHILD_DIR, &dir).output().unwrap();
+        assert!(child.status.success(), "child failed: {}\n{}",
+            String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"), "the child test must run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_files_are_validated_only_once_across_all_pages() {
+        let dir = scratch("summary-legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let count = MAX_LISTED + 2;
+        for n in 0..count {
+            let c = conv(&format!("c-{n:016x}"), 10);
+            std::fs::write(path(&dir, &c.id).unwrap(), serde_json::to_vec(&c).unwrap()).unwrap();
+        }
+        reset_reads();
+        let first = list(&dir, None).unwrap();
+        assert_eq!(first.len(), MAX_LISTED);
+        assert_eq!(read_count(), count, "legacy migration validates each body once");
+        let last = first.last().unwrap();
+        let before = ListCursor { updated_at: last.updated_at, id: last.id.clone() };
+        assert_eq!(list(&dir, Some(&before)).unwrap().len(), 2);
+        assert_eq!(list(&dir, None).unwrap(), first);
+        assert_eq!(read_count(), count, "subsequent pages do not read bodies again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_corrupt_and_invalid_summary_metadata_falls_back_to_the_transcript() {
+        let dir = scratch("summary-corrupt");
+        let c = conv("c-0000000000000011", 10);
+        save(&dir, &c).unwrap();
+        let cache = summary_path(&dir, &c.id);
+        let valid = std::fs::read(&cache).unwrap();
+        std::fs::remove_file(&cache).unwrap();
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap()[0].title, c.title);
+        assert_eq!(read_count(), 1);
+        let mut missing_summary: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        missing_summary.as_object_mut().unwrap().remove("summary");
+        let mut bad_version: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        bad_version["version"] = serde_json::json!(0);
+        let mut bad_id: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        bad_id["summary"]["id"] = serde_json::json!("c-0000000000000012");
+        let mut bad_title: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        bad_title["summary"]["title"] = serde_json::json!("bad\ntitle");
+        let mut bad_count: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        bad_count["summary"]["count"] = serde_json::json!(MAX_MESSAGES + 1);
+        for bytes in [b"{ not json".to_vec(), vec![b' '; MAX_SUMMARY_BYTES + 1],
+            serde_json::to_vec(&missing_summary).unwrap(), serde_json::to_vec(&bad_version).unwrap(),
+            serde_json::to_vec(&bad_id).unwrap(),
+            serde_json::to_vec(&bad_title).unwrap(), serde_json::to_vec(&bad_count).unwrap()] {
+            std::fs::write(&cache, bytes).unwrap();
+            reset_reads();
+            assert_eq!(list(&dir, None).unwrap()[0].title, c.title);
+            assert_eq!(read_count(), 1, "bad metadata triggers validation");
+            assert_eq!(list(&dir, None).unwrap()[0].count, c.messages.len());
+            assert_eq!(read_count(), 1, "fallback repairs metadata");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_transcripts_are_skipped_and_external_repairs_are_discovered() {
+        let dir = scratch("summary-invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let c = conv("c-0000000000000013", 10);
+        let file = path(&dir, &c.id).unwrap();
+        std::fs::write(&file, b"{ not json").unwrap();
+        std::fs::write(dir.join("unrelated.json"), b"{}").unwrap();
+        std::fs::create_dir(dir.join("c-0000000000000014.json")).unwrap();
+        reset_reads();
+        assert!(list(&dir, None).unwrap().is_empty());
+        assert_eq!(read_count(), 1);
+        assert!(list(&dir, None).unwrap().is_empty());
+        assert_eq!(read_count(), 1, "unchanged invalid bodies are not reparsed");
+        std::fs::write(&file, serde_json::to_vec(&c).unwrap()).unwrap();
+        assert_eq!(list(&dir, None).unwrap()[0].id, c.id);
+        assert_eq!(read_count(), 2, "repair invalidates negative metadata");
+        let mut invalid = c.clone();
+        invalid.messages[0].role = "system".into();
+        std::fs::write(&file, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(list(&dir, None).unwrap().is_empty());
+        assert_eq!(read_count(), 3, "valid JSON still receives full validation");
+        std::fs::write(&file, vec![b' '; MAX_FILE_BYTES + 1]).unwrap();
+        assert!(list(&dir, None).unwrap().is_empty());
+        assert_eq!(read_count(), 3, "oversized files are skipped before reading a body");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_transient_read_failure_is_not_persisted_as_an_invalid_conversation() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = scratch("summary-read-fail");
+        let c = conv("c-000000000000001a", 10);
+        save(&dir, &c).unwrap();
+        let file = path(&dir, &c.id).unwrap();
+        let cache = summary_path(&dir, &c.id);
+        std::fs::remove_file(&cache).unwrap();
+        let before = file_fingerprint(&file).unwrap();
+        // An exclusive reader produces a real, temporary sharing violation.
+        let blocked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&file).unwrap();
+        assert!(list(&dir, None).unwrap().is_empty());
+        assert!(!cache.exists(), "an I/O error is not a negative validation result");
+        drop(blocked);
+        assert_eq!(file_fingerprint(&file).unwrap(), before);
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap()[0].id, c.id);
+        assert_eq!(read_count(), 1);
+        assert_eq!(list(&dir, None).unwrap()[0].id, c.id);
+        assert_eq!(read_count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn external_edits_and_removals_invalidate_durable_summaries() {
+        let dir = scratch("summary-external");
+        let mut c = conv("c-0000000000000015", 10);
+        save(&dir, &c).unwrap();
+        let file = path(&dir, &c.id).unwrap();
+        let old_metadata = std::fs::metadata(&file).unwrap();
+        c.title = "World".into(); // Same byte length: mtime, not size, detects the edit.
+        c.updated_at = 20;
+        std::fs::write(&file, serde_json::to_vec(&c).unwrap()).unwrap();
+        let changed_time = old_metadata.modified().unwrap() + std::time::Duration::from_secs(5);
+        std::fs::OpenOptions::new().write(true).open(&file).unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(changed_time)).unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), old_metadata.len());
+        reset_reads();
+        let rows = list(&dir, None).unwrap();
+        assert_eq!(rows[0].title, "World");
+        assert_eq!(rows[0].updated_at, 20);
+        assert_eq!(read_count(), 1);
+        assert_eq!(list(&dir, None).unwrap(), rows);
+        assert_eq!(read_count(), 1);
+        std::fs::remove_file(&file).unwrap();
+        assert!(list(&dir, None).unwrap().is_empty(), "orphan metadata never lists a deleted file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_external_replacement_during_validation_is_not_cached_with_the_old_fingerprint() {
+        let dir = scratch("summary-read-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        let c = conv("c-0000000000000016", 10);
+        let file = path(&dir, &c.id).unwrap();
+        std::fs::write(&file, serde_json::to_vec(&c).unwrap()).unwrap();
+        let mut newer = c.clone();
+        newer.title = "External replacement".into();
+        let replacement = serde_json::to_vec(&newer).unwrap();
+        AFTER_TRANSCRIPT_READ.with(|callback| {
+            *callback.borrow_mut() = Some(Box::new(move || std::fs::write(file, replacement).unwrap()));
+        });
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap().len(), 1);
+        assert!(!summary_path(&dir, &c.id).exists(), "a changed file cannot certify the old summary");
+        assert_eq!(list(&dir, None).unwrap()[0].title, newer.title);
+        assert_eq!(read_count(), 2);
+        assert_eq!(list(&dir, None).unwrap()[0].title, newer.title);
+        assert_eq!(read_count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn external_changes_after_a_save_cannot_certify_the_saved_summary_for_different_bytes() {
+        for atomic in [false, true] {
+            let dir = scratch(if atomic { "summary-save-replace" } else { "summary-save-edit" });
+            let c = conv("c-000000000000001b", 10);
+            let mut external = c.clone();
+            external.title = "World".into(); // Same-sized edit to exercise the timestamp stamp.
+            let target = path(&dir, &c.id).unwrap();
+            let replacement = dir.join("external.tmp");
+            let bytes = serde_json::to_vec(&external).unwrap();
+            AFTER_TRANSCRIPT_WRITE.with(|callback| {
+                *callback.borrow_mut() = Some(Box::new(move || {
+                    let changed_time = std::fs::metadata(&target).unwrap().modified().unwrap()
+                        + std::time::Duration::from_secs(5);
+                    let destination = if atomic { &replacement } else { &target };
+                    std::fs::write(destination, bytes).unwrap();
+                    std::fs::OpenOptions::new().write(true).open(destination).unwrap()
+                        .set_times(std::fs::FileTimes::new().set_modified(changed_time)).unwrap();
+                    if atomic { std::fs::rename(replacement, target).unwrap(); }
+                }));
+            });
+            save(&dir, &c).unwrap();
+            assert!(!summary_path(&dir, &c.id).exists(), "changed bytes must not receive the old summary");
+            reset_reads();
+            assert_eq!(list(&dir, None).unwrap()[0].title, external.title);
+            assert_eq!(read_count(), 1);
+            assert_eq!(list(&dir, None).unwrap()[0].title, external.title);
+            assert_eq!(read_count(), 1);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn summary_write_failures_preserve_saves_renames_and_listing() {
+        let dir = scratch("summary-write-fail");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_dir = dir.join(".summaries");
+        std::fs::write(&cache_dir, b"cannot be a directory").unwrap();
+        let mut c = conv("c-0000000000000017", 10);
+        save(&dir, &c).unwrap();
+        rename(&dir, &c.id, "Renamed without metadata").unwrap();
+        c.title = "Renamed without metadata".into();
+        c.messages.push(msg("user", "A new turn"));
+        save(&dir, &c).unwrap();
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap()[0].count, 3);
+        assert_eq!(read_count(), 1);
+        assert_eq!(load(&dir, &c.id).unwrap(), c);
+        std::fs::remove_file(&cache_dir).unwrap();
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap()[0].title, c.title);
+        assert_eq!(read_count(), 1, "retry builds metadata once its folder is writable");
+        assert_eq!(list(&dir, None).unwrap()[0].count, 3);
+        assert_eq!(read_count(), 1);
+        let cache = summary_path(&dir, &c.id);
+        let cache_bytes = std::fs::read(&cache).unwrap();
+        std::fs::remove_file(&cache).unwrap();
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("block-removal"), cache_bytes).unwrap();
+        delete(&dir, &c.id).unwrap();
+        assert!(!path(&dir, &c.id).unwrap().exists());
+        assert!(list(&dir, None).unwrap().is_empty(), "failed metadata cleanup cannot restore rows");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_summary_refresh_removes_known_stale_metadata_after_a_save_or_rename() {
+        let dir = scratch("summary-refresh-fail");
+        let mut c = conv("c-0000000000000019", 10);
+        save(&dir, &c).unwrap();
+        let cache = summary_path(&dir, &c.id);
+        let cache_tmp = cache.with_extension("tmp");
+        std::fs::create_dir(&cache_tmp).unwrap();
+        c.messages.push(msg("user", "A saved new message"));
+        save(&dir, &c).unwrap();
+        assert!(!cache.exists(), "failed refresh cannot retain the previous summary");
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap()[0].count, 3);
+        assert_eq!(read_count(), 1);
+        assert_eq!(load(&dir, &c.id).unwrap(), c);
+        std::fs::remove_dir(&cache_tmp).unwrap();
+        assert_eq!(list(&dir, None).unwrap()[0].count, 3);
+        assert!(cache.exists());
+        std::fs::create_dir(&cache_tmp).unwrap();
+        rename(&dir, &c.id, "Fresh title").unwrap();
+        assert!(!cache.exists());
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap()[0].title, "Fresh title");
+        assert_eq!(read_count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_transcript_mutations_leave_metadata_usable_and_delete_cleans_up() {
+        let dir = scratch("summary-mutation-fail");
+        let c = conv("c-0000000000000018", 10);
+        save(&dir, &c).unwrap();
+        let cache = summary_path(&dir, &c.id);
+        let cache_bytes = std::fs::read(&cache).unwrap();
+        let tmp = dir.join(format!("{}.tmp", c.id));
+        std::fs::create_dir(&tmp).unwrap();
+        let mut newer = c.clone();
+        newer.updated_at = 20;
+        newer.messages.push(msg("user", "Not saved"));
+        assert!(save(&dir, &newer).is_err());
+        assert!(rename(&dir, &c.id, "Not renamed").is_err());
+        assert_eq!(std::fs::read(&cache).unwrap(), cache_bytes);
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap()[0].title, c.title);
+        assert_eq!(read_count(), 0);
+        std::fs::remove_dir(&tmp).unwrap();
+        let file = path(&dir, &c.id).unwrap();
+        let bytes = std::fs::read(&file).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert!(delete(&dir, &c.id).is_err());
+        assert_eq!(std::fs::read(&cache).unwrap(), cache_bytes, "failed delete preserves metadata");
+        std::fs::remove_dir(&file).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+        delete(&dir, &c.id).unwrap();
+        assert!(!cache.exists());
+        delete(&dir, &c.id).unwrap();
+        assert!(list(&dir, None).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

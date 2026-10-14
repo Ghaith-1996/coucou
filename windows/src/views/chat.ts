@@ -549,6 +549,11 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     del.disabled = pendingDeletes.has(s.id);
     rename.disabled = del.disabled || pendingRenames.has(s.id);
     line.addEventListener("click", () => void open_(s.id));
+    line.addEventListener("keydown", (ev) => {
+      if (!isOpen || ev.target !== line || (ev.key !== "Enter" && ev.key !== " ")) return;
+      ev.preventDefault();
+      if (!ev.repeat) void open_(s.id);
+    });
     rename.addEventListener("click", (e) => {
       e.stopPropagation();
       if (pendingDeletes.has(s.id) || pendingRenames.has(s.id)) return;

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 import { State } from "../src/core/state.ts";
 import { CONTRACT_VERSION } from "../src/assistant/contracts.ts";
-import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceDo, voiceOpen, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
+import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceDo, voiceInsert, voiceOpen, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
 
 // What the fake Rust answers, per command.
 const answers = new Map();
@@ -727,4 +727,125 @@ test("a simulated transcript never looks for an app", async () => {
   await flush();
   assert.equal(Voice.app, null);
   assert.equal(sent("assistant_app_propose").length, 0);
+});
+
+// ── Dictation into another app's field ──────────────────────────────────────
+
+test("plain words are offered for the field the capture started in, and written only on the click", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Dear Sam, thanks for the notes." }));
+  assert.deepEqual(Voice.insert, { status: "finding" });
+  await flush();
+  assert.deepEqual(sent("assistant_insert_offer"), [{ captureId: "cap-1" }]);
+  assert.deepEqual(Voice.insert, { status: "ready", label: "Notepad", grant: GRANT });
+  assert.equal(sent("assistant_insert_text").length, 0, "nothing is typed before the click");
+
+  answers.set("assistant_insert_text", {
+    status: "done", receipt: { actionId: "act-95", outcome: "succeeded", evidenceRef: "uia-value:read-back" },
+  });
+  await voiceInsert();
+  assert.deepEqual(sent("assistant_insert_text"), [{ captureId: "cap-1", grant: GRANT }]);
+  assert.equal(Voice.event, null, "the card is done");
+  assert.deepEqual(host.drafts, [], "nothing went to the chat");
+  assert.equal(calls.filter(([cmd]) => cmd.startsWith("approval_")).length, 0, "never the agents' permissions");
+});
+
+test("a command is never offered to another app's field", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Ajoute GitHub." }));
+  await flush();
+  assert.equal(Voice.insert, null);
+  assert.equal(sent("assistant_insert_offer").length, 0);
+});
+
+test("a simulated transcript is never offered to another app's field", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello", simulated: true }));
+  await flush();
+  assert.equal(Voice.insert, null);
+  assert.equal(sent("assistant_insert_offer").length, 0);
+});
+
+test("no remembered field leaves the card as it was", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", null);
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello" }));
+  await flush();
+  assert.equal(Voice.insert, null);
+  await voiceInsert();
+  assert.equal(sent("assistant_insert_text").length, 0);
+});
+
+test("a field that can't take the words says why, and Insert does nothing", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "refused", reason: "protected" });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hunter2" }));
+  await flush();
+  assert.deepEqual(Voice.insert, { status: "refused", reason: "protected" });
+  await voiceInsert();
+  assert.equal(sent("assistant_insert_text").length, 0);
+  assert.equal(Voice.event.state, "preview", "the transcript stays");
+});
+
+test("a field that moved keeps the transcript on the card, and Insert can be tried again", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello" }));
+  await flush();
+  answers.set("assistant_insert_text", { status: "kept", reason: "focus-moved" });
+  await voiceInsert();
+  assert.equal(Voice.event.state, "preview");
+  assert.deepEqual(Voice.insert, { status: "ready", label: "Notepad", grant: GRANT, reason: "focus-moved" });
+  answers.set("assistant_insert_text", {
+    status: "done", receipt: { actionId: "act-96", outcome: "succeeded", evidenceRef: "uia-value:read-back" },
+  });
+  await voiceInsert();
+  assert.equal(sent("assistant_insert_text").length, 2);
+  assert.equal(Voice.event, null);
+});
+
+test("words that could not be written land in the chat instead, unsent", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "keep these words" }));
+  await flush();
+  answers.set("assistant_insert_text", {
+    status: "failed",
+    receipt: { actionId: "act-97", outcome: "failed", errorCode: "failed" },
+    draft: { actionId: "act-98", text: "keep these words" },
+  });
+  await voiceInsert();
+  assert.deepEqual(host.drafts, ["keep these words"]);
+  assert.deepEqual(sent("assistant_action_receipt"), [
+    { receipt: { actionId: "act-98", outcome: "succeeded", evidenceRef: "chat-field:draft-set" } },
+  ]);
+});
+
+test("an unconfirmed write is not tried again", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "maybe there" }));
+  await flush();
+  answers.set("assistant_insert_text", { status: "done", receipt: { actionId: "act-99", outcome: "unknown" } });
+  await voiceInsert();
+  await voiceInsert();
+  assert.equal(sent("assistant_insert_text").length, 1);
+  assert.equal(Voice.event, null);
+});
+
+test("a late field answer for a cancelled capture changes nothing", async () => {
+  await startListening();
+  let release;
+  answers.set("assistant_insert_offer", new Promise((r) => { release = r; }));
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello" }));
+  voiceCancel();
+  await startListening("cap-2");
+  answers.set("assistant_insert_offer", null);
+  emit("assistant-voice", ev("cap-2", "preview", { transcript: "Ajoute GitHub." }));
+  release({ status: "ready", label: "Notepad", grant: GRANT });
+  await flush();
+  assert.equal(Voice.insert, null);
+  await voiceInsert();
+  assert.equal(sent("assistant_insert_text").length, 0);
 });

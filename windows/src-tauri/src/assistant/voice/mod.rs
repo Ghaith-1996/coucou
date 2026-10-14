@@ -265,15 +265,18 @@ impl Voice {
         Ok(self.decided(capture_id, kind, args, "pill set")?.id)
     }
 
-    /// An action that needs the user's confirmation (`launch-app`, with the
-    /// app the card names), for this capture's transcript. The policy must
-    /// say `ask`; Rust keeps the action and returns its grant, which the
-    /// card hands back on the user's click (`confirm`). A newer proposal
-    /// replaces it. The transcript stays on the card meanwhile.
+    /// An action that needs the user's confirmation (`launch-app` with the
+    /// app the card names, `insert-text` with the field it was dictated
+    /// for), for this capture's transcript. The policy must say `ask`; Rust
+    /// keeps the action and returns its grant, which the card hands back on
+    /// the user's click (`confirm`). A newer proposal replaces it. The
+    /// transcript stays on the card meanwhile.
     pub fn propose(&self, capture_id: &str, kind: ActionKind, args: serde_json::Value) -> Result<policy::Grant, ErrorCode> {
-        if kind != ActionKind::LaunchApp {
-            return Err(ErrorCode::Unavailable);
-        }
+        let what = match kind {
+            ActionKind::LaunchApp => "launch app",
+            ActionKind::InsertText => "insert text",
+            _ => return Err(ErrorCode::Unavailable),
+        };
         let phase = self.0.phase.lock().unwrap();
         match &*phase {
             Phase::Preview { id, since, .. } if id == capture_id && since.elapsed() <= PREVIEW_TTL => {}
@@ -292,14 +295,14 @@ impl Voice {
         let Some(grant) = policy::grant_for(&action, now) else {
             let code = policy::decide(&action, now).error.unwrap_or(ErrorCode::InvalidArgs);
             drop(phase);
-            (self.0.log)(format!("voice: launch app refused ({})", code_name(code)));
+            (self.0.log)(format!("voice: {what} refused ({})", code_name(code)));
             return Err(code);
         };
         // Publish before releasing capture ownership, so a newer capture
         // cannot be replaced by this request after its preview check.
         *self.0.proposal.lock().unwrap() = Some(Proposal { capture: capture_id.to_string(), action });
         drop(phase);
-        (self.0.log)(format!("voice: launch app {} proposed", grant.action_id));
+        (self.0.log)(format!("voice: {what} {} proposed", grant.action_id));
         Ok(grant)
     }
 
@@ -337,6 +340,30 @@ impl Voice {
                 Err(code)
             }
         }
+    }
+
+    /// The words of the transcript waiting on the island for this capture,
+    /// left there. Only real speech: a simulated transcript is a placeholder
+    /// and is never offered to another app.
+    pub fn preview_text(&self, capture_id: &str) -> Result<String, ErrorCode> {
+        match &*self.0.phase.lock().unwrap() {
+            Phase::Preview { id, transcript, since } if id == capture_id && since.elapsed() <= PREVIEW_TTL => {
+                if transcript.simulated {
+                    Err(ErrorCode::Unavailable)
+                } else {
+                    Ok(transcript.text.clone())
+                }
+            }
+            _ => Err(ErrorCode::Expired),
+        }
+    }
+
+    /// Text the user confirmed for another app that could not be put there:
+    /// it becomes a `chat-draft` instead, decided by the policy like any
+    /// other, so the words are not lost. The transcript is already used.
+    pub fn fallback_draft(&self, capture_id: &str, text: String) -> Result<ChatDraft, ErrorCode> {
+        let action = self.decided(capture_id, ActionKind::ChatDraft, serde_json::json!({ "text": text }), "chat draft")?;
+        Ok(ChatDraft { action_id: action.id, text })
     }
 
     /// The transcript waiting on the island for this capture, taken off it:

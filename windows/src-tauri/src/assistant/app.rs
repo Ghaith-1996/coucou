@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, State, Webview};
 use serde::Serialize;
 
 use super::contracts::{ActionKind, ActionReceipt, ErrorCode, ValidArgs, VoiceEvent, VOICE_EVENT};
+use super::dictation::{Dictation, Refusal, Written};
 use super::policy::Grant;
 use super::voice::{self, model, ChatDraft, Voice};
 use crate::island::WINDOW_LABEL;
@@ -46,10 +47,15 @@ pub fn voice(app: &AppHandle) -> Voice {
 }
 
 /// The voice shortcut or the island's own button. The island decides first
-/// whether a capture may start (never over an agent's waiting card).
+/// whether a capture may start (never over an agent's waiting card). The field
+/// of another app that has the keyboard right now is remembered first, before
+/// the island takes the keyboard for its card: dictation may go there later.
 #[tauri::command]
-pub fn assistant_voice_toggle(voice: State<Voice>) -> Option<String> {
-    voice.toggle()
+pub async fn assistant_voice_toggle(voice: State<'_, Voice>, dictation: State<'_, Dictation>) -> Result<Option<String>, ()> {
+    dictation.probe().await;
+    let id = voice.toggle();
+    dictation.bind(id.clone());
+    Ok(id)
 }
 
 #[tauri::command]
@@ -132,6 +138,87 @@ pub async fn assistant_app_launch(voice: State<'_, Voice>, capture_id: String, g
     };
     voice.receipt(&receipt);
     Ok(receipt)
+}
+
+/// Dictation: the transcript offered for the field that had the keyboard
+/// when the capture started, if that field can take it. Rust builds the
+/// `insert-text` action from its own transcript and remembered field; the
+/// page only ever holds the grant.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum InsertOffer {
+    /// "Insert into <label>", for the user to confirm.
+    Ready { label: String, grant: Grant },
+    /// There was a field but it can't take the words (shown on the card).
+    Refused { reason: Refusal },
+}
+
+#[tauri::command]
+pub async fn assistant_insert_offer(
+    voice: State<'_, Voice>,
+    dictation: State<'_, Dictation>,
+    capture_id: String,
+) -> Result<Option<InsertOffer>, ErrorCode> {
+    let text = voice.preview_text(&capture_id)?;
+    let offer = match dictation.offer(&capture_id).await {
+        Ok(offer) => offer,
+        // No other app's field had the keyboard: nothing to offer.
+        Err(Refusal::Gone) => return Ok(None),
+        Err(reason) => return Ok(Some(InsertOffer::Refused { reason })),
+    };
+    let args = serde_json::json!({ "text": text, "targetWindow": offer.target_window, "targetPid": offer.target_pid });
+    let grant = voice.propose(&capture_id, ActionKind::InsertText, args)?;
+    Ok(Some(InsertOffer::Ready { label: offer.label, grant }))
+}
+
+/// What came of the user's "Insert into <app>".
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum InsertResult {
+    /// The words are in the field (`succeeded`), or may be (`unknown`).
+    Done { receipt: ActionReceipt },
+    /// Checked again and refused before anything was written. The
+    /// transcript is still on the card, untouched.
+    Kept { reason: Refusal },
+    /// Confirmed but not written: the words went to Coucou's chat field
+    /// instead, unsent (`draft`), so they are not lost.
+    Failed { receipt: ActionReceipt, draft: Option<ChatDraft> },
+}
+
+/// The user confirmed "Insert into <app>". The field is checked first,
+/// without using the transcript; then the grant is checked against the
+/// action Rust kept, and the words are written and read back.
+#[tauri::command]
+pub async fn assistant_insert_text(
+    voice: State<'_, Voice>,
+    dictation: State<'_, Dictation>,
+    capture_id: String,
+    grant: Grant,
+) -> Result<InsertResult, ErrorCode> {
+    if let Err(reason) = dictation.offer(&capture_id).await {
+        return Ok(InsertResult::Kept { reason });
+    }
+    let (action_id, args) = voice.confirm(&capture_id, &grant)?;
+    let ValidArgs::InsertText(args) = args else { return Err(ErrorCode::InvalidArgs) };
+    let text = args.text.clone();
+    let reply = match dictation.write(&capture_id, args).await {
+        Ok(Written::Verified) => match ActionReceipt::succeeded(&action_id, "uia-value:read-back") {
+            Some(receipt) => InsertResult::Done { receipt },
+            None => InsertResult::Done { receipt: ActionReceipt::unknown(&action_id) },
+        },
+        // SetValue took it but the value doesn't show it: may or may not be
+        // there, and never written twice.
+        Ok(Written::Unconfirmed) => InsertResult::Done { receipt: ActionReceipt::unknown(&action_id) },
+        Ok(Written::Failed) | Err(_) => InsertResult::Failed {
+            receipt: ActionReceipt::failed(&action_id, ErrorCode::Failed),
+            draft: voice.fallback_draft(&capture_id, text).ok(),
+        },
+    };
+    match &reply {
+        InsertResult::Done { receipt } | InsertResult::Failed { receipt, .. } => voice.receipt(receipt),
+        InsertResult::Kept { .. } => {}
+    }
+    Ok(reply)
 }
 
 #[tauri::command]

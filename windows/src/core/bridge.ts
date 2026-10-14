@@ -9,7 +9,7 @@ import type { Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
-import type { ActionReceipt, AppGrant } from "../assistant/contracts";
+import type { ActionReceipt, AppGrant, InsertOfferReply, InsertTextReply } from "../assistant/contracts";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -396,6 +396,14 @@ export const Bridge = {
   /** The user confirmed: Rust checks the grant, opens the app and says what came of it. */
   appLaunch: (captureId: string, grant: AppGrant) =>
     callOrThrow<ActionReceipt>("assistant_app_launch", { captureId, grant }),
+  /**
+   * Dictation: the transcript offered for the field of another app that had
+   * the keyboard when the capture started. Null when there was none.
+   */
+  insertOffer: (captureId: string) => callOrThrow<InsertOfferReply | null>("assistant_insert_offer", { captureId }),
+  /** The user confirmed "Insert into <app>": Rust checks the field again, then writes and reads back. */
+  insertText: (captureId: string, grant: AppGrant) =>
+    callOrThrow<InsertTextReply>("assistant_insert_text", { captureId, grant }),
   /** What came of an assistant action, for the log (never with its text). */
   actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
   /** The speech models (Settings → Voice). Only the settings window may change them. */

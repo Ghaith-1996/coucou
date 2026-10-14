@@ -7,8 +7,8 @@ import { btn, card, stack, type ViewHost } from "../views/views";
 import { State } from "../core/state";
 import { washRGBA, type Wash } from "../core/layout";
 import { N_, t, tl } from "../i18n/i18n";
-import { Voice, voiceCancel, voiceDo, voiceOpen, voiceStop, voiceUse } from "./voice";
-import type { VoiceError } from "./contracts";
+import { Voice, voiceCancel, voiceCopy, voiceDo, voiceInsert, voiceOpen, voiceStop, voiceUse } from "./voice";
+import type { InsertRefusal, VoiceError } from "./contracts";
 
 const ERRORS: Record<VoiceError, string> = {
   "no-microphone": N_("Microphone unavailable"),
@@ -17,6 +17,16 @@ const ERRORS: Record<VoiceError, string> = {
   ),
   silence: N_("Nothing was heard."),
   provider: N_("Speech recognition failed."),
+};
+
+// Why the words didn't go into the other app's field. Nothing was typed.
+const REFUSALS: Record<InsertRefusal, string> = {
+  "focus-moved": N_("You switched windows, so nothing was typed. Go back to the field, then Insert again."),
+  gone: N_("That field is gone. Nothing was typed."),
+  protected: N_("That's a password field: Coucou never types there."),
+  "read-only": N_("That field is read-only."),
+  unsupported: N_("This field doesn't take dictated text. Copy it, or use it in chat."),
+  busy: N_("The app didn't answer. Nothing was typed."),
 };
 
 function clock(ms: number): string {
@@ -43,6 +53,9 @@ export function buildVoice(): ViewHost {
     act: btn("", "primary", () => void voiceDo(), "↵"),
     // "Open <app>", named as the Start menu names it.
     open: btn("", "primary", () => void voiceOpen(), "↵"),
+    // "Insert into <app>": dictation into the field the capture started in.
+    insert: btn("", "primary", () => void voiceInsert(), "↵"),
+    copy: btn(tl("Copy"), "secondary", () => void voiceCopy()),
     cancel: btn(tl("Cancel"), "secondary", voiceCancel, "Esc"),
     close: btn(tl("Close"), "secondary", voiceCancel, "Esc"),
   };
@@ -54,9 +67,13 @@ export function buildVoice(): ViewHost {
     if (e.key === "Enter" && Voice.event.state === "preview") {
       e.preventDefault();
       const app = Voice.app;
-      // While the app is being looked up or opened, Enter waits.
+      const insert = Voice.insert;
+      // While the app or the field is being looked up, or used, Enter waits.
       if (app?.status === "finding" || app?.status === "opening") return;
-      void (app?.status === "ready" ? voiceOpen() : Voice.command?.ok ? voiceDo() : voiceUse());
+      if (insert?.status === "finding" || insert?.status === "inserting") return;
+      void (app?.status === "ready" ? voiceOpen()
+        : insert?.status === "ready" ? voiceInsert()
+        : Voice.command?.ok ? voiceDo() : voiceUse());
     } else if (e.key === "Escape") {
       e.preventDefault();
       voiceCancel();
@@ -90,11 +107,15 @@ export function buildVoice(): ViewHost {
           title.textContent = event?.transcript ?? "";
           const command = Voice.command;
           const app = Voice.app;
+          const insert = Voice.insert;
           detail.textContent = event?.simulated
             ? t("Simulated transcript — real speech recognition comes next.")
             : app?.status === "finding" ? t("Looking for {name}…", { name: app.name })
             : app?.status === "missing" ? t("No app called “{name}” in the Start menu.", { name: app.name })
-            : command && !command.ok ? command.reason : "";
+            : command && !command.ok ? command.reason
+            : insert?.status === "refused" ? t(REFUSALS[insert.reason])
+            : insert?.status === "ready" && insert.reason ? t(REFUSALS[insert.reason])
+            : "";
           break;
         }
         case "error":
@@ -112,12 +133,18 @@ export function buildVoice(): ViewHost {
       const offered = app?.status === "ready" || app?.status === "opening" ? app : null;
       if (offered) buttons.open.querySelector("span")!.textContent = t("Open {name}", { name: offered.label });
       (buttons.open as HTMLButtonElement).disabled = app?.status === "opening";
+      const insert = state === "preview" ? Voice.insert : null;
+      const field = insert?.status === "ready" || insert?.status === "inserting" ? insert : null;
+      if (field) buttons.insert.querySelector("span")!.textContent = t("Insert into {name}", { name: field.label });
+      (buttons.insert as HTMLButtonElement).disabled = insert?.status === "inserting";
       const want =
         state === "listening" ? "stop,cancel"
         : state === "processing" ? "cancel"
         : state === "preview"
           ? offered ? "open,useToo,cancel"
           : app?.status === "finding" ? "useToo,cancel"
+          : field ? "insert,useToo,cancel"
+          : insert?.status === "refused" && insert.reason !== "protected" ? "use,copy,cancel"
           : command ? "act,useToo,cancel" : "use,cancel"
         : "close";
       if (want !== shownButtons) {

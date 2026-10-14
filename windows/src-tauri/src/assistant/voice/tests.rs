@@ -699,14 +699,216 @@ fn dictated_text_is_proposed_for_its_field_then_confirmed_once() {
     let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Hello there")).unwrap();
     // Peeking and proposing leave the transcript on the card.
     assert_eq!(h.voice.preview_text("cap-dictate").unwrap(), "Hello there");
-    let (action, args) = h.voice.confirm("cap-dictate", &grant).unwrap();
+    let (action, args, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
     assert_eq!(action, grant.action_id);
     assert_eq!(
         args,
-        ValidArgs::InsertText(InsertTextArgs { text: "Hello there".into(), target_window: 4242, target_pid: 77 }),
+        InsertTextArgs { text: "Hello there".into(), target_window: 4242, target_pid: 77 },
     );
+    assert!(!permit.cancelled.load(Ordering::SeqCst));
+    assert!(h.events.try_recv().is_err(), "a pending write does not dismiss the card");
+    h.voice.finish_insert("cap-dictate", &action, false).unwrap();
+    assert!(permit.cancelled.load(Ordering::SeqCst));
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-dictate");
+    assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired, "only once");
     assert_eq!(h.voice.confirm("cap-dictate", &grant), Err(ErrorCode::Expired), "only once");
     assert_eq!(h.voice.preview_text("cap-dictate"), Err(ErrorCode::Expired), "the transcript is used");
+}
+
+#[test]
+fn a_prewrite_refusal_restores_the_exact_preview_and_same_grant_without_extending_its_lifetime() {
+    let h = harness(speaking(0));
+    let since = Instant::now() - Duration::from_secs(60);
+    let original = Transcript { text: "Keep these words".into(), simulated: false };
+    *h.voice.0.phase.lock().unwrap() = Phase::Preview {
+        id: "cap-dictate".into(), transcript: original.clone(), since,
+    };
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion(&original.text)).unwrap();
+    let original_action = h.voice.0.proposal.lock().unwrap().as_ref().unwrap().action.clone();
+    assert!(grant.expires_at_ms <= policy::now_ms() + 60_000, "proposing cannot restart the preview's TTL");
+
+    let (action, args, first_permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    assert!(first_permit.expires <= since + PREVIEW_TTL);
+    h.voice.finish_insert("cap-dictate", &action, true).unwrap();
+    assert!(first_permit.cancelled.load(Ordering::SeqCst), "the refused attempt's permit is retired");
+    assert!(h.events.try_recv().is_err(), "refusal leaves the existing card in place");
+    {
+        let phase = h.voice.0.phase.lock().unwrap();
+        let Phase::Preview { id, transcript, since: restored_since } = &*phase else { panic!("preview was not restored") };
+        assert_eq!(id, "cap-dictate");
+        assert_eq!(transcript, &original);
+        assert_eq!(*restored_since, since, "the preview keeps its original deadline");
+        let proposal = h.voice.0.proposal.lock().unwrap();
+        let restored = proposal.as_ref().unwrap();
+        assert_eq!(restored.capture, "cap-dictate");
+        assert_eq!(serde_json::to_value(&restored.action).unwrap(), serde_json::to_value(&original_action).unwrap());
+    }
+
+    let (retry_action, retry_args, retry_permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    assert_eq!(retry_action, action, "the card retries the grant it already has");
+    assert_eq!(retry_args, args);
+    assert!(retry_permit.expires <= since + PREVIEW_TTL);
+    assert!(!retry_permit.cancelled.load(Ordering::SeqCst));
+    assert!(!Arc::ptr_eq(&first_permit.cancelled, &retry_permit.cancelled), "a retry gets its own permit");
+    h.voice.finish_insert("cap-dictate", &retry_action, false).unwrap();
+    assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired);
+}
+
+#[test]
+fn pending_insertion_cannot_be_consumed_by_duplicate_or_other_ipc_actions() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "Keep these words");
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Keep these words")).unwrap();
+    let (action, _, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+
+    assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(h.voice.confirm("cap-dictate", &grant), Err(ErrorCode::Expired));
+    assert_eq!(h.voice.use_transcript("cap-dictate"), Err(ErrorCode::Expired));
+    let pills = serde_json::json!({ "mainPill": "integration_claude", "activeIntegrations": [] });
+    assert_eq!(h.voice.act("cap-dictate", ActionKind::PillSet, pills), Err(ErrorCode::Expired));
+    assert_eq!(h.voice.propose("cap-dictate", ActionKind::LaunchApp, app()).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("different words")).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(h.voice.preview_text("cap-dictate"), Err(ErrorCode::Expired));
+    h.voice.cancel("cap-stale");
+    for refused in [false, true] {
+        assert_eq!(h.voice.finish_insert("cap-stale", &action, refused), Err(ErrorCode::Cancelled));
+        assert_eq!(h.voice.finish_insert("cap-dictate", "act-stale", refused), Err(ErrorCode::Cancelled));
+    }
+    assert!(!permit.cancelled.load(Ordering::SeqCst), "stale calls leave the active write alone");
+    assert!(h.events.try_recv().is_err());
+    assert_eq!(h.voice.0.proposal.lock().unwrap().as_ref().unwrap().action.id, action);
+
+    h.voice.finish_insert("cap-dictate", &action, true).unwrap();
+    assert_eq!(h.voice.preview_text("cap-dictate").unwrap(), "Keep these words");
+    h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    h.voice.finish_insert("cap-dictate", &action, false).unwrap();
+}
+
+#[test]
+fn concurrent_insert_confirmations_reserve_exactly_one_write() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "Only once");
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Only once")).unwrap();
+    let start = std::sync::Barrier::new(2);
+    let voice = &h.voice;
+    let results = std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            start.wait();
+            voice.begin_insert("cap-dictate", &grant)
+        });
+        let second = scope.spawn(|| {
+            start.wait();
+            voice.begin_insert("cap-dictate", &grant)
+        });
+        [first.join().unwrap(), second.join().unwrap()]
+    });
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter_map(|result| result.as_ref().err()).copied().collect::<Vec<_>>(), vec![ErrorCode::Expired]);
+    assert!(h.events.try_recv().is_err());
+    h.voice.finish_insert("cap-dictate", &grant.action_id, false).unwrap();
+    assert!(h.voice.0.proposal.lock().unwrap().is_none());
+}
+
+#[test]
+fn a_refusal_after_expiry_cannot_revive_the_preview_or_grant() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "Too late");
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Too late")).unwrap();
+    let (action, _, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    // Advance the stored deadline directly: std::time::Instant is not the
+    // paused Tokio clock, and this regression must not sleep for two minutes.
+    {
+        let mut phase = h.voice.0.phase.lock().unwrap();
+        let Phase::Inserting { permit, .. } = &mut *phase else { panic!("no pending insertion") };
+        permit.expires = Instant::now() - Duration::from_millis(1);
+    }
+    assert_eq!(h.voice.finish_insert("cap-dictate", &action, true), Err(ErrorCode::Expired));
+    assert!(permit.cancelled.load(Ordering::SeqCst));
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-dictate");
+    assert!(h.voice.0.proposal.lock().unwrap().is_none());
+    assert_eq!(h.voice.preview_text("cap-dictate"), Err(ErrorCode::Expired));
+    assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(h.voice.finish_insert("cap-dictate", &action, true), Err(ErrorCode::Cancelled));
+}
+
+#[test]
+fn cancellation_interruption_and_shutdown_retire_the_pending_write_without_restoring_it() {
+    for reason in ["cancel", "cancel-before-probe", "interrupt", "shutdown"] {
+        let h = harness(speaking(0));
+        spoken(&h, "cap-dictate", "Discard me");
+        let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Discard me")).unwrap();
+        let (action, _, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+        match reason {
+            "cancel" => h.voice.cancel("cap-dictate"),
+            "cancel-before-probe" => h.voice.cancel_preview(),
+            "interrupt" => h.voice.interrupt("screen locked"),
+            "shutdown" => h.voice.shutdown(),
+            _ => unreachable!(),
+        }
+        assert!(permit.cancelled.load(Ordering::SeqCst), "{reason}");
+        assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-dictate");
+        assert!(h.voice.0.proposal.lock().unwrap().is_none());
+        for refused in [false, true] {
+            assert_eq!(h.voice.finish_insert("cap-dictate", &action, refused), Err(ErrorCode::Cancelled), "{reason}");
+        }
+        assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired, "{reason}");
+        assert_eq!(h.voice.use_transcript("cap-dictate"), Err(ErrorCode::Expired), "{reason}");
+        assert!(h.events.try_recv().is_err(), "a late completion emits no stale event: {reason}");
+    }
+}
+
+#[test]
+fn cancelling_before_a_probe_retires_a_preview_but_leaves_listening_and_processing_alone() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-preview", "Old words");
+    h.voice.propose("cap-preview", ActionKind::InsertText, insertion("Old words")).unwrap();
+    h.voice.cancel_preview();
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-preview");
+    assert!(h.voice.0.proposal.lock().unwrap().is_none());
+    assert_eq!(h.voice.preview_text("cap-preview"), Err(ErrorCode::Expired));
+
+    // These phases are seeded directly: no microphone or transcriber runs.
+    for signal_value in [RUN, STOP] {
+        let signal = Arc::new(AtomicU8::new(signal_value));
+        *h.voice.0.phase.lock().unwrap() = Phase::Listening { id: "cap-listening".into(), signal: signal.clone() };
+        h.voice.cancel_preview();
+        assert_eq!(signal.load(Ordering::SeqCst), signal_value);
+        assert!(matches!(&*h.voice.0.phase.lock().unwrap(), Phase::Listening { id, .. } if id == "cap-listening"));
+    }
+    let abort = Arc::new(AtomicBool::new(false));
+    *h.voice.0.phase.lock().unwrap() = Phase::Processing { id: "cap-processing".into(), abort: abort.clone() };
+    h.voice.cancel_preview();
+    assert!(!abort.load(Ordering::SeqCst));
+    assert!(matches!(&*h.voice.0.phase.lock().unwrap(), Phase::Processing { id, .. } if id == "cap-processing"));
+    assert!(h.events.try_recv().is_err());
+}
+
+#[test]
+fn a_new_capture_cancels_the_old_write_and_a_late_refusal_cannot_replace_it() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-old", "Old words");
+    let grant = h.voice.propose("cap-old", ActionKind::InsertText, insertion("Old words")).unwrap();
+    let (action, _, permit) = h.voice.begin_insert("cap-old", &grant).unwrap();
+    let current = h.voice.toggle().unwrap();
+    assert_ne!(current, "cap-old");
+    assert_eq!(h.wait(VoiceState::Listening).capture_id, current);
+    assert!(permit.cancelled.load(Ordering::SeqCst));
+    assert!(h.voice.0.proposal.lock().unwrap().is_none());
+    for refused in [false, true] {
+        assert_eq!(h.voice.finish_insert("cap-old", &action, refused), Err(ErrorCode::Cancelled));
+    }
+    assert_eq!(h.voice.0.phase.lock().unwrap().id(), Some(current.as_str()));
+    h.voice.cancel(&current);
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, current);
+
+    // A late result also cannot consume a newer proposal for another field.
+    spoken(&h, "cap-new", "New words");
+    let next = h.voice.propose("cap-new", ActionKind::InsertText, insertion("New words")).unwrap();
+    let (next_action, _, next_permit) = h.voice.begin_insert("cap-new", &next).unwrap();
+    assert_eq!(h.voice.finish_insert("cap-old", &action, true), Err(ErrorCode::Cancelled));
+    assert!(!next_permit.cancelled.load(Ordering::SeqCst));
+    h.voice.finish_insert("cap-new", &next_action, true).unwrap();
+    assert_eq!(h.voice.preview_text("cap-new").unwrap(), "New words");
 }
 
 #[test]
@@ -732,11 +934,12 @@ fn an_insertion_needs_a_target_and_sane_text() {
 }
 
 #[test]
-fn text_that_could_not_be_inserted_becomes_an_allowed_chat_draft() {
+fn a_terminal_insertion_failure_can_become_an_allowed_chat_draft() {
     let h = harness(speaking(0));
     spoken(&h, "cap-dictate", "keep me");
     let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("keep me")).unwrap();
-    h.voice.confirm("cap-dictate", &grant).unwrap();
+    let (action, _, _) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    h.voice.finish_insert("cap-dictate", &action, false).unwrap();
     let draft = h.voice.fallback_draft("cap-dictate", "keep me".into()).unwrap();
     assert_eq!(draft.text, "keep me");
     assert!(draft.action_id.starts_with("act-"));

@@ -112,10 +112,16 @@ export type AppOffer =
 
 export type InsertOffer =
   | { status: "finding" }
+  | { status: "retrying"; reason: InsertRefusal }
   /** `reason`: the last Insert was refused before writing; it may be tried again. */
   | { status: "ready"; label: string; grant: AppGrant; reason?: InsertRefusal }
   | { status: "inserting"; label: string; grant: AppGrant }
   | { status: "refused"; reason: InsertRefusal };
+
+/** Only these refusals can change while the same remembered field stays valid. */
+export function canRetryInsert(reason: InsertRefusal): boolean {
+  return reason === "focus-moved" || reason === "busy";
+}
 
 function waitingCard(): IslandViewName | null {
   const req = State.pendingApproval;
@@ -191,7 +197,9 @@ export function voiceCancel() {
 /** Use: Rust's policy turns the transcript into a chat draft; the chat opens with it. */
 export async function voiceUse() {
   const current = Voice.event;
-  if (current?.state !== "preview" || !host) return;
+  // Rust reserves this preview until the write finishes. A concurrent Use
+  // would be refused and could otherwise dismiss a still-pending insertion.
+  if (current?.state !== "preview" || Voice.insert?.status === "inserting" || !host) return;
   const requestGeneration = generation;
   try {
     const draft = await Bridge.voiceUse(current.captureId);
@@ -297,7 +305,8 @@ export async function voiceOpen() {
 /** Asks Rust whether the field the capture started in can take the transcript. */
 async function findField(id: string) {
   const requestGeneration = generation;
-  const stale = () => requestGeneration !== generation || Voice.event?.captureId !== id || Voice.insert?.status !== "finding";
+  const stale = () => requestGeneration !== generation || Voice.event?.captureId !== id
+    || (Voice.insert?.status !== "finding" && Voice.insert?.status !== "retrying");
   try {
     const offer = await Bridge.insertOffer(id);
     if (stale()) return;
@@ -311,11 +320,20 @@ async function findField(id: string) {
   State.notify();
 }
 
-/** The user's click on "Insert into <app>": Rust checks the field again, then writes. */
+/** Retry asks for a fresh offer; only a separate "Insert into <app>" confirms it. */
 export async function voiceInsert() {
   const current = Voice.event;
   const offer = Voice.insert;
-  if (current?.state !== "preview" || offer?.status !== "ready" || !host) return;
+  if (current?.state !== "preview" || !host) return;
+  if (offer?.status === "refused" && canRetryInsert(offer.reason)) {
+    Voice.insert = { status: "retrying", reason: offer.reason };
+    State.notify();
+    // No grant was offered yet. Recheck the same capture without writing or
+    // renewing its preview timer; a named offer needs its own confirmation.
+    await findField(current.captureId);
+    return;
+  }
+  if (offer?.status !== "ready") return;
   Voice.insert = { status: "inserting", label: offer.label, grant: offer.grant };
   State.notify();
   const requestGeneration = generation;
@@ -323,8 +341,12 @@ export async function voiceInsert() {
     const result = await Bridge.insertText(current.captureId, offer.grant);
     if (requestGeneration !== generation) return;
     if (result.status === "kept") {
-      // Nothing was written: the transcript stays, and Insert may be tried again.
-      Voice.insert = { status: "ready", label: offer.label, grant: offer.grant, reason: result.reason };
+      if (Voice.event?.state !== "preview" || Voice.event.captureId !== current.captureId) return;
+      // Nothing was written. Only transient refusals retain the named grant;
+      // a protected or unusable field gets the same safe fallback as an offer.
+      Voice.insert = canRetryInsert(result.reason)
+        ? { status: "ready", label: offer.label, grant: offer.grant, reason: result.reason }
+        : { status: "refused", reason: result.reason };
       Sound.play("error");
       State.notify();
       return;

@@ -849,3 +849,215 @@ test("a late field answer for a cancelled capture changes nothing", async () => 
   await voiceInsert();
   assert.equal(sent("assistant_insert_text").length, 0);
 });
+
+for (const reason of ["focus-moved", "busy"]) {
+  test(`an initial ${reason} refusal can re-offer the same capture without automatically writing`, async () => {
+    await startListening();
+    answers.set("assistant_insert_offer", { status: "refused", reason });
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "keep these words" }));
+    await flush();
+    answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+    await voiceInsert();
+    assert.deepEqual(sent("assistant_insert_offer"), [{ captureId: "cap-1" }, { captureId: "cap-1" }]);
+    assert.deepEqual(Voice.insert, { status: "ready", label: "Notepad", grant: GRANT });
+    assert.equal(sent("assistant_insert_text").length, 0, "the newly named field needs its own confirmation");
+    answers.set("assistant_insert_text", { status: "done", receipt: { actionId: "act-retry", outcome: "succeeded", evidenceRef: "uia-value:read-back" } });
+    await voiceInsert();
+    assert.equal(sent("assistant_insert_text").length, 1);
+  });
+}
+
+test("a duplicate retry click cannot request two offers", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "refused", reason: "busy" });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello" }));
+  await flush();
+  let release;
+  answers.set("assistant_insert_offer", new Promise((resolve) => { release = resolve; }));
+  const retry = voiceInsert();
+  await voiceInsert();
+  await flush();
+  const count = sent("assistant_insert_offer").length;
+  release({ status: "ready", label: "Notepad", grant: GRANT });
+  await retry;
+  assert.equal(count, 2);
+  assert.equal(sent("assistant_insert_text").length, 0);
+});
+
+test("cancelling while a retry is pending cannot revive the old capture", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "refused", reason: "focus-moved" });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "old" }));
+  await flush();
+  let release;
+  answers.set("assistant_insert_offer", new Promise((resolve) => { release = resolve; }));
+  const retry = voiceInsert();
+  voiceCancel();
+  await startListening("cap-2");
+  release({ status: "ready", label: "Notepad", grant: GRANT });
+  await retry;
+  assert.equal(Voice.event.captureId, "cap-2");
+  assert.equal(Voice.insert, null);
+  assert.equal(sent("assistant_insert_text").length, 0);
+});
+
+test("a duplicate insert click cannot submit two writes", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "once" }));
+  await flush();
+  let release;
+  answers.set("assistant_insert_text", new Promise((resolve) => { release = resolve; }));
+  const inserting = voiceInsert();
+  await voiceInsert();
+  await flush();
+  const count = sent("assistant_insert_text").length;
+  release({ status: "done", receipt: { actionId: "act-once", outcome: "unknown" } });
+  await inserting;
+  assert.equal(count, 1);
+  await voiceInsert();
+  assert.equal(sent("assistant_insert_text").length, 1);
+});
+
+test("a protected refusal at insertion removes Insert and keeps the transcript", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "secret" }));
+  await flush();
+  answers.set("assistant_insert_text", { status: "kept", reason: "protected" });
+  await voiceInsert();
+  assert.deepEqual(Voice.insert, { status: "refused", reason: "protected" });
+  await voiceInsert();
+  assert.equal(sent("assistant_insert_text").length, 1);
+  assert.equal(Voice.event.state, "preview");
+  assert.deepEqual(host.drafts, []);
+});
+
+for (const reason of ["gone", "read-only", "unsupported"]) {
+  test(`a kept ${reason} refusal removes the grant and cannot retry insertion`, async () => {
+    await startListening();
+    answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "keep these words" }));
+    await flush();
+    answers.set("assistant_insert_text", { status: "kept", reason });
+    await voiceInsert();
+    assert.deepEqual(Voice.insert, { status: "refused", reason });
+    await voiceInsert();
+    assert.equal(sent("assistant_insert_text").length, 1);
+    assert.equal(sent("assistant_insert_offer").length, 1);
+    assert.equal(Voice.event.transcript, "keep these words");
+  });
+}
+
+test("a busy insertion retains its named grant for a separate retry", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "keep these words" }));
+  await flush();
+  answers.set("assistant_insert_text", { status: "kept", reason: "busy" });
+  await voiceInsert();
+  assert.deepEqual(Voice.insert, { status: "ready", label: "Notepad", grant: GRANT, reason: "busy" });
+  assert.equal(Voice.event.state, "preview");
+  assert.equal(State.isPinned, true);
+  assert.equal(sent("assistant_insert_text").length, 1);
+  answers.set("assistant_insert_text", { status: "done", receipt: { actionId: "act-retry", outcome: "unknown" } });
+  await voiceInsert();
+  assert.equal(sent("assistant_insert_text").length, 2);
+  assert.equal(Voice.event, null);
+});
+
+for (const reason of ["gone", "protected", "read-only", "unsupported"]) {
+  test(`an initial ${reason} refusal cannot re-offer the field`, async () => {
+    await startListening();
+    answers.set("assistant_insert_offer", { status: "refused", reason });
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "keep these words" }));
+    await flush();
+    await voiceInsert();
+    assert.deepEqual(Voice.insert, { status: "refused", reason });
+    assert.equal(sent("assistant_insert_offer").length, 1);
+    assert.equal(sent("assistant_insert_text").length, 0);
+  });
+}
+
+for (const phase of ["re-offer", "insert"]) {
+  test(`${phase} retries keep the original preview expiry`, async (t) => {
+    await startListening();
+    answers.set("assistant_insert_offer", phase === "re-offer"
+      ? { status: "refused", reason: "busy" }
+      : { status: "ready", label: "Notepad", grant: GRANT });
+    // Keep the asynchronous bridge flush real while controlling only the TTL.
+    const nativeTimeout = setTimeout;
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "expires on time" }));
+    await new Promise((resolve) => nativeTimeout(resolve, 0));
+    t.mock.timers.tick(90_000);
+    answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+    answers.set("assistant_insert_text", { status: "kept", reason: "busy" });
+    await voiceInsert();
+    assert.equal(Voice.insert.status, "ready");
+    t.mock.timers.tick(29_999);
+    assert.equal(Voice.event.state, "preview");
+    t.mock.timers.tick(1);
+    assert.equal(Voice.event, null);
+    await voiceInsert();
+    assert.equal(sent("assistant_insert_text").length, phase === "re-offer" ? 0 : 1);
+  });
+}
+
+for (const outcome of ["kept", "done", "failed"]) {
+  test(`a late ${outcome} insertion result cannot replace a newer capture`, async () => {
+    await startListening();
+    answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "old words" }));
+    await flush();
+    const deferred = Promise.withResolvers();
+    answers.set("assistant_insert_text", deferred.promise);
+    const inserting = voiceInsert();
+    await flush();
+    voiceCancel();
+    await startListening("cap-2");
+    deferred.resolve(outcome === "kept" ? { status: "kept", reason: "busy" }
+      : outcome === "done" ? { status: "done", receipt: { actionId: "act-late", outcome: "unknown" } }
+      : { status: "failed", receipt: { actionId: "act-late", outcome: "failed" }, draft: { actionId: "draft-late", text: "old words" } });
+    await inserting;
+    assert.equal(Voice.event.captureId, "cap-2");
+    assert.equal(Voice.event.state, "listening");
+    assert.equal(Voice.insert, null);
+    assert.deepEqual(host.drafts, []);
+  });
+}
+
+test("Use in chat cannot consume the preview while insertion is pending", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "reserved words" }));
+  await flush();
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_insert_text", deferred.promise);
+  const inserting = voiceInsert();
+  answers.set("assistant_voice_use", { actionId: "draft-race", text: "reserved words" });
+  await voiceUse();
+  deferred.resolve({ status: "kept", reason: "busy" });
+  await inserting;
+  assert.equal(sent("assistant_voice_use").length, 0);
+  assert.equal(Voice.event.state, "preview");
+  assert.equal(Voice.insert.status, "ready");
+  assert.deepEqual(host.drafts, []);
+});
+
+test("a kept result cannot restore insert state after the native preview disappears", async () => {
+  await startListening();
+  answers.set("assistant_insert_offer", { status: "ready", label: "Notepad", grant: GRANT });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "old words" }));
+  await flush();
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_insert_text", deferred.promise);
+  const inserting = voiceInsert();
+  await flush();
+  emit("assistant-voice", ev("cap-1", "idle"));
+  deferred.resolve({ status: "kept", reason: "busy" });
+  await inserting;
+  assert.equal(Voice.event, null);
+  assert.equal(Voice.insert, null);
+  assert.equal(State.mode, "compact");
+});

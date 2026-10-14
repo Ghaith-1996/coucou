@@ -24,8 +24,9 @@
 // holds the remembered element; the rest of the app only sees plain data.
 
 use std::sync::mpsc;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -71,7 +72,7 @@ pub struct Offer {
 pub enum Written {
     /// The value read back contains the words.
     Verified,
-    /// SetValue said yes but the value read back doesn't show the words.
+    /// The write may have happened (unverified read-back or a reply timeout).
     Unconfirmed,
     /// SetValue failed: nothing was written.
     Failed,
@@ -164,6 +165,37 @@ pub fn verified(value: &str, text: &str) -> bool {
     !text.is_empty() && value.contains(text)
 }
 
+/// Valid only for the outstanding confirmation, until cancellation or its
+/// original preview/grant expiry. The UIA thread checks this just before writing.
+#[derive(Debug, Clone)]
+pub struct WritePermit {
+    pub cancelled: Arc<AtomicBool>,
+    pub expires: Instant,
+}
+
+impl WritePermit {
+    fn check(&self) -> Result<(), Refusal> {
+        if self.cancelled.load(Ordering::SeqCst) || Instant::now() >= self.expires {
+            Err(Refusal::Gone)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Ownership is checked before consuming anything. Only a definitive
+/// pre-write refusal retains the target; every attempted write is terminal.
+fn write_bound<T>(
+    bound: &mut Option<T>,
+    owns: impl FnOnce(&T) -> bool,
+    write: impl FnOnce(&T) -> Result<Written, Refusal>,
+) -> Result<Written, Refusal> {
+    let field = bound.as_ref().filter(|field| owns(field)).ok_or(Refusal::Gone)?;
+    let answer = write(field);
+    if answer.is_ok() { *bound = None; }
+    answer
+}
+
 // ── The UI Automation thread ─────────────────────────────────────────────────
 
 type Reply<T> = tokio::sync::oneshot::Sender<T>;
@@ -176,7 +208,7 @@ enum Job {
     Bind(Option<String>),
     Offer(String, Reply<Result<Offer, Refusal>>),
     /// Checked again, then written.
-    Write(String, InsertTextArgs, Reply<Result<Written, Refusal>>),
+    Write(String, InsertTextArgs, WritePermit, Reply<Result<Written, Refusal>>),
 }
 
 /// The app's handle on the UI Automation thread. Cheap to share.
@@ -228,9 +260,13 @@ impl Dictation {
     }
 
     /// Checks the field again, then writes the confirmed words into it.
-    pub async fn write(&self, capture_id: &str, args: InsertTextArgs) -> Result<Written, Refusal> {
+    pub async fn write(&self, capture_id: &str, args: InsertTextArgs, permit: WritePermit) -> Result<Written, Refusal> {
         let capture = capture_id.to_string();
-        self.ask(|reply| Job::Write(capture, args, reply), Err(Refusal::Busy)).await
+        // A missing reply cannot prove SetValue never ran. Retire the permit
+        // and return unknown, never a retryable "nothing written" refusal.
+        let answer = self.ask(|reply| Job::Write(capture, args, permit.clone(), reply), Ok(Written::Unconfirmed)).await;
+        permit.cancelled.store(true, Ordering::SeqCst);
+        answer
     }
 }
 
@@ -247,7 +283,7 @@ fn run(jobs: mpsc::Receiver<Job>, _log: fn(String)) {
             Job::Probe(reply) => drop(reply.send(())),
             Job::Bind(_) => {}
             Job::Offer(_, reply) => drop(reply.send(Err(Refusal::Unsupported))),
-            Job::Write(_, _, reply) => drop(reply.send(Err(Refusal::Gone))),
+            Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone))),
         }
     }
 }

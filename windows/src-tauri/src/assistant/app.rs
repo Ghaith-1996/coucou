@@ -52,6 +52,7 @@ pub fn voice(app: &AppHandle) -> Voice {
 /// the island takes the keyboard for its card: dictation may go there later.
 #[tauri::command]
 pub async fn assistant_voice_toggle(voice: State<'_, Voice>, dictation: State<'_, Dictation>) -> Result<Option<String>, ()> {
+    voice.cancel_preview();
     dictation.probe().await;
     let id = voice.toggle();
     dictation.bind(id.clone());
@@ -185,9 +186,8 @@ pub enum InsertResult {
     Failed { receipt: ActionReceipt, draft: Option<ChatDraft> },
 }
 
-/// The user confirmed "Insert into <app>". The field is checked first,
-/// without using the transcript; then the grant is checked against the
-/// action Rust kept, and the words are written and read back.
+/// The user confirmed "Insert into <app>". Reserve its preview and grant
+/// until the write is terminal, or a definitive pre-write refusal keeps them.
 #[tauri::command]
 pub async fn assistant_insert_text(
     voice: State<'_, Voice>,
@@ -195,21 +195,20 @@ pub async fn assistant_insert_text(
     capture_id: String,
     grant: Grant,
 ) -> Result<InsertResult, ErrorCode> {
-    if let Err(reason) = dictation.offer(&capture_id).await {
-        return Ok(InsertResult::Kept { reason });
-    }
-    let (action_id, args) = voice.confirm(&capture_id, &grant)?;
-    let ValidArgs::InsertText(args) = args else { return Err(ErrorCode::InvalidArgs) };
+    let (action_id, args, permit) = voice.begin_insert(&capture_id, &grant)?;
     let text = args.text.clone();
-    let reply = match dictation.write(&capture_id, args).await {
+    let written = dictation.write(&capture_id, args, permit).await;
+    voice.finish_insert(&capture_id, &action_id, written.is_err())?;
+    let reply = match written {
         Ok(Written::Verified) => match ActionReceipt::succeeded(&action_id, "uia-value:read-back") {
             Some(receipt) => InsertResult::Done { receipt },
             None => InsertResult::Done { receipt: ActionReceipt::unknown(&action_id) },
         },
-        // SetValue took it but the value doesn't show it: may or may not be
-        // there, and never written twice.
+        // Unverified read-back or write timeout: it may be there already,
+        // and must never be written twice.
         Ok(Written::Unconfirmed) => InsertResult::Done { receipt: ActionReceipt::unknown(&action_id) },
-        Ok(Written::Failed) | Err(_) => InsertResult::Failed {
+        Err(reason) => InsertResult::Kept { reason },
+        Ok(Written::Failed) => InsertResult::Failed {
             receipt: ActionReceipt::failed(&action_id, ErrorCode::Failed),
             draft: voice.fallback_draft(&capture_id, text).ok(),
         },

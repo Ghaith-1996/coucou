@@ -61,7 +61,7 @@ fn refuse_all(jobs: mpsc::Receiver<Job>) {
             Job::Probe(reply) => drop(reply.send(())),
             Job::Bind(_) => {}
             Job::Offer(_, reply) => drop(reply.send(Err(Refusal::Unsupported))),
-            Job::Write(_, _, reply) => drop(reply.send(Err(Refusal::Gone))),
+            Job::Write(_, _, _, reply) => drop(reply.send(Err(Refusal::Gone))),
         }
     }
 }
@@ -108,17 +108,12 @@ fn serve(ua: &IUIAutomation2, jobs: mpsc::Receiver<Job>, log: fn(String)) {
                 }
                 let _ = reply.send(answer);
             }
-            Job::Write(capture, args, reply) => {
-                // Used once, whatever the answer.
-                let field = bound.take().filter(|f| {
+            Job::Write(capture, args, permit, reply) => {
+                let answer = write_bound(&mut bound, |f| {
                     f.capture.as_deref() == Some(&capture)
                         && f.window.0 as usize as u64 == args.target_window
                         && f.pid == args.target_pid
-                });
-                let answer = match field {
-                    None => Err(Refusal::Gone),
-                    Some(field) => write(&field, &args.text),
-                };
+                }, |field| write(field, &args.text, &permit, &reply));
                 log(match answer {
                     Ok(Written::Verified) => "dictation: text inserted and read back".into(),
                     Ok(Written::Unconfirmed) => "dictation: text set but not read back".into(),
@@ -186,12 +181,19 @@ fn check(field: &Field) -> Result<IUIAutomationValuePattern, Refusal> {
     }
 }
 
-fn write(field: &Field, text: &str) -> Result<Written, Refusal> {
+fn write(field: &Field, text: &str, permit: &WritePermit, reply: &Reply<Result<Written, Refusal>>) -> Result<Written, Refusal> {
+    permit.check()?;
+    if reply.is_closed() { return Err(Refusal::Gone); }
     let pattern = check(field)?;
     let current = unsafe { pattern.CurrentValue() }.map_err(|_| Refusal::Gone)?.to_string();
     let caret = caret(&field.element);
     let next = spliced(&current, caret.as_ref().map(|(b, s)| (b.as_str(), s.as_str())), text);
-    if unsafe { pattern.SetValue(&BSTR::from(next)) }.is_err() {
+    // UIA reads can block. Check again immediately before the only effect,
+    // so a cancelled/replaced capture or a timed-out queued job cannot write.
+    let next = BSTR::from(next);
+    permit.check()?;
+    if reply.is_closed() { return Err(Refusal::Gone); }
+    if unsafe { pattern.SetValue(&next) }.is_err() {
         return Ok(Written::Failed);
     }
     let after = unsafe { pattern.CurrentValue() }.map(|v| v.to_string()).unwrap_or_default();

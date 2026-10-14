@@ -131,6 +131,7 @@ interface Picker {
   el: HTMLElement;
   open(): void;
   close(): void;
+  accountChanged(): void;
   readonly isOpen: boolean;
 }
 
@@ -144,6 +145,9 @@ function buildPicker(onChange: () => void): Picker {
   const cache = new Map<string, ModelInfo[]>();
   let isOpen = false;
   let request = 0;
+  // Login owns its outcome independently of catalog requests: native status
+  // events arrive on both successful and failed commands, in either order.
+  let connection: { accountId: string | null; sawUnusable: boolean; pending: boolean; error?: string } | null = null;
 
   function drawChips() {
     clear(chips);
@@ -157,6 +161,7 @@ function buildPicker(onChange: () => void): Picker {
       );
       chip.addEventListener("click", () => {
         if (p.id === State.settings.chatProvider) return;
+        connection = null;
         State.settings = { ...State.settings, chatProvider: p.id };
         saveSettings();
         Sound.play("pop");
@@ -231,19 +236,65 @@ function buildPicker(onChange: () => void): Picker {
     list.append(line, button);
   }
 
+  function failureBelongsTo(attempt: NonNullable<typeof connection>): boolean {
+    // A successful reconnect in another window supersedes an older failure.
+    if (attempt.sawUnusable && chatgpt?.connected && chatgpt.planEnabled) return false;
+    return chatgpt?.accountId === attempt.accountId
+      // A first registration can acquire its issued ID before exchange or
+      // credential storage fails. It still belongs to this sign-in prompt.
+      || (attempt.accountId === null && !chatgpt?.connected && !chatgpt?.canSwitchAccounts);
+  }
+
   async function connect(p: ProviderDef) {
-    const ticket = ++request;
+    request++;
+    const attempt: NonNullable<typeof connection> = {
+      accountId: chatgpt?.accountId ?? null,
+      sawUnusable: !chatgpt?.connected || !chatgpt.planEnabled,
+      pending: true,
+    };
+    connection = attempt;
     const revision = chatgptRevision;
+    const isCurrent = () => connection === attempt && isOpen && State.settings.chatProvider === p.id;
     status(t(STRINGS.connecting));
     try {
       const connected = await Bridge.chatgptConnect();
+      if (!isCurrent()) return;
+      attempt.pending = false;
       if (revision === chatgptRevision) chatgpt = connected;
+      else if (chatgpt?.accountId !== connected.accountId) {
+        close();
+        return;
+      }
+      attempt.accountId = connected.accountId;
       Sound.play("approve");
-      if (ticket === request) await loadChatGpt(p);
+      await loadChatGpt(p);
     } catch (err) {
-      if (ticket === request) signInPrompt(p, chatgpt, String(err).replace(/^Error:\s*/, ""));
+      if (!isCurrent()) return;
+      attempt.pending = false;
+      attempt.error = String(err).replace(/^Error:\s*/, "");
+      accountChanged();
     }
     State.notify();
+  }
+
+  function accountChanged() {
+    if (!isOpen || State.settings.chatProvider !== CHATGPT) return;
+    request++; // Fence this account's catalog without stranding other providers.
+    const attempt = connection;
+    if (attempt && (!chatgpt?.connected || !chatgpt.planEnabled)) attempt.sawUnusable = true;
+    if (!attempt) {
+      close();
+    } else if (attempt.pending) {
+      // The command result decides whether this event was its own sign-in or
+      // a different account selected concurrently in another window.
+      status(t(STRINGS.connecting));
+    } else if (attempt.error !== undefined && failureBelongsTo(attempt)) {
+      attempt.accountId = chatgpt?.accountId ?? null;
+      signInPrompt(providerDef(CHATGPT), chatgpt, attempt.error);
+    } else if (chatgpt?.accountId === attempt.accountId) {
+      if (attempt.error !== undefined) connection = null;
+      void loadChatGpt(providerDef(CHATGPT));
+    } else close();
   }
 
   function drawChatGpt(p: ProviderDef, s: ChatGptStatus, models: ChatGptModel[]) {
@@ -343,6 +394,7 @@ function buildPicker(onChange: () => void): Picker {
 
   function close() {
     isOpen = false;
+    connection = null;
     request++;
     el.classList.remove("on");
     onChange();
@@ -352,6 +404,7 @@ function buildPicker(onChange: () => void): Picker {
     el,
     open,
     close,
+    accountChanged,
     get isOpen() {
       return isOpen;
     },
@@ -427,6 +480,8 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   let armedButton: HTMLButtonElement | null = null;
   const pendingDeletes = new Set<string>();
   const deleteFailures = new Map<string, string>();
+  const pendingRenames = new Map<string, object>();
+  const renameFailures = new Map<string, { title: string; error: string }>();
   let summaries: ConversationSummary[] = [];
   let listRequest = 0;
   let cursor: ConversationCursor | null = null;
@@ -453,6 +508,37 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     close();
   });
 
+  async function rename_(id: string, title: string) {
+    if (pendingRenames.has(id) || pendingDeletes.has(id)) return;
+    const attempt = {};
+    const panel = panelSession;
+    const navigation = navigationAttempt;
+    const session = chatSession;
+    pendingRenames.set(id, attempt);
+    renameFailures.delete(id);
+    render();
+    try {
+      await Bridge.chatHistoryRename(id, title);
+      if (pendingRenames.get(id) !== attempt) return;
+      if (State.chatId === id) chatTitle = title;
+      const refresh = invalidateList();
+      summaries = summaries.map((item) => item.id === id ? { ...item, title } : item);
+      if (refresh) void draw();
+    } catch (err) {
+      if (pendingRenames.get(id) !== attempt) return;
+      if (isOpen && panel === panelSession && navigation === navigationAttempt && session === chatSession) {
+        renameFailures.set(id, { title, error: String(err).replace(/^Error:\s*/, "") });
+        Sound.play("error");
+      }
+    } finally {
+      if (pendingRenames.get(id) === attempt) {
+        pendingRenames.delete(id);
+        // A newer open owns its error/loading view, even if this write succeeds.
+        if (isOpen && navigation === navigationAttempt) render();
+      }
+    }
+  }
+
   function row(s: ConversationSummary): HTMLElement {
     const name = h("span", { class: "picker-model-name", text: s.title });
     const when = h("span", { class: "picker-tag", text: whenLabel(s.updatedAt) });
@@ -460,29 +546,26 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     const del = h("button", { class: "history-act", title: tl(STRINGS.delete), "aria-label": tl(STRINGS.delete) }, svg(ICONS.trash, 11));
     const line = h("div", { class: State.chatId === s.id ? "picker-model on history-row" : "picker-model history-row", "data-id": s.id, role: "button", tabindex: "0" }, name, when, rename, del);
 
-    rename.disabled = del.disabled = pendingDeletes.has(s.id);
+    del.disabled = pendingDeletes.has(s.id);
+    rename.disabled = del.disabled || pendingRenames.has(s.id);
     line.addEventListener("click", () => void open_(s.id));
     rename.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (pendingDeletes.has(s.id)) return;
-      const input = h("input", { class: "history-rename", value: s.title, maxlength: "120" }) as HTMLInputElement;
+      if (pendingDeletes.has(s.id) || pendingRenames.has(s.id)) return;
+      const input = h("input", { class: "history-rename", value: renameFailures.get(s.id)?.title ?? s.title, maxlength: "120" }) as HTMLInputElement;
       name.replaceWith(input);
       input.focus();
       input.select();
       let finished = false;
-      const done = async (keep: boolean) => {
+      const done = (keep: boolean) => {
         if (finished) return;
         finished = true;
         const title = keep ? cleanTitle(input.value) : null;
-        if (title && title !== s.title) {
-          await Bridge.chatHistoryRename(s.id, title).then(() => {
-            if (State.chatId === s.id) chatTitle = title;
-            const refresh = invalidateList();
-            summaries = summaries.map((item) => item.id === s.id ? { ...item, title } : item);
-            if (refresh) void draw();
-          }).catch(() => {});
+        if (title && title !== s.title) void rename_(s.id, title);
+        else {
+          renameFailures.delete(s.id);
+          render();
         }
-        render();
       };
       input.addEventListener("click", (ev) => ev.stopPropagation());
       input.addEventListener("keydown", (ev) => {
@@ -509,6 +592,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       const session = chatSession;
       const navigation = navigationAttempt;
       pendingDeletes.add(s.id);
+      renameFailures.delete(s.id);
       deleteFailures.delete(s.id);
       render();
       try {
@@ -521,6 +605,8 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
         return;
       }
       pendingDeletes.delete(s.id);
+      pendingRenames.delete(s.id);
+      renameFailures.delete(s.id);
       deleteFailures.delete(s.id);
       const refresh = invalidateList();
       // Only the untouched conversation that was confirmed may be cleared.
@@ -543,6 +629,11 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
     }
     for (const summary of summaries) {
       list.append(row(summary));
+      const failedRename = renameFailures.get(summary.id);
+      if (failedRename) list.append(
+        h("div", { class: "picker-status history-error", role: "alert", text: failedRename.error }),
+        h("button", { class: "picker-link history-rename-retry", text: tl(STRINGS.retryHistory), onclick: () => void rename_(summary.id, failedRename.title) }),
+      );
       const error = deleteFailures.get(summary.id);
       if (error) list.append(h("div", { class: "picker-status history-error", role: "alert", text: error }));
     }
@@ -652,6 +743,7 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
   function close() {
     panelSession++;
     invalidateList();
+    renameFailures.clear();
     isOpen = false;
     disarmDelete();
     el.classList.remove("on");
@@ -925,9 +1017,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     chatgptRevision++;
     chatgpt = s;
     catalog = null; // another account, or none: its catalog is asked again
-    // Every status event invalidates pending catalog work, including a welcome
-    // acknowledgement on the same account. Don't leave its spinner stranded.
-    if (onChatGpt() && picker.isOpen) picker.close();
+    picker.accountChanged();
     State.notify();
   });
 

@@ -4780,16 +4780,16 @@
    "ru": "Недоступно в вашем тарифе ChatGPT: {what}.",
    "id": "Tidak tersedia di paket ChatGPT Anda: {what}."
   },
-  "ChatGPT refused this app's request. Reconnect in Settings.": {
-   "zh-Hans": "ChatGPT 拒绝了此应用的请求。请在设置中重新连接。",
-   "hi": "ChatGPT ने इस ऐप का अनुरोध अस्वीकार कर दिया। सेटिंग्स में फिर से कनेक्ट करें।",
-   "es": "ChatGPT rechazó la solicitud de esta app. Vuelve a conectarte en Ajustes.",
-   "ar": "رفض ChatGPT طلب هذا التطبيق. أعد الاتصال من الإعدادات.",
-   "fr": "ChatGPT a refusé la requête de cette app. Reconnecte-toi dans les Réglages.",
-   "bn": "ChatGPT এই অ্যাপের অনুরোধ প্রত্যাখ্যান করেছে। সেটিংসে আবার সংযোগ করুন।",
-   "pt-BR": "O ChatGPT recusou a solicitação deste app. Reconecte em Configurações.",
-   "ru": "ChatGPT отклонил запрос этого приложения. Переподключитесь в настройках.",
-   "id": "ChatGPT menolak permintaan aplikasi ini. Hubungkan ulang di Pengaturan."
+  "ChatGPT refused this app's request. Check the app's configuration and permissions.": {
+   "zh-Hans": "ChatGPT 拒绝了此应用的请求。请检查应用的配置和权限。",
+   "hi": "ChatGPT ने इस ऐप का अनुरोध अस्वीकार कर दिया। ऐप का कॉन्फ़िगरेशन और अनुमतियाँ जाँचें।",
+   "es": "ChatGPT rechazó la solicitud de esta app. Revisa la configuración y los permisos de la app.",
+   "ar": "رفض ChatGPT طلب هذا التطبيق. تحقق من إعدادات التطبيق وأذوناته.",
+   "fr": "ChatGPT a refusé la requête de cette app. Vérifie sa configuration et ses autorisations.",
+   "bn": "ChatGPT এই অ্যাপের অনুরোধ প্রত্যাখ্যান করেছে। অ্যাপের কনফিগারেশন ও অনুমতিগুলো পরীক্ষা করুন।",
+   "pt-BR": "O ChatGPT recusou a solicitação deste app. Verifique a configuração e as permissões do app.",
+   "ru": "ChatGPT отклонил запрос этого приложения. Проверьте настройки и разрешения приложения.",
+   "id": "ChatGPT menolak permintaan aplikasi ini. Periksa konfigurasi dan izin aplikasi."
   },
   "This model isn't available on your ChatGPT account.": {
    "zh-Hans": "你的 ChatGPT 账户无法使用此模型。",

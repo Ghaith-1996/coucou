@@ -125,6 +125,207 @@ test("not signed in: the picker offers Continue with ChatGPT, and nothing is ask
   assert.equal(sent("chatgpt_models").length, 1, "the catalog once signed in");
 });
 
+// The native command emits chatgpt-status on success, failure and cancellation.
+// Exercise both deliveries, because the event and command use separate channels.
+const SIGNED_OUT = { ...CONNECTED, connected: false, accountId: null, email: null };
+async function beginSignIn(t, initial = SIGNED_OUT) {
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve(CONNECTED); await flush(); });
+  answers.chatgpt_status = initial;
+  answers.chatgpt_connect = () => pending.promise;
+  $(".model-btn").fire("click");
+  await flush();
+  $(".chatgpt-connect").fire("click");
+  await flush();
+  return pending;
+}
+
+for (const order of ["before", "after"]) {
+  for (const error of ["Sign-in failed. Try again.", "Sign-in cancelled."]) {
+    test(`the initiating picker preserves ${error} when status arrives ${order} rejection`, async (t) => {
+      const pending = await beginSignIn(t);
+      if (order === "before") emit("chatgpt-status", SIGNED_OUT);
+      pending.reject(new Error(error));
+      await flush();
+      if (order === "after") emit("chatgpt-status", SIGNED_OUT);
+      await flush();
+      assert.ok($(".picker").classList.contains("on"), "the failed attempt stays visible");
+      assert.match($(".picker-list").textContent, new RegExp(error.replace(/[.]/g, "\\.")));
+      assert.equal($(".chatgpt-connect").textContent, "Continue with ChatGPT", "retry remains available");
+      assert.equal(sent("chatgpt_models").length, 0);
+      answers.chatgpt_status = CONNECTED;
+      answers.chatgpt_connect = CONNECTED;
+      $(".chatgpt-connect").fire("click");
+      await flush();
+      assert.equal(view.el.find(".picker-model").length, 2, "retry can succeed");
+    });
+  }
+
+  test(`a successful initiating login refreshes its catalog with status ${order} settlement`, async (t) => {
+    const pending = await beginSignIn(t);
+    answers.chatgpt_status = CONNECTED;
+    if (order === "before") emit("chatgpt-status", CONNECTED);
+    pending.resolve(CONNECTED);
+    await flush();
+    if (order === "after") emit("chatgpt-status", CONNECTED);
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.deepEqual(view.el.find(".picker-model").map((row) => row.disabled), [false, false]);
+    assert.doesNotMatch($(".picker-list").textContent, /Finish signing in/);
+  });
+}
+
+for (const order of ["before", "after"]) {
+  test(`a first registration storage failure survives its newly issued account status ${order} rejection`, async (t) => {
+    const pending = await beginSignIn(t);
+    const partial = { ...SIGNED_OUT, accountId: "issued-client", needsReconnect: true, hasSavedCredentials: true };
+    answers.chatgpt_status = partial;
+    if (order === "before") emit("chatgpt-status", partial);
+    pending.reject(new Error("Could not save ChatGPT credentials"));
+    await flush();
+    if (order === "after") emit("chatgpt-status", partial);
+    assert.ok($(".picker").classList.contains("on"));
+    assert.match($(".picker-list").textContent, /Could not save ChatGPT credentials/);
+    assert.equal($(".chatgpt-connect").textContent, "Reconnect");
+    assert.equal(sent("chatgpt_models").length, 0);
+  });
+}
+
+test("a failed first registration binds its error to the issued account", async (t) => {
+  const pending = await beginSignIn(t);
+  const issued = { ...SIGNED_OUT, accountId: "issued-client", needsReconnect: true };
+  emit("chatgpt-status", issued);
+  pending.reject(new Error("Issued registration failed"));
+  await flush();
+  assert.match($(".picker-list").textContent, /Issued registration failed/);
+  const selected = { ...issued, accountId: "another-client" };
+  answers.chatgpt_status = selected;
+  emit("chatgpt-status", selected);
+  await flush();
+  assert.equal($(".picker").classList.contains("on"), false, "another registration invalidates the old error");
+  $(".model-btn").fire("click");
+  await flush();
+  assert.doesNotMatch($(".picker-list").textContent, /Issued registration failed/);
+});
+
+for (const order of ["before", "after"]) {
+  test(`same-account recovery ${order} login rejection clears the stale error`, async (t) => {
+    const pending = await beginSignIn(t, { ...CONNECTED, connected: false, needsReconnect: true });
+    answers.chatgpt_status = CONNECTED;
+    if (order === "before") emit("chatgpt-status", CONNECTED);
+    pending.reject(new Error("Earlier sign-in failed"));
+    await flush();
+    if (order === "after") emit("chatgpt-status", CONNECTED);
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.doesNotMatch($(".picker-list").textContent, /Earlier sign-in failed/);
+    assert.equal(view.el.find(".picker-model").length, 2);
+  });
+}
+
+for (const order of ["before", "after"]) {
+  test(`a reconnect started from a usable account clears its error after recovery, failed status ${order} rejection`, async (t) => {
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(CONNECTED); await flush(); });
+    answers.chatgpt_models = new Error("Catalog unavailable; reconnect");
+    $(".model-btn").fire("click");
+    await flush();
+    answers.chatgpt_connect = () => pending.promise;
+    $(".chatgpt-connect").fire("click");
+    await flush();
+    const failed = { ...CONNECTED, connected: false, needsReconnect: true };
+    if (order === "before") emit("chatgpt-status", failed);
+    pending.reject(new Error("Reconnect storage failed"));
+    await flush();
+    if (order === "after") emit("chatgpt-status", failed);
+    assert.match($(".picker-list").textContent, /Reconnect storage failed/);
+    answers.chatgpt_models = CATALOG;
+    answers.chatgpt_status = CONNECTED;
+    emit("chatgpt-status", CONNECTED);
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.doesNotMatch($(".picker-list").textContent, /Reconnect storage failed/);
+    assert.equal(view.el.find(".picker-model").length, 2);
+  });
+}
+
+for (const outcome of ["success", "failure"]) {
+  test(`a status after login fences an older catalog ${outcome}`, async (t) => {
+    const pending = await beginSignIn(t);
+    const oldCatalog = Promise.withResolvers();
+    t.after(async () => { oldCatalog.resolve(CATALOG); await flush(); });
+    answers.chatgpt_status = CONNECTED;
+    answers.chatgpt_models = () => oldCatalog.promise;
+    pending.resolve(CONNECTED);
+    await flush();
+    answers.chatgpt_models = [CATALOG[0], { ...CATALOG[1], available: false }];
+    emit("chatgpt-status", CONNECTED);
+    await flush();
+    if (outcome === "success") oldCatalog.resolve(CATALOG);
+    else oldCatalog.reject(new Error("Older catalog failed"));
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.equal(view.el.find(".picker-model")[1].disabled, true);
+    assert.doesNotMatch($(".picker-list").textContent, /Older catalog failed/);
+  });
+}
+
+for (const outcome of ["success", "failure"]) {
+  test(`a login ${outcome} cannot overwrite a concurrent different account`, async (t) => {
+    const pending = await beginSignIn(t);
+    const newer = { ...CONNECTED, accountId: "other-client", email: "other@example.com" };
+    answers.chatgpt_status = newer;
+    answers.chatgpt_models = [CATALOG[0], { ...CATALOG[1], available: false }];
+    emit("chatgpt-status", newer);
+    if (outcome === "success") pending.resolve(CONNECTED);
+    else pending.reject(new Error("Old login failed"));
+    await flush();
+    if (!$(".picker").classList.contains("on")) $(".model-btn").fire("click");
+    await flush();
+    assert.match($(".picker-list").textContent, /other@example.com/);
+    assert.doesNotMatch($(".picker-list").textContent, /Old login failed/);
+    assert.equal(view.el.find(".picker-model")[1].disabled, true);
+  });
+
+  test(`a closed login ${outcome} cannot replace the reopened picker`, async (t) => {
+    const pending = await beginSignIn(t);
+    $(".model-btn").fire("click");
+    answers.chatgpt_status = CONNECTED;
+    $(".model-btn").fire("click");
+    await flush();
+    const rows = view.el.find(".picker-model");
+    if (outcome === "success") pending.resolve(SIGNED_OUT);
+    else pending.reject(new Error("Closed login failed"));
+    await flush();
+    assert.ok($(".picker").classList.contains("on"));
+    assert.deepEqual(view.el.find(".picker-model"), rows);
+    assert.doesNotMatch($(".picker-list").textContent, /Closed login failed/);
+  });
+}
+
+for (const provider of ["anthropic", "ollama"]) {
+  for (const outcome of ["success", "failure"]) {
+    test(`a ChatGPT status event preserves a pending ${provider} catalog ${outcome}`, async (t) => {
+      const pending = Promise.withResolvers();
+      t.after(async () => { pending.resolve([]); await flush(); });
+      State.settings = { ...State.settings, chatProvider: provider };
+      answers.secret_present = true;
+      answers.chat_models = () => pending.promise;
+      $(".model-btn").fire("click");
+      await flush();
+      assert.match($(".picker-list").textContent, /Loading models/);
+      emit("chatgpt-status", SIGNED_OUT);
+      if (outcome === "success") pending.resolve([{ id: "provider-model", label: "Provider model" }]);
+      else pending.reject(new Error("Provider catalog unavailable"));
+      await flush();
+      assert.ok($(".picker").classList.contains("on"));
+      assert.doesNotMatch($(".picker-list").textContent, /Loading models/);
+      if (outcome === "success") assert.deepEqual(view.el.find(".picker-model").map((row) => row.textContent), ["Provider model"]);
+      else assert.match($(".picker-list").textContent, /Provider catalog unavailable/);
+    });
+  }
+}
+
 test("both models are offered; one the account lacks is shown unavailable, never swapped", async () => {
   answers.chatgpt_models = [{ ...CATALOG[0], available: false }, CATALOG[1]];
   $(".model-btn").fire("click");

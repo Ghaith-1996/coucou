@@ -584,6 +584,21 @@ fn errors_follow_the_recovery_table() {
     assert!(!error_message(500, &Value::Null).transient);
 }
 
+#[tokio::test]
+async fn configuration_errors_keep_credentials_and_request_configuration_checks() {
+    for code in ["subscription_sharing_route_not_supported", "chatpass_v2_scope_not_authorized", "chatpass_v2_invalid_authorization_context"] {
+        let failure = error_message(403, &json!({ "error": { "code": code } }));
+        assert_eq!(failure.text, t("ChatGPT refused this app's request. Check the app's configuration and permissions."));
+        assert!(!failure.transient && !failure.usage_limit);
+        for mut refreshed in [false, true] {
+            assert_eq!(recover_authentication_with(403, &mut refreshed,
+                || -> std::future::Ready<Result<String, String>> { panic!("configuration errors cannot refresh credentials") },
+                || -> std::future::Ready<Result<(), String>> { panic!("configuration errors cannot end the session") },
+            ).await, Ok(None));
+        }
+    }
+}
+
 #[test]
 fn the_status_never_carries_a_token() {
     let text = serde_json::to_string(&status_for(&account(Some("test-client")), true, true)).unwrap();
@@ -640,18 +655,175 @@ fn ended_sessions_keep_reconnect_and_cleanup_visible_without_authorizing_switchi
 #[test]
 fn status_read_failures_never_hide_recovery_or_claim_a_usable_session() {
     for (refresh, id) in [(false, false), (true, false), (false, true), (true, true)] {
-        let status = status_from_storage(Err("unreadable metadata".into()), Ok((refresh, id)), Some("oaiapp_original"));
+        let status = status_from_storage(Err("unreadable metadata".into()), Ok((refresh, id)), Some("oaiapp_original"), None);
         assert!(!status.connected && !status.can_switch_accounts && !status.show_welcome);
         assert!(status.needs_reconnect);
         assert_eq!(status.has_saved_credentials, refresh || id);
     }
     for account in [Ok(registered_account()), Ok(Account { explicitly_disconnected: true, ..registered_account() }), Err("corrupt metadata".into())] {
-        let status = status_from_storage(account, Err("keystore locked".into()), Some("oaiapp_original"));
+        let status = status_from_storage(account, Err("keystore locked".into()), Some("oaiapp_original"), None);
         assert!(!status.connected && !status.can_switch_accounts && !status.show_welcome);
         assert!(status.needs_reconnect && status.has_saved_credentials);
     }
-    let orphaned = status_from_storage(Ok(Account::default()), Ok((true, false)), None);
+    let orphaned = status_from_storage(Ok(Account::default()), Ok((true, false)), None, None);
     assert!(!orphaned.connected && orphaned.has_saved_credentials && !orphaned.can_switch_accounts);
+}
+
+#[tokio::test]
+async fn authenticated_requests_refresh_once_even_after_transient_responses() {
+    for (statuses, should_reconnect) in [
+        (vec![200], false), (vec![401, 200], false), (vec![503, 401, 200], false),
+        (vec![401, 503, 200], false), (vec![503, 503, 503], false),
+        (vec![401, 401], true), (vec![503, 401, 401], true), (vec![401, 503, 401], true),
+    ] {
+        let mut refreshed = false;
+        let refreshes = std::cell::Cell::new(0);
+        let rejections = std::cell::Cell::new(0);
+        let mut token = "original-access".to_string();
+        let mut terminal = false;
+        for status in statuses.iter().copied() {
+            let result = recover_authentication_with(status, &mut refreshed,
+                || {
+                    refreshes.set(refreshes.get() + 1);
+                    std::future::ready(Ok("new-access".into()))
+                },
+                || {
+                    assert_eq!(token, "new-access", "only a rejected refreshed token ends the session");
+                    rejections.set(rejections.get() + 1);
+                    std::future::ready(Ok(()))
+                },
+            ).await;
+            match result {
+                Ok(Some(next)) => token = next,
+                Ok(None) => {},
+                Err(error) => {
+                    assert_eq!(error, t("Your ChatGPT session ended. Reconnect in Settings."));
+                    terminal = true;
+                    break;
+                },
+            }
+        }
+        assert_eq!(refreshes.get(), usize::from(statuses.contains(&401)));
+        assert_eq!(rejections.get(), usize::from(should_reconnect));
+        assert_eq!(terminal, should_reconnect);
+    }
+}
+
+#[tokio::test]
+async fn a_failed_forced_refresh_keeps_its_original_recovery_result() {
+    for error in ["temporary refresh outage", "refresh token expired", "credential write failed"] {
+        let mut refreshed = false;
+        let result = recover_authentication_with(401, &mut refreshed,
+            || std::future::ready(Err(error.to_string())),
+            || -> std::future::Ready<Result<(), String>> { panic!("the refresh path already owns recovery") },
+        ).await;
+        assert_eq!(result, Err(error.to_string()));
+    }
+}
+
+#[test]
+fn a_second_rejection_is_recorded_before_an_error_body_can_wait_or_be_cancelled() {
+    let rejected = std::sync::Mutex::new(None);
+    let original = registered_account();
+    let request = RequestAccount { client_id: "oaiapp_original".into(), generation: 4 };
+    let persisted = std::cell::RefCell::new(original.clone());
+    let invalidated = std::cell::Cell::new(false);
+    let mut operation = Box::pin(async {
+        let mut refreshed = true;
+        recover_authentication_with(401, &mut refreshed,
+            || -> std::future::Ready<Result<String, String>> { panic!("never refresh twice") },
+            || std::future::ready(reject_session_with(&request, 4, true, Ok(original.clone()), &rejected,
+                |next| { persisted.replace(next.clone()); Ok(()) },
+                |key, value| { assert_eq!((key, value), (REFRESH_TOKEN_KEY, "")); Ok(()) },
+                || invalidated.set(true),
+            )),
+        ).await?;
+        std::future::pending::<Result<(), String>>().await
+    });
+    let mut context = std::task::Context::from_waker(futures_util::task::noop_waker_ref());
+    assert!(matches!(std::future::Future::poll(operation.as_mut(), &mut context), std::task::Poll::Ready(Err(_))));
+    drop(operation);
+    assert!(invalidated.get());
+    assert!(persisted.borrow().session_needs_reconnect);
+    assert_eq!(rejected.lock().unwrap().as_deref(), Some("oaiapp_original"));
+}
+
+#[test]
+fn rejected_sessions_fail_closed_when_metadata_or_credential_cleanup_fails() {
+    for readable in [false, true] {
+        for saved in [false, true] {
+            for deleted in [false, true] {
+                let rejected = std::sync::Mutex::new(None);
+                let original = registered_account();
+                let persisted = std::cell::RefCell::new(original.clone());
+                let request = RequestAccount { client_id: "oaiapp_original".into(), generation: 4 };
+                let generation = std::cell::Cell::new(4);
+                let access_present = std::cell::Cell::new(true);
+                let refresh_present = std::cell::Cell::new(true);
+                let result = reject_session_with(&request, generation.get(), true,
+                    if readable { Ok(original.clone()) } else { Err("unreadable metadata".into()) }, &rejected,
+                    |next| {
+                        assert!(!access_present.get(), "invalidate before touching fallible storage");
+                        assert!(next.session_needs_reconnect);
+                        if !saved { return Err("disk full".into()); }
+                        persisted.replace(next.clone()); Ok(())
+                    },
+                    |key, value| {
+                        assert_eq!((key, value), (REFRESH_TOKEN_KEY, ""), "retain the ID hint and registration");
+                        if !deleted { return Err("keystore locked".into()); }
+                        refresh_present.set(false); Ok(())
+                    },
+                    || { access_present.set(false); generation.set(generation.get() + 1); },
+                );
+                assert_eq!(result.is_ok(), readable && saved);
+                assert!(!access_present.get());
+                assert_eq!(generation.get(), 5);
+                assert!(check_session_generation(&request, generation.get()).is_err());
+                assert_eq!(persisted.borrow().registration(), original.registration());
+                assert_eq!(persisted.borrow().host_id, original.host_id);
+                assert!(!persisted.borrow().explicitly_disconnected);
+                let status = status_from_storage(Ok(persisted.borrow().clone()), Ok((refresh_present.get(), true)),
+                    Some("oaiapp_original"), rejected.lock().unwrap().as_deref());
+                assert!(!status.connected && status.needs_reconnect && !status.show_welcome && !status.can_switch_accounts,
+                    "even a failed save and an active-refresh hint cannot hide the known rejection");
+                let mut next_request_account = persisted.borrow().clone();
+                apply_session_rejection(&mut next_request_account, rejected.lock().unwrap().as_deref());
+                assert!(require_selected_client(&next_request_account, &request.client_id).is_err());
+                if (readable && saved) || deleted {
+                    let restarted = status_for(&persisted.borrow(), refresh_present.get(), true);
+                    assert!(!restarted.connected && restarted.needs_reconnect);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn stale_rejections_cannot_end_a_new_account_or_a_newer_access_token() {
+    let request = RequestAccount { client_id: "oaiapp_original".into(), generation: 4 };
+    let original = registered_account();
+    let mut other = original.clone(); other.client_id = Some("oaiapp_new".into());
+    let cached = Access { client_id: request.client_id.clone(), generation: 4,
+        token: "newer-access".into(), until: Instant::now() + Duration::from_secs(3600) };
+    assert!(!cached.matches_rejection(&request, "old-access"));
+    assert!(cached.matches_rejection(&request, "newer-access"));
+    assert!(!cached.matches_rejection(&RequestAccount { client_id: "oaiapp_new".into(), generation: 4 }, "newer-access"));
+    assert!(!cached.matches_rejection(&RequestAccount { client_id: request.client_id.clone(), generation: 5 }, "newer-access"));
+    for (generation, owns_token, account) in [(5, true, original.clone()), (4, true, other), (4, false, original)] {
+        let rejected = std::sync::Mutex::new(None);
+        assert!(reject_session_with(&request, generation, owns_token, Ok(account), &rejected,
+            |_| panic!("stale requests cannot persist metadata"),
+            |_, _| panic!("stale requests cannot erase current credentials"),
+            || panic!("stale requests cannot invalidate current access"),
+        ).is_err());
+        assert!(rejected.lock().unwrap().is_none());
+    }
+}
+
+#[test]
+fn rejected_client_latches_never_hide_another_selected_accounts_connection() {
+    let status = status_from_storage(Ok(registered_account()), Ok((true, true)), None, Some("oaiapp_other"));
+    assert!(status.connected && !status.needs_reconnect);
 }
 
 #[tokio::test]
@@ -670,9 +842,9 @@ async fn terminal_refresh_recovery_survives_failed_cleanup_and_restart_without_a
                     let guarded: Account = serde_json::from_slice(&persisted.borrow()).unwrap();
                     assert!(guarded.session_needs_reconnect,
                         "the guard must reach disk before the token can be rejected");
-                    assert!(status_from_storage(Ok(guarded.clone()), Ok((true, true)), active.lock().unwrap().as_deref()).connected,
+                    assert!(status_from_storage(Ok(guarded.clone()), Ok((true, true)), active.lock().unwrap().as_deref(), None).connected,
                         "in-flight status still describes the starting session");
-                    assert!(!status_from_storage(Ok(guarded), Ok((true, true)), Some("oaiapp_other")).connected,
+                    assert!(!status_from_storage(Ok(guarded), Ok((true, true)), Some("oaiapp_other"), None).connected,
                         "another client's refresh must never mask this marker");
                     std::future::ready(Err(RefreshFailure::Rejected { status: 400, code: code.into() }))
                 },
@@ -773,7 +945,7 @@ async fn successful_refresh_unblocks_only_after_both_credential_and_metadata_com
                 let mut stores = 0;
                 let result = refresh_with(&active, &original,
                     || {
-                        assert!(status_from_storage(Ok(persisted.borrow().clone()), Ok((true, true)), active.lock().unwrap().as_deref()).connected);
+                        assert!(status_from_storage(Ok(persisted.borrow().clone()), Ok((true, true)), active.lock().unwrap().as_deref(), None).connected);
                         let mut tokens = new_account_tokens();
                         if !rotated { tokens.refresh_token = None; }
                         std::future::ready(Ok(tokens))
@@ -830,16 +1002,20 @@ fn cancelled_refresh_leaves_durable_recovery_and_invalidates_the_previous_access
     let original = registered_account();
     let persisted = std::cell::RefCell::new(original.clone());
     let invalidated = std::cell::Cell::new(false);
-    let mut refresh = Box::pin(refresh_with(&active, &original,
-        std::future::pending::<Result<Tokens, RefreshFailure>>,
-        |next| { persisted.replace(next.clone()); Ok(()) },
-        |_, _| panic!("no response arrived"),
-        || invalidated.set(true), |_| panic!("no response arrived"),
+    let mut refreshed = false;
+    let mut refresh = Box::pin(recover_authentication_with(401, &mut refreshed,
+        || refresh_with(&active, &original,
+            std::future::pending::<Result<Tokens, RefreshFailure>>,
+            |next| { persisted.replace(next.clone()); Ok(()) },
+            |_, _| panic!("no response arrived"),
+            || invalidated.set(true), |_| panic!("no response arrived"),
+        ),
+        || -> std::future::Ready<Result<(), String>> { panic!("no second rejection arrived") },
     ));
     let mut context = std::task::Context::from_waker(futures_util::task::noop_waker_ref());
     assert!(std::future::Future::poll(refresh.as_mut(), &mut context).is_pending());
     assert!(persisted.borrow().session_needs_reconnect);
-    assert!(status_from_storage(Ok(persisted.borrow().clone()), Ok((true, true)), active.lock().unwrap().as_deref()).connected);
+    assert!(status_from_storage(Ok(persisted.borrow().clone()), Ok((true, true)), active.lock().unwrap().as_deref(), None).connected);
     assert!(!invalidated.get());
     drop(refresh);
     assert!(active.lock().unwrap().is_none());
@@ -860,7 +1036,7 @@ async fn an_already_ended_session_cannot_start_a_refresh_or_mask_its_persisted_m
             |_| panic!("no new access"),
         ).await.is_err());
         assert!(active.lock().unwrap().is_none());
-        assert!(!status_from_storage(Ok(account), Ok((true, true)), active.lock().unwrap().as_deref()).connected);
+        assert!(!status_from_storage(Ok(account), Ok((true, true)), active.lock().unwrap().as_deref(), None).connected);
     }
 }
 
@@ -1109,6 +1285,7 @@ fn reconnect_clears_expiry_only_after_refresh_storage_and_the_final_metadata_wri
                 let mut claims = new_account_claims(); claims.sub = "original-user".into();
                 let persisted = std::cell::RefCell::new(original.clone());
                 let remembered = std::cell::Cell::new(false);
+                let rejected = std::sync::Mutex::new(Some("oaiapp_original".to_string()));
                 let refresh_present = std::cell::Cell::new(true);
                 let mut writes = 0;
                 let result = store_verified_sign_in(&original, &original, "oaiapp_original", &claims, &new_account_tokens(), false,
@@ -1125,16 +1302,21 @@ fn reconnect_clears_expiry_only_after_refresh_storage_and_the_final_metadata_wri
                         assert_eq!(key, REFRESH_TOKEN_KEY);
                         if refresh_ok { refresh_present.set(true); Ok(()) } else { Err("keystore locked".into()) }
                     },
-                    |_| { assert!(!persisted.borrow().session_needs_reconnect); remembered.set(true); },
+                    |_| {
+                        assert!(!persisted.borrow().session_needs_reconnect);
+                        remembered.set(true);
+                        *rejected.lock().unwrap() = None;
+                    },
                 );
                 let success = preflight_ok && refresh_ok && final_write_ok;
                 assert_eq!(result.is_ok(), success);
                 assert_eq!(remembered.get(), success);
+                assert_eq!(rejected.lock().unwrap().is_none(), success);
                 let restarted: Account = serde_json::from_slice(&serde_json::to_vec(&*persisted.borrow()).unwrap()).unwrap();
                 assert_eq!(restarted.client_id, original.client_id);
                 assert_eq!(restarted.sub, original.sub);
                 assert_eq!(restarted.session_needs_reconnect, !success);
-                let status = status_for(&restarted, refresh_present.get(), true);
+                let status = status_from_storage(Ok(restarted), Ok((refresh_present.get(), true)), None, rejected.lock().unwrap().as_deref());
                 assert_eq!(status.connected, success);
                 assert_eq!(status.needs_reconnect, !success);
                 assert!(!status.can_switch_accounts);

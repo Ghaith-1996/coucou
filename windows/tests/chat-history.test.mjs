@@ -505,6 +505,185 @@ test("a rejected rename keeps the last saved title for later answers", async () 
   assert.equal(sent("chat_history_save").at(-1).conversation.title, "Lisbon trip");
 });
 
+function renameButton(id) {
+  return historyRow(id).find(".history-act").find((button) => button.getAttribute("aria-label") === "Rename");
+}
+
+function pressKey(input, key) {
+  for (const listener of input.listeners.get("keydown") ?? []) {
+    listener({ key, stopPropagation() {}, preventDefault() {} });
+  }
+}
+
+test("a failed rename shows its error and retries the typed title without changing the saved title", async () => {
+  seed(CURRENT, "Lisbon trip");
+  await open(CURRENT);
+  answers.chat_history_rename = () => Promise.reject(new Error("Disk unavailable"));
+  await rename(CURRENT, "  Lisbon holiday  ");
+  assert.match(historyRow(CURRENT).textContent, /Lisbon trip/);
+  assert.match($(".history-error")?.textContent ?? "", /Disk unavailable/);
+  assert.equal(records.get(CURRENT).title, "Lisbon trip");
+  assert.equal($(".history-rename-retry")?.textContent, "Retry");
+  delete answers.chat_history_rename;
+  $(".history-rename-retry").fire("click");
+  await flush();
+  assert.deepEqual(sent("chat_history_rename"), [
+    { id: CURRENT, title: "Lisbon holiday" }, { id: CURRENT, title: "Lisbon holiday" },
+  ]);
+  assert.equal($(".history-error"), null);
+  assert.match(historyRow(CURRENT).textContent, /Lisbon holiday/);
+  await send();
+  assert.equal(records.get(CURRENT).title, "Lisbon holiday");
+});
+
+test("editing a rejected rename restores typed intent and Escape keeps the saved title", async () => {
+  seed(CURRENT, "Lisbon trip");
+  answers.chat_history_rename = () => Promise.reject(new Error("Disk unavailable"));
+  await rename(CURRENT, "Lisbon holiday");
+  renameButton(CURRENT).fire("click");
+  const input = $(".history-rename");
+  assert.equal(input.value ?? input.getAttribute("value"), "Lisbon holiday");
+  input.value = "Discard this";
+  pressKey(input, "Escape");
+  input.fire("blur");
+  await flush();
+  assert.equal(sent("chat_history_rename").length, 1);
+  assert.match(historyRow(CURRENT).textContent, /Lisbon trip/);
+});
+
+test("Enter followed by blur submits one rename and reserves the row until settlement", async (t) => {
+  seed(CURRENT, "Lisbon trip");
+  await history();
+  const pending = Promise.withResolvers();
+  t.after(async () => { pending.resolve(); await flush(); });
+  answers.chat_history_rename = () => pending.promise;
+  renameButton(CURRENT).fire("click");
+  const input = $(".history-rename");
+  input.value = "Lisbon holiday";
+  pressKey(input, "Enter");
+  input.fire("blur");
+  await flush();
+  assert.equal(sent("chat_history_rename").length, 1);
+  assert.equal(renameButton(CURRENT).disabled, true);
+  assert.match(historyRow(CURRENT).textContent, /Lisbon trip/);
+  pending.reject(new Error("Rename failed once"));
+  await flush();
+  assert.equal(renameButton(CURRENT).disabled, false);
+  assert.match($(".history-error")?.textContent ?? "", /Rename failed once/);
+});
+
+for (const transition of ["close and reopen", "New chat", "delete", "failed open"]) {
+  test(`a late rename rejection cannot replace history after ${transition}`, async (t) => {
+    seed(CURRENT, "Lisbon trip");
+    seed(OTHER, "Paris trip");
+    await open(CURRENT);
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(); await flush(); });
+    answers.chat_history_rename = () => pending.promise;
+    await rename(CURRENT, "A stale intent");
+    if (transition === "close and reopen") {
+      $(".history-btn").fire("click");
+      await history();
+    } else if (transition === "New chat") {
+      $(".history-new").fire("click");
+      await send("Fresh conversation");
+      await history();
+    } else if (transition === "delete") await confirmDelete(CURRENT);
+    else {
+      answers.chat_history_open = () => Promise.reject(new Error("New open failed"));
+      await open(OTHER);
+    }
+    const active = State.chatId;
+    pending.reject(new Error("Old rename failed"));
+    await flush();
+    assert.doesNotMatch($(".history").textContent, /Old rename failed/);
+    assert.equal($(".history-rename-retry"), null);
+    assert.equal(State.chatId, active);
+    if (transition === "failed open") assert.match($(".history").textContent, /New open failed/);
+    if (transition === "delete") assert.equal(historyRow(CURRENT), undefined);
+  });
+}
+
+test("a successful pending rename remains authoritative when overlapping deletion fails", async (t) => {
+  seed(CURRENT, "Lisbon trip");
+  await open(CURRENT);
+  const changing = Promise.withResolvers();
+  const deleting = Promise.withResolvers();
+  t.after(async () => { changing.resolve(); deleting.resolve(); await flush(); });
+  answers.chat_history_rename = async ({ id, title }) => { await changing.promise; records.get(id).title = title; };
+  answers.chat_history_delete = () => deleting.promise;
+  await rename(CURRENT, "Lisbon holiday");
+  await confirmDelete(CURRENT);
+  changing.resolve();
+  await flush();
+  deleting.reject(new Error("Delete unavailable"));
+  await flush();
+  assert.match(historyRow(CURRENT).textContent, /Lisbon holiday/);
+  assert.match($(".history-error")?.textContent ?? "", /Delete unavailable/);
+  await send();
+  assert.equal(records.get(CURRENT).title, "Lisbon holiday");
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`a failed overlapping delete keeps rename reserved until its ${outcome}`, async (t) => {
+    seed(CURRENT, "Lisbon trip");
+    await open(CURRENT);
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(); await flush(); });
+    answers.chat_history_rename = async ({ id, title }) => { await pending.promise; records.get(id).title = title; };
+    answers.chat_history_delete = () => Promise.reject(new Error("Delete unavailable"));
+    await rename(CURRENT, "Lisbon holiday");
+    await confirmDelete(CURRENT);
+    assert.equal(renameButton(CURRENT).disabled, true);
+    renameButton(CURRENT).fire("click");
+    assert.equal($(".history-rename"), null, "the handler also guards the reservation");
+    assert.equal(sent("chat_history_rename").length, 1);
+    if (outcome === "success") pending.resolve();
+    else pending.reject(new Error("Rename unavailable"));
+    await flush();
+    assert.equal(renameButton(CURRENT).disabled, false);
+    if (outcome === "success") assert.match(historyRow(CURRENT).textContent, /Lisbon holiday/);
+    else {
+      assert.match(historyRow(CURRENT).textContent, /Lisbon trip/);
+      assert.match($(".history").textContent, /Rename unavailable/);
+      assert.ok($(".history-rename-retry"));
+    }
+  });
+}
+
+for (const transition of ["failed open", "New chat", "delete"]) {
+  test(`a late rename success preserves the newer view after ${transition}`, async (t) => {
+    seed(CURRENT, "Lisbon trip");
+    seed(OTHER, "Paris trip");
+    await open(CURRENT);
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve(); await flush(); });
+    answers.chat_history_rename = async ({ id, title }) => {
+      await pending.promise;
+      if (records.has(id)) records.get(id).title = title;
+    };
+    await rename(CURRENT, "Lisbon holiday");
+    if (transition === "failed open") {
+      answers.chat_history_open = () => Promise.reject(new Error("New open failed"));
+      await open(OTHER);
+    } else if (transition === "New chat") {
+      $(".history-new").fire("click");
+      await send("Fresh conversation");
+      await history();
+    } else await confirmDelete(CURRENT);
+    const active = State.chatId;
+    pending.resolve();
+    await flush();
+    assert.equal(State.chatId, active);
+    if (transition === "failed open") assert.match($(".history").textContent, /New open failed/);
+    if (transition === "delete") assert.equal(historyRow(CURRENT), undefined);
+    if (transition === "New chat") {
+      await send();
+      assert.equal(records.get(active).title, "Fresh conversation");
+    }
+  });
+}
+
 test("400 messages save; a rejected 402-message save warns without deleting history", async () => {
   assert.equal(MAX_MESSAGES, 400);
   seed(CURRENT, "A long conversation");

@@ -161,8 +161,8 @@ pub struct Account {
     pub welcomed: bool,
     /// Switching is allowed only after explicit, fully persisted cleanup.
     pub explicitly_disconnected: bool,
-    /// A refresh or credential replacement has not completed safely. Persisted
-    /// before either operation so a crash or failed cleanup still reconnects.
+    /// The session was rejected, or a refresh/credential replacement has not
+    /// completed safely. Persisted so a crash or failed cleanup reconnects.
     pub session_needs_reconnect: bool,
     /// Inactive registrations have no credentials: only one session is live.
     pub saved_accounts: Vec<Registration>,
@@ -278,10 +278,10 @@ pub struct Status {
 
 pub fn status() -> Status {
     let active = ACTIVE_REFRESH.lock().unwrap();
-    status_from_storage(read_account_from(&account_path()), credential_presence(), active.as_deref())
+    status_from_storage(read_account_from(&account_path()), credential_presence(), active.as_deref(), REJECTED_SESSION.lock().unwrap().as_deref())
 }
 
-fn status_from_storage(account: Result<Account, String>, credentials: Result<(bool, bool), String>, active_refresh: Option<&str>) -> Status {
+fn status_from_storage(account: Result<Account, String>, credentials: Result<(bool, bool), String>, active_refresh: Option<&str>, rejected_client: Option<&str>) -> Status {
     let unreadable = account.is_err() || credentials.is_err();
     let mut account = account.unwrap_or_default();
     // The durable guard is provisional only while this process is refreshing
@@ -290,6 +290,7 @@ fn status_from_storage(account: Result<Account, String>, credentials: Result<(bo
     if !unreadable && active_refresh.is_some() && active_refresh == account.client_id.as_deref() {
         account.session_needs_reconnect = false;
     }
+    apply_session_rejection(&mut account, rejected_client);
     // A locked/unreadable keystore is not proof that cleanup succeeded.
     let (refresh, id) = credentials.unwrap_or((true, true));
     let mut status = status_for(&account, refresh, id);
@@ -300,6 +301,12 @@ fn status_from_storage(account: Result<Account, String>, credentials: Result<(bo
         status.show_welcome = false;
     }
     status
+}
+
+fn apply_session_rejection(account: &mut Account, rejected_client: Option<&str>) {
+    if rejected_client.is_some() && rejected_client == account.client_id.as_deref() {
+        account.session_needs_reconnect = true;
+    }
 }
 
 fn status_for(account: &Account, has_refresh: bool, has_id_token: bool) -> Status {
@@ -794,7 +801,10 @@ pub async fn connect(open: impl Fn(&str), new_account: bool) -> Result<Status, S
         return Err(t("ChatGPT sign-in failed."));
     }
     store_verified_sign_in(&selected, &account, &client_id, &claims, &tokens, new_account,
-        save_account, secrets::set_internal, |tokens| remember(&client_id, tokens))?;
+        save_account, secrets::set_internal, |tokens| {
+            remember(&client_id, tokens);
+            *REJECTED_SESSION.lock().unwrap() = None;
+        })?;
     crate::log::line("chatgpt: connected".to_string());
     Ok(status())
 }
@@ -948,6 +958,10 @@ struct Access {
 }
 
 impl Access {
+    fn matches_rejection(&self, request: &RequestAccount, token: &str) -> bool {
+        self.client_id == request.client_id && self.generation == request.generation && self.token == token
+    }
+
     fn fresh_for(&self, request: &RequestAccount) -> Option<String> {
         (self.client_id == request.client_id && self.generation == request.generation
             && self.until > Instant::now() + REFRESH_MARGIN).then(|| self.token.clone())
@@ -961,6 +975,9 @@ struct RequestAccount {
 
 static ACCESS: std::sync::Mutex<Option<Access>> = std::sync::Mutex::new(None);
 static ACTIVE_REFRESH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Keep a known rejection fail-closed even when both persistent stores fail.
+/// Only a fully committed verified sign-in clears this process-local guard.
+static REJECTED_SESSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static SESSION_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// One refresh at a time: the refresh token rotates.
 static REFRESHING: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -1115,13 +1132,73 @@ async fn refresh_with<F: std::future::Future<Output = Result<Tokens, RefreshFail
     }
 }
 
+/// Called with REFRESHING held. A delayed 401 may only end the session and
+/// exact access token that issued it, never a newer refresh or sign-in.
+fn reject_session_with(
+    request: &RequestAccount,
+    current_generation: u64,
+    owns_token: bool,
+    account: Result<Account, String>,
+    rejected: &std::sync::Mutex<Option<String>>,
+    persist: impl FnOnce(&Account) -> Result<(), String>,
+    store: impl FnOnce(&str, &str) -> Result<(), String>,
+    invalidate: impl FnOnce(),
+) -> Result<(), String> {
+    check_session_generation(request, current_generation)?;
+    if !owns_token || account.as_ref().is_ok_and(|a| a.client_id.as_deref() != Some(request.client_id.as_str())) {
+        return Err(t("The selected ChatGPT account changed. Try again."));
+    }
+    // No await after ownership verification: Stop cannot lose the known
+    // rejection while reading an error body or performing local recovery.
+    *rejected.lock().unwrap() = Some(request.client_id.clone());
+    invalidate();
+    let saved = account.and_then(|mut account| {
+        account.session_needs_reconnect = true;
+        persist(&account)
+    });
+    // Independent cleanup makes a failed metadata write recoverable after
+    // restart if the keystore remains writable. Retain the ID hint/client.
+    let deleted = store(REFRESH_TOKEN_KEY, "").is_ok();
+    crate::log::line(format!("chatgpt: refreshed token rejected (metadata {}, credential cleanup {})",
+        if saved.is_ok() { "saved" } else { "failed" }, if deleted { "succeeded" } else { "failed" }));
+    saved
+}
+
+async fn reject_session(request: &RequestAccount, token: &str) -> Result<(), String> {
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    let owns_token = ACCESS.lock().unwrap().as_ref().is_some_and(|access| access.matches_rejection(request, token));
+    reject_session_with(request, session_generation(), owns_token, read_account_from(&account_path()),
+        &REJECTED_SESSION, save_account, secrets::set_internal, invalidate_session)
+}
+
+/// Share the one-refresh-then-reconnect policy between models and Responses.
+/// Authentication attempts are independent of Responses' transient backoff.
+async fn recover_authentication_with<
+    F: std::future::Future<Output = Result<String, String>>,
+    R: std::future::Future<Output = Result<(), String>>,
+>(
+    status: u16,
+    refreshed: &mut bool,
+    refresh: impl FnOnce() -> F,
+    reject: impl FnOnce() -> R,
+) -> Result<Option<String>, String> {
+    if status != 401 { return Ok(None); }
+    if !*refreshed {
+        *refreshed = true;
+        return refresh().await.map(Some);
+    }
+    reject().await?;
+    Err(t("Your ChatGPT session ended. Reconnect in Settings."))
+}
+
 /// A valid access token: the one in memory, or a refreshed one. `force`
 /// refreshes even a token that looks valid (after a 401).
 async fn access_token(force: bool, request: &RequestAccount) -> Result<String, String> {
     let _serial = REFRESHING.get_or_init(Default::default).lock().await;
     // A request, including a late 401 retry, stays with its starting account.
-    let account = read_account_from(&account_path())?;
+    let mut account = read_account_from(&account_path())?;
     check_session_generation(request, session_generation())?;
+    apply_session_rejection(&mut account, REJECTED_SESSION.lock().unwrap().as_deref());
     require_selected_client(&account, &request.client_id)?;
     // Another call may have refreshed while this one waited.
     if !force {
@@ -1141,7 +1218,8 @@ async fn access_token(force: bool, request: &RequestAccount) -> Result<String, S
 pub async fn models() -> Result<Vec<CatalogModel>, String> {
     let account = plan_ready().await?;
     let mut token = access_token(false, &account).await?;
-    for attempt in 0..2 {
+    let mut refreshed = false;
+    for _ in 0..2 {
         check_session_generation(&account, session_generation())?;
         let reply = http(Duration::from_secs(30))?
             .get(MODELS)
@@ -1150,8 +1228,10 @@ pub async fn models() -> Result<Vec<CatalogModel>, String> {
             .await
             .map_err(|_| t("ChatGPT can't be reached."))?;
         check_session_generation(&account, session_generation())?;
-        if reply.status().as_u16() == 401 && attempt == 0 {
-            token = access_token(true, &account).await?;
+        if let Some(next) = recover_authentication_with(reply.status().as_u16(), &mut refreshed,
+            || access_token(true, &account), || reject_session(&account, &token),
+        ).await? {
+            token = next;
             continue;
         }
         if !reply.status().is_success() {
@@ -1339,7 +1419,7 @@ fn failure(status: u16, code: &str, param: &str) -> Failure {
         }
         "subscription_sharing_invalid_user" => plain(t("ChatGPT didn't accept the sign-in. Reconnect in Settings.")),
         "subscription_sharing_route_not_supported" | "chatpass_v2_scope_not_authorized" | "chatpass_v2_invalid_authorization_context" => {
-            plain(t("ChatGPT refused this app's request. Reconnect in Settings."))
+            plain(t("ChatGPT refused this app's request. Check the app's configuration and permissions."))
         }
         "model_not_found" => plain(t("This model isn't available on your ChatGPT account.")),
         _ => match status {
@@ -1385,6 +1465,7 @@ pub async fn send(
 
     let mut token = access_token(false, &account).await?;
     let mut tries = 0;
+    let mut refreshed = false;
     let reply = loop {
         check_session_generation(&account, session_generation())?;
         tries += 1;
@@ -1400,13 +1481,15 @@ pub async fn send(
         if reply.status().is_success() {
             break reply;
         }
+        if let Some(next) = recover_authentication_with(status, &mut refreshed,
+            || access_token(true, &account), || reject_session(&account, &token),
+        ).await? {
+            token = next;
+            continue;
+        }
         let body: Value = reply.json().await.unwrap_or(Value::Null);
         check_session_generation(&account, session_generation())?;
         let failure = error_message(status, &body);
-        if status == 401 && tries == 1 {
-            token = access_token(true, &account).await?;
-            continue;
-        }
         // Bounded backoff, only before anything streamed.
         if failure.transient && tries <= 2 {
             tokio::time::sleep(Duration::from_secs(tries * 2)).await;

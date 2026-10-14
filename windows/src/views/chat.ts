@@ -17,6 +17,7 @@ import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
 import { voiceShortcut } from "../assistant/voice";
+import { startRegion } from "../assistant/region";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -25,6 +26,7 @@ const STRINGS = {
   placeholderNext: N_("Continue…"),
   send: N_("Send"),
   voice: N_("Start voice capture"),
+  region: N_("Ask about a screen region"),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
@@ -240,7 +242,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     title: tl(STRINGS.voice),
     "aria-label": tl(STRINGS.voice),
   }, svg(ICONS.mic, 15, { stroke: 1.8 })) : null;
-  const bar = h("div", { class: "chat-bar" }, input, voice, send);
+  const region = HOST_OS === "windows" ? h("button", {
+    type: "button",
+    class: "region-btn",
+    title: tl(STRINGS.region),
+    "aria-label": tl(STRINGS.region),
+    onclick: () => void startRegion(),
+  }, svg(ICONS.region, 15, { stroke: 1.8 })) : null;
+  const bar = h("div", { class: "chat-bar" }, input, region, voice, send);
 
   const modelDot = h("i", { class: "model-dot" });
   const modelName = h("span", { class: "model-name" });

@@ -21,7 +21,7 @@ export const ACTION_KINDS: readonly { kind: ActionKind; available: boolean; idem
   { kind: "pill-set", available: true, idempotent: true },
   { kind: "insert-text", available: true, idempotent: false },
   { kind: "launch-app", available: true, idempotent: false },
-  { kind: "ask-region", available: false, idempotent: false },
+  { kind: "ask-region", available: true, idempotent: false },
 ];
 
 export interface AssistantAction {
@@ -87,6 +87,25 @@ export type InsertTextReply =
   | { status: "done"; receipt: ActionReceipt }
   | { status: "kept"; reason: InsertRefusal }
   | { status: "failed"; receipt: ActionReceipt; draft: { actionId: string; text: string } | null };
+
+/** A rectangle in physical pixels (region.rs `Rect`). */
+export interface RegionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** `region-preview`: the picked region, to confirm before it goes to the chat. */
+export interface RegionPreview {
+  sessionId: string;
+  /** Physical pixels; masks are given in these. */
+  width: number;
+  height: number;
+  /** PNG data URL, shrunk for the card. */
+  image: string;
+  grant: AppGrant;
+}
 
 export type VoiceState = "idle" | "listening" | "processing" | "preview" | "speaking" | "error";
 

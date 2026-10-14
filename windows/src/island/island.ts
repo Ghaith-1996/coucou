@@ -550,6 +550,16 @@ export class Island {
     State.notify();
   }
 
+  /** A screen region the user confirmed: a fresh chat with it attached, as
+   *  a dropped file would be, sent with the first question. */
+  chatWithFile(file: { name: string; path: string }) {
+    State.droppedFile = { name: file.name, path: file.path };
+    State.promptContext = { kind: "file", name: file.name, path: file.path };
+    State.chatHistory = [];
+    void Bridge.chatReset();
+    this.setView("prompt");
+  }
+
   /** The assistant's chat draft: the chat opens with `text` in its field,
    *  unsent. True when the field really holds it. */
   showChatDraft(text: string): boolean {

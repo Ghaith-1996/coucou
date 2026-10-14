@@ -565,6 +565,8 @@ struct Tokens {
 pub struct IdClaims {
     pub iss: String,
     pub aud: Value,
+    #[serde(default, deserialize_with = "deserialize_azp")]
+    pub azp: Option<String>,
     pub exp: u64,
     pub sub: String,
     #[serde(default)]
@@ -573,17 +575,26 @@ pub struct IdClaims {
     pub email: Option<String>,
 }
 
+fn deserialize_azp<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    // Omission is allowed; a present azp must be a string, including rejecting
+    // explicit null rather than silently treating it as an absent claim.
+    String::deserialize(deserializer).map(Some)
+}
+
 /// The ID token's claims, decoded without checking anything.
 pub fn decode_claims(token: &str) -> Option<IdClaims> {
     let payload = token.split('.').nth(1)?;
     serde_json::from_slice(&b64url_decode(payload)?).ok()
 }
 
-/// Issuer, audience, expiry and nonce (the signature is `verify_signature`).
+/// Issuer, audience, authorized party, expiry and nonce (signature checked separately).
 pub fn check_claims(claims: &IdClaims, client_id: &str, nonce: &str, now: u64) -> Result<(), String> {
+    // OIDC Core 3.1.3.7 requires rejecting untrusted additional audiences.
+    // Coucou trusts only this registration's client ID, never the API resource
+    // or another saved registration, and every array element must be a string.
     let aud_ok = match &claims.aud {
         Value::String(a) => a == client_id,
-        Value::Array(list) => list.iter().any(|a| a.as_str() == Some(client_id)),
+        Value::Array(list) => !list.is_empty() && list.iter().all(|a| a.as_str() == Some(client_id)),
         _ => false,
     };
     if claims.iss != ISSUER {
@@ -591,6 +602,14 @@ pub fn check_claims(claims: &IdClaims, client_id: &str, nonce: &str, now: u64) -
     }
     if !aud_ok {
         return Err("audience".into());
+    }
+    // Conservative client policy: any supplied authorized party must be us;
+    // multi-entry arrays also need it, even when they repeat our audience.
+    let multiple = claims.aud.as_array().is_some_and(|list| list.len() > 1);
+    match claims.azp.as_deref() {
+        Some(azp) if azp != client_id => return Err("authorized party".into()),
+        None if multiple => return Err("authorized party".into()),
+        _ => {}
     }
     if claims.exp <= now {
         return Err("expired".into());

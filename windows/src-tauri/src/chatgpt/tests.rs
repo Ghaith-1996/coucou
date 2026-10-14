@@ -217,6 +217,8 @@ fn a_real_rs256_id_token_verifies_and_a_changed_one_does_not() {
     let f = fixture();
     let token = f["token"].as_str().unwrap();
     verify_signature(token, &f["jwks"]).expect("valid signature");
+    let claims = decode_claims(token).unwrap();
+    check_claims(&claims, "oaiapp_test123", "nonce-xyz", 1_800_000_000).expect("valid signed claims");
 
     // Another payload under the same signature.
     let parts: Vec<&str> = token.split('.').collect();
@@ -248,6 +250,89 @@ fn the_id_tokens_claims_must_be_ours() {
     let mut single = claims;
     single.aud = json!("oaiapp_test123");
     assert_eq!(check_claims(&single, "oaiapp_test123", "nonce-xyz", now), Ok(()));
+}
+
+#[test]
+fn id_token_audiences_must_all_be_trusted_by_this_client() {
+    let original = decode_claims(fixture()["token"].as_str().unwrap()).unwrap();
+    for (aud, accepted) in [
+        (json!("oaiapp_test123"), true),
+        (json!(["oaiapp_test123"]), true),
+        // Repeating the same trusted audience does not add another party.
+        (json!(["oaiapp_test123", "oaiapp_test123"]), true),
+        (json!("oaiapp_other"), false),
+        (json!("OAIAPP_test123"), false),
+        (json!(["oaiapp_other"]), false),
+        (json!(["oaiapp_test123", "oaiapp_other"]), false),
+        (json!(["oaiapp_other", "oaiapp_test123"]), false),
+        (json!(["oaiapp_test123", RESOURCE]), false),
+        (json!(""), false),
+        (json!([]), false),
+        (json!([""]), false),
+        (json!(["oaiapp_test123", ""]), false),
+        (Value::Null, false),
+        (json!(123), false),
+        (json!(true), false),
+        (json!({ "client_id": "oaiapp_test123" }), false),
+        (json!(["oaiapp_test123", null]), false),
+        (json!(["oaiapp_test123", 123]), false),
+        (json!(["oaiapp_test123", true]), false),
+        (json!(["oaiapp_test123", ["oaiapp_test123"]]), false),
+        (json!(["oaiapp_test123", { "client_id": "oaiapp_test123" }]), false),
+    ] {
+        let mut claims = original.clone();
+        claims.aud = aud.clone();
+        claims.azp = Some("oaiapp_test123".into());
+        let result = check_claims(&claims, "oaiapp_test123", "nonce-xyz", 1_800_000_000);
+        assert_eq!(result, if accepted { Ok(()) } else { Err("audience".into()) }, "aud={aud}");
+    }
+}
+
+#[test]
+fn an_id_tokens_optional_authorized_party_must_be_this_client() {
+    for (aud, trusted) in [
+        (json!("oaiapp_test123"), true),
+        (json!(["oaiapp_test123"]), true),
+        (json!(["oaiapp_test123", "oaiapp_test123"]), true),
+        (json!(["oaiapp_test123", "oaiapp_other"]), false),
+        (json!(["oaiapp_other", "oaiapp_test123"]), false),
+    ] {
+        for (azp, well_formed, matches_client) in [
+            (None, true, true),
+            (Some(json!("oaiapp_test123")), true, true),
+            (Some(json!("oaiapp_other")), true, false),
+            (Some(json!("OAIAPP_test123")), true, false),
+            (Some(json!("")), true, false),
+            (Some(Value::Null), false, false),
+            (Some(json!(123)), false, false),
+            (Some(json!(true)), false, false),
+            (Some(json!(["oaiapp_test123"])), false, false),
+            (Some(json!({ "client_id": "oaiapp_test123" })), false, false),
+        ] {
+            let mut payload = json!({ "iss": ISSUER, "aud": aud, "sub": "user-abc",
+                "exp": 4_102_444_800_u64, "nonce": "nonce-xyz" });
+            if let Some(azp) = &azp { payload["azp"] = azp.clone(); }
+            // Exercise decoding without pretending these synthetic claims
+            // have a valid signature; the real RS256 fixture is tested above.
+            let token = format!("e30.{}.", b64url(&serde_json::to_vec(&payload).unwrap()));
+            let decoded = decode_claims(&token);
+            assert_eq!(decoded.is_some(), well_formed, "aud={aud}, azp={azp:?}");
+            if let Some(claims) = decoded {
+                let result = check_claims(&claims, "oaiapp_test123", "nonce-xyz", 1_800_000_000);
+                let multiple = aud.as_array().is_some_and(|list| list.len() > 1);
+                let accepted = trusted && matches_client && (!multiple || azp.is_some());
+                assert_eq!(result.is_ok(), accepted, "aud={aud}, azp={azp:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_id_token_without_an_audience_is_rejected() {
+    let payload = json!({ "iss": ISSUER, "sub": "user-abc", "exp": 4_102_444_800_u64,
+        "nonce": "nonce-xyz", "azp": "oaiapp_test123" });
+    let token = format!("e30.{}.", b64url(&serde_json::to_vec(&payload).unwrap()));
+    assert!(decode_claims(&token).is_none());
 }
 
 #[test]
@@ -650,7 +735,7 @@ fn new_account_tokens() -> Tokens {
 
 fn new_account_claims() -> IdClaims {
     IdClaims {
-        iss: ISSUER.into(), aud: json!("oaiapp_new"), exp: 4_102_444_800,
+        iss: ISSUER.into(), aud: json!("oaiapp_new"), azp: None, exp: 4_102_444_800,
         sub: "new-user".into(), email: Some("new@example.com".into()), nonce: Some("nonce".into()),
     }
 }

@@ -198,10 +198,13 @@ function inline(text: string, into: HTMLElement) {
 
 // ── Blocks ────────────────────────────────────────────────────────────────────
 
-export async function writeClipboard(text: string) {
+export async function writeClipboard(text: string, options?: { fallback?: boolean }) {
   try {
     await navigator.clipboard.writeText(text);
-  } catch {
+  } catch (error) {
+    // Dictation's evidence covers only the immediate attempt. A delayed
+    // rejection must not start another copy with a stale field/capture check.
+    if (options?.fallback === false) throw error;
     // No clipboard API (or no permission): the old way, through a hidden field.
     const area = h("textarea", { style: "position:fixed;opacity:0" }) as HTMLTextAreaElement;
     area.value = text;

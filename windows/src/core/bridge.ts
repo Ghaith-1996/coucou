@@ -9,7 +9,7 @@ import type { Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
-import type { ActionReceipt, AppGrant, InsertOfferReply, InsertTextReply, RegionRect } from "../assistant/contracts";
+import type { ActionReceipt, AppGrant, InsertCopyReply, InsertOfferReply, InsertTextReply, RegionRect } from "../assistant/contracts";
 import type { ChatGptDisconnectResult, ChatGptModel, ChatGptStatus } from "./chatgpt";
 import type { ChatMessage } from "./state";
 
@@ -445,6 +445,7 @@ export const Bridge = {
    * the keyboard when the capture started. Null when there was none.
    */
   insertOffer: (captureId: string) => callOrThrow<InsertOfferReply | null>("assistant_insert_offer", { captureId }),
+  insertCopyCheck: (captureId: string) => callOrThrow<InsertCopyReply>("assistant_insert_copy_check", { captureId }),
   /** The user confirmed "Insert into <app>": Rust checks the field again, then writes and reads back. */
   insertText: (captureId: string, grant: AppGrant) =>
     callOrThrow<InsertTextReply>("assistant_insert_text", { captureId, grant }),

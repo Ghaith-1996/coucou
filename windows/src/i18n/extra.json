@@ -4912,16 +4912,38 @@
    "ru": "Это поле только для чтения.",
    "id": "Kolom itu hanya-baca."
   },
-  "This field doesn't take dictated text. Copy it, or use it in chat.": {
-   "zh-Hans": "此输入框不接受听写文本。可以复制，或在聊天中使用。",
-   "hi": "यह फ़ील्ड बोला गया टेक्स्ट नहीं लेता। इसे कॉपी करें, या चैट में इस्तेमाल करें।",
-   "es": "Este campo no acepta texto dictado. Cópialo o úsalo en el chat.",
-   "ar": "هذا الحقل لا يقبل النص المُملى. انسخه أو استخدمه في الدردشة.",
-   "fr": "Ce champ n'accepte pas le texte dicté. Copiez-le, ou utilisez-le dans le chat.",
-   "bn": "এই ঘরে বলা লেখা বসানো যায় না। কপি করুন, বা চ্যাটে ব্যবহার করুন।",
-   "pt-BR": "Este campo não aceita texto ditado. Copie-o ou use-o no chat.",
-   "ru": "Это поле не принимает надиктованный текст. Скопируйте его или используйте в чате.",
-   "id": "Kolom ini tidak menerima teks dikte. Salin, atau gunakan di obrolan."
+  "This field doesn't take dictated text. Use it in chat.": {
+   "zh-Hans": "此输入框不接受听写文本。请在聊天中使用。",
+   "hi": "यह फ़ील्ड बोला गया टेक्स्ट नहीं लेता। इसे चैट में इस्तेमाल करें।",
+   "es": "Este campo no acepta texto dictado. Úsalo en el chat.",
+   "ar": "هذا الحقل لا يقبل النص المُملى. استخدمه في الدردشة.",
+   "fr": "Ce champ n'accepte pas le texte dicté. Utilisez-le dans le chat.",
+   "bn": "এই ঘরে বলা লেখা বসানো যায় না। চ্যাটে ব্যবহার করুন।",
+   "pt-BR": "Este campo não aceita texto ditado. Use-o no chat.",
+   "ru": "Это поле не принимает надиктованный текст. Используйте в чате.",
+   "id": "Kolom ini tidak menerima teks dikte. Gunakan di obrolan."
+  },
+  "The field changed. Nothing was typed. Check it, then Insert again.": {
+   "zh-Hans": "输入框的内容已更改。没有输入任何内容。请检查后再次插入。",
+   "hi": "फ़ील्ड बदल गई है। कुछ भी टाइप नहीं हुआ। उसे जाँचें, फिर दोबारा डालें।",
+   "es": "El campo cambió. No se escribió nada. Revísalo y vuelve a pulsar Insertar.",
+   "ar": "تغيّر الحقل. لم تُكتب أي كلمة. تحقّق منه ثم اضغط إدراج مرة أخرى.",
+   "fr": "Le champ a changé. Rien n'a été tapé. Vérifiez-le, puis cliquez à nouveau sur Insérer.",
+   "bn": "ঘরটি বদলে গেছে। কিছুই লেখা হয়নি। দেখে নিয়ে আবার বসান চাপুন।",
+   "pt-BR": "O campo mudou. Nada foi digitado. Confira e toque em Inserir novamente.",
+   "ru": "Поле изменилось. Ничего не было введено. Проверьте его и снова нажмите «Вставить».",
+   "id": "Kolom berubah. Tidak ada yang diketik. Periksa, lalu Sisipkan lagi."
+  },
+  "Couldn’t copy the text. Try again.": {
+   "zh-Hans": "无法复制文本。请重试。",
+   "hi": "टेक्स्ट कॉपी नहीं हो सका। फिर से कोशिश करें।",
+   "es": "No se pudo copiar el texto. Inténtalo de nuevo.",
+   "ar": "تعذّر نسخ النص. حاول مرة أخرى.",
+   "fr": "Impossible de copier le texte. Réessayez.",
+   "bn": "লেখাটি কপি করা যায়নি। আবার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível copiar o texto. Tente novamente.",
+   "ru": "Не удалось скопировать текст. Попробуйте ещё раз.",
+   "id": "Teks tidak dapat disalin. Coba lagi."
   },
   "The app didn't answer. Nothing was typed.": {
    "zh-Hans": "该应用没有响应。没有输入任何内容。",

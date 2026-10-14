@@ -974,6 +974,7 @@ pub fn run() {
             assistant::app::assistant_app_propose,
             assistant::app::assistant_app_launch,
             assistant::app::assistant_insert_offer,
+            assistant::app::assistant_insert_copy_check,
             assistant::app::assistant_insert_text,
             assistant::region::commands::region_start,
             assistant::region::commands::region_overlay_info,

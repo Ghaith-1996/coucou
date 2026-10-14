@@ -50,7 +50,8 @@ impl Local {
         let mut guard = self.ctx.lock().unwrap();
         if guard.as_ref().is_none_or(|(loaded, _)| loaded != model) {
             *guard = None;
-            let params = WhisperContextParameters { use_gpu: false, ..Default::default() };
+            // The graphics card when this build has the Vulkan backend.
+            let params = WhisperContextParameters { use_gpu: cfg!(feature = "gpu-vulkan"), ..Default::default() };
             let ctx = WhisperContext::new_with_params(model, params).map_err(|_| VoiceError::Provider)?;
             *guard = Some((model.to_path_buf(), ctx));
         }

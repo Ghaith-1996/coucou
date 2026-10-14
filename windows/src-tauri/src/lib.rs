@@ -22,6 +22,7 @@ mod integrations;
 mod island;
 mod local_chat;
 mod log;
+mod memory;
 mod navigation;
 mod net;
 mod openai_compat;
@@ -965,6 +966,13 @@ pub fn run() {
             assistant::app::assistant_voice_converse,
             assistant::speech::speech_say,
             assistant::tools::chat_action_answer,
+            memory::memory_list,
+            memory::memory_add,
+            memory::memory_edit,
+            memory::memory_delete,
+            memory::memory_clear,
+            memory::memory_set_enabled,
+            memory::memory_export,
             assistant::app::assistant_voice_stop,
             assistant::app::assistant_voice_cancel,
             assistant::app::assistant_voice_use,

@@ -7,6 +7,8 @@
 //   * switch_browser_tab: a `switch-tab` action. The policy says `ask`.
 //   * open_app: a `launch-app` action, from the Start menu's own list. The
 //     policy says `ask`.
+//   * remember: a `memory-save` action, one line for the user's memory
+//     (memory.rs). The policy says `ask`.
 // "Ask" means the island shows a card in the chat with exactly what will
 // happen, and nothing runs until the user clicks it. Rust keeps the action;
 // the page only hands the grant back, and check_grant recomputes the binding.
@@ -67,6 +69,18 @@ pub fn definitions() -> Value {
             },
             {
                 "type": "function",
+                "name": "remember",
+                "description": "Propose to add one short fact about the user to their memory, which every future chat sees (\"Prefers answers in French\", \"Works with Rust\"). Only for lasting facts the user shared, never secrets or passwords. The user sees exactly the text and confirms it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "text": { "type": "string", "description": "One line, at most 500 characters, written about the user." } },
+                    "required": ["text"],
+                    "additionalProperties": false
+                },
+                "strict": true
+            },
+            {
+                "type": "function",
                 "name": "open_app",
                 "description": "Open an app installed on the user's PC, by the name the Start menu shows (\"Calculator\", \"Spotify\", \"Visual Studio Code\"). The user is asked to confirm.",
                 "parameters": {
@@ -82,7 +96,7 @@ pub fn definitions() -> Value {
 }
 
 /// What the model is told about the tools, after the chat's own instructions.
-pub const INSTRUCTIONS: &str = "You can act on the user's Windows PC only through the coucou tools: list and switch browser tabs, and open apps. Every action is shown to the user, who confirms it; if they decline, say so in a few words. Never claim something happened unless the tool's result says it did. You cannot click, type, read pages or answer an agent's permission request.";
+pub const INSTRUCTIONS: &str = "You can act on the user's Windows PC only through the coucou tools: list and switch browser tabs, open apps, and propose a fact for the user's memory. Every action is shown to the user, who confirms it; if they decline, say so in a few words. Never claim something happened unless the tool's result says it did. You cannot click, type, read pages or answer an agent's permission request.";
 
 /// One call the model made.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +122,11 @@ struct SwitchArgs {
 #[derive(Deserialize, Default)]
 struct OpenArgs {
     name: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RememberArgs {
+    text: String,
 }
 
 /// A card for the island: what will happen, and the grant that confirms it.
@@ -208,6 +227,7 @@ pub async fn run(app: &AppHandle, call: &ToolCall, intent: &str) -> String {
         "list_browser_tabs" => list_tabs(app).await,
         "switch_browser_tab" => switch_tab(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
         "open_app" => open_app(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
+        "remember" => remember(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
         _ => result("There is no such tool."),
     }
 }
@@ -303,6 +323,27 @@ async fn open_app(app: &AppHandle, args: OpenArgs, intent: &str) -> String {
     }
 }
 
+async fn remember(app: &AppHandle, args: RememberArgs, intent: &str) -> String {
+    let Ok(text) = crate::memory::clean(&args.text) else {
+        return result("Nothing to remember: the text was empty or too long.");
+    };
+    let Some((action_id, ValidArgs::MemorySave(a))) =
+        confirm(app, ActionKind::MemorySave, json!({ "text": text }), text.clone(), "memory".into(), intent).await
+    else {
+        return result("The user declined: nothing was remembered.");
+    };
+    let saved = crate::memory::with(|m| m.add(&a.text, crate::memory::Source::Chat, crate::memory::now()));
+    let receipt = match &saved {
+        Ok(item) => ActionReceipt::succeeded(&action_id, &format!("memory:{}", item.id)).unwrap_or_else(|| ActionReceipt::unknown(&action_id)),
+        Err(_) => ActionReceipt::failed(&action_id, ErrorCode::Failed),
+    };
+    log(format!("assistant action {action_id} {:?}", receipt.outcome()));
+    match saved {
+        Ok(_) => result("Saved to the user's memory."),
+        Err(why) => result(format!("Not saved: {why}")),
+    }
+}
+
 /// The island's answer to a card: the grant on "Do it", nothing on "No".
 #[tauri::command]
 pub fn chat_action_answer(
@@ -322,13 +363,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tools_are_one_namespace_of_three_strict_functions() {
+    fn the_tools_are_one_namespace_of_strict_functions() {
         let d = definitions();
         assert_eq!(d.as_array().unwrap().len(), 1);
         assert_eq!(d[0]["type"], "namespace");
         assert_eq!(d[0]["name"], NAMESPACE);
         let names: Vec<&str> = d[0]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["list_browser_tabs", "switch_browser_tab", "open_app"]);
+        assert_eq!(names, ["list_browser_tabs", "switch_browser_tab", "remember", "open_app"]);
         for tool in d[0]["tools"].as_array().unwrap() {
             assert_eq!(tool["type"], "function");
             assert_eq!(tool["strict"], true);

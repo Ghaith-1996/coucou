@@ -49,6 +49,7 @@ const STRINGS = {
   audioSilence: N_("Audio mode ended: nothing was heard."),
   switchTab: N_("Switch to this tab?"),
   openApp: N_("Open this app?"),
+  remember: N_("Remember this?"),
   doIt: N_("Do it"),
   no: N_("No"),
   lookedAtTabs: N_("Looked at your browser tabs"),
@@ -981,14 +982,16 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (used === "browser-tabs") actionSlot.append(h("div", { class: "tool-note", text: t(STRINGS.lookedAtTabs) }));
     }
     for (const card of ChatActions.cards) {
-      const question = card.kind === "switch-tab" ? STRINGS.switchTab : STRINGS.openApp;
+      const question = card.kind === "switch-tab" ? STRINGS.switchTab
+        : card.kind === "memory-save" ? STRINGS.remember
+        : STRINGS.openApp;
       actionSlot.append(h(
         "div",
         { class: "action-card" },
         h("div", { class: "action-text" },
           h("div", { class: "action-question", text: t(question) }),
           h("div", { class: "action-label", text: card.label }),
-          card.detail && card.detail !== "app" ? h("div", { class: "action-detail", text: card.detail }) : null,
+          card.detail && card.detail !== "app" && card.detail !== "memory" ? h("div", { class: "action-detail", text: card.detail }) : null,
         ),
         h("div", { class: "action-buttons" },
           h("button", { type: "button", class: "btn secondary", text: t(STRINGS.no), disabled: card.answered, onclick: () => answerCard(card.actionId, false) }),

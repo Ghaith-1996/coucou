@@ -18,6 +18,7 @@ import {
 import { h, clear } from "../views/dom";
 import { agentsSection } from "./agents";
 import { chatgptSection } from "./chatgpt";
+import { memorySection } from "./memory";
 import { phoneSection } from "./phone";
 import { voiceSection } from "./voice";
 import { colorDot } from "./colors";
@@ -1371,6 +1372,7 @@ async function render() {
     planSection(status),
     apiSection(hasKey),
     chatgptSection(),
+    memorySection(),
     chatProvidersSection(chatKeys, keyChanged),
     localSection(customKey),
     activePillsSection(connected),

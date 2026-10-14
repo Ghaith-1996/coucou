@@ -17,8 +17,8 @@ use serde_json::Value;
 
 /// Bumped when the closed action registry or an available shape changes.
 /// Version 2 adds the `pill-set` kind and its arguments to the frozen v1
-/// registry; version 3 adds `switch-tab`.
-pub const CONTRACT_VERSION: u32 = 3;
+/// registry; version 3 adds `switch-tab`, version 4 `memory-save`.
+pub const CONTRACT_VERSION: u32 = 4;
 
 /// The event the island listens to for voice capture.
 pub const VOICE_EVENT: &str = "assistant-voice";
@@ -51,28 +51,32 @@ pub enum ActionKind {
     /// Bring one of the user's browser tabs to the front (browser.rs), as
     /// the chat proposed and the user confirmed.
     SwitchTab,
+    /// Add one item to the user's memory (memory.rs), as the chat proposed
+    /// and the user confirmed.
+    MemorySave,
 }
 
-pub const ACTION_KINDS: [ActionKind; 6] = [
+pub const ACTION_KINDS: [ActionKind; 7] = [
     ActionKind::ChatDraft,
     ActionKind::PillSet,
     ActionKind::InsertText,
     ActionKind::LaunchApp,
     ActionKind::AskRegion,
     ActionKind::SwitchTab,
+    ActionKind::MemorySave,
 ];
 
 impl ActionKind {
     /// Implemented in this version. A reserved kind is always refused, and its
     /// arguments may still change before it becomes available.
     pub fn available(self) -> bool {
-        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::LaunchApp | ActionKind::SwitchTab)
+        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::LaunchApp | ActionKind::SwitchTab | ActionKind::MemorySave)
     }
 
     /// Running it twice leaves the same result as running it once. Only
     /// these may be retried after an `unknown` outcome.
     pub fn idempotent(self) -> bool {
-        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet)
+        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::MemorySave)
     }
 }
 
@@ -136,6 +140,13 @@ pub struct SwitchTabArgs {
     pub title: String,
 }
 
+/// One thing to remember, exactly as the user saw it on the card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemorySaveArgs {
+    pub text: String,
+}
+
 /// Reserved (P2). A region in physical pixels of one monitor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -158,6 +169,7 @@ pub enum ValidArgs {
     LaunchApp(LaunchAppArgs),
     AskRegion(AskRegionArgs),
     SwitchTab(SwitchTabArgs),
+    MemorySave(MemorySaveArgs),
 }
 
 // ── Decisions and receipts ───────────────────────────────────────────────────

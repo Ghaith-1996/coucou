@@ -255,14 +255,14 @@ fn is_free(m: &Value, id: &str) -> bool {
     id.ends_with(":free") || (zero("/pricing/prompt") && zero("/pricing/completion"))
 }
 
-enum FilePart {
+pub(crate) enum FilePart {
     Image(Value),
     Text(String),
 }
 
 /// Images → image_url data URL, text/code → inline text. PDFs and other binary
 /// files go by name only (there is no portable document part).
-fn file_part(path: &str) -> Option<FilePart> {
+pub(crate) fn file_part(path: &str) -> Option<FilePart> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())

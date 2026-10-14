@@ -101,9 +101,14 @@ impl Local {
         let (_, ctx) = guard.as_ref().ok_or(VoiceError::Provider)?;
         let mut state = ctx.create_state().map_err(|_| VoiceError::Provider)?;
 
+        // French or English only: whisper's language guess is narrowed to
+        // those two, so a short or accented clip never comes out in a third.
+        let language = detect_language(&mut state, &audio)?;
+        if abort.load(Ordering::SeqCst) {
+            return Err(VoiceError::Provider);
+        }
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        // The language is detected from the audio: Coucou speaks ten.
-        params.set_language(Some("auto"));
+        params.set_language(Some(language));
         // Names Whisper would otherwise spell like common words ("Machi").
         params.set_initial_prompt(VOCABULARY);
         params.set_n_threads(threads());
@@ -131,6 +136,26 @@ impl Local {
             .collect();
         Ok(Transcript { text: clean(&segments), simulated: false })
     }
+}
+
+/// The languages a transcript may be in. Whisper hears French or English and
+/// nothing else, whatever the interface language.
+pub const LANGUAGES: [&str; 2] = ["fr", "en"];
+
+/// Whisper's language probabilities for the clip, narrowed to LANGUAGES.
+fn detect_language(state: &mut whisper_rs::WhisperState, audio: &[f32]) -> Result<&'static str, VoiceError> {
+    let threads = threads() as usize;
+    state.pcm_to_mel(audio, threads).map_err(|_| VoiceError::Provider)?;
+    let (_, probs) = state.lang_detect(0, threads).map_err(|_| VoiceError::Provider)?;
+    let prob = |lang: &str| {
+        whisper_rs::get_lang_id(lang).and_then(|id| probs.get(id as usize).copied()).unwrap_or(0.0)
+    };
+    Ok(pick_language(prob("fr"), prob("en")))
+}
+
+/// French unless English is likelier.
+pub fn pick_language(fr: f32, en: f32) -> &'static str {
+    if en > fr { "en" } else { "fr" }
 }
 
 /// whisper.cpp's abort check: `data` is the `AtomicBool` given with it.
@@ -184,6 +209,19 @@ pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_french_or_english_is_ever_picked() {
+        assert_eq!(pick_language(0.6, 0.3), "fr");
+        assert_eq!(pick_language(0.1, 0.7), "en");
+        // A tie, or a clip whisper thinks is in neither: French.
+        assert_eq!(pick_language(0.0, 0.0), "fr");
+        assert_eq!(pick_language(0.2, 0.2), "fr");
+        assert_eq!(LANGUAGES, ["fr", "en"]);
+        for lang in LANGUAGES {
+            assert!(whisper_rs::get_lang_id(lang).is_some(), "{lang} is a whisper language");
+        }
+    }
 
     #[test]
     fn cancelled_transcription_skips_preprocessing_and_model_loading() {

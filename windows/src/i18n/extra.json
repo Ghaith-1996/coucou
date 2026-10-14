@@ -4064,6 +4064,105 @@
    "pt-BR": "Não foi possível baixar: {error}",
    "ru": "Не удалось скачать: {error}",
    "id": "Tidak dapat mengunduh: {error}"
+  },
+  "Already {count} pills: remove one first.": {
+   "zh-Hans": "已有 {count} 个胶囊：请先移除一个。",
+   "hi": "पहले से {count} पिल हैं: पहले एक हटाएँ।",
+   "es": "Ya hay {count} píldoras: quita una primero.",
+   "ar": "توجد {count} حبات بالفعل: أزل واحدة أولًا.",
+   "fr": "Déjà {count} pilules : retirez-en une d'abord.",
+   "bn": "ইতিমধ্যে {count}টি পিল আছে: আগে একটি সরান।",
+   "pt-BR": "Já há {count} pílulas: remova uma primeiro.",
+   "ru": "Уже {count} пилюли: сначала уберите одну.",
+   "id": "Sudah ada {count} pil: hapus satu dulu."
+  },
+  "{name} is already in the island.": {
+   "zh-Hans": "{name} 已在岛中。",
+   "hi": "{name} पहले से आइलैंड में है।",
+   "es": "{name} ya está en la isla.",
+   "ar": "{name} موجود بالفعل في الشريط.",
+   "fr": "{name} est déjà dans l'île.",
+   "bn": "{name} ইতিমধ্যে আইল্যান্ডে আছে।",
+   "pt-BR": "{name} já está na ilha.",
+   "ru": "{name} уже на острове.",
+   "id": "{name} sudah ada di pulau."
+  },
+  "{name} isn't in the island.": {
+   "zh-Hans": "{name} 不在岛中。",
+   "hi": "{name} आइलैंड में नहीं है।",
+   "es": "{name} no está en la isla.",
+   "ar": "{name} غير موجود في الشريط.",
+   "fr": "{name} n'est pas dans l'île.",
+   "bn": "{name} আইল্যান্ডে নেই।",
+   "pt-BR": "{name} não está na ilha.",
+   "ru": "{name} нет на острове.",
+   "id": "{name} tidak ada di pulau."
+  },
+  "{name} can't be the main pill.": {
+   "zh-Hans": "{name} 不能作为主胶囊。",
+   "hi": "{name} मुख्य पिल नहीं बन सकता।",
+   "es": "{name} no puede ser la píldora principal.",
+   "ar": "لا يمكن أن يكون {name} الحبة الرئيسية.",
+   "fr": "{name} ne peut pas être la pilule principale.",
+   "bn": "{name} প্রধান পিল হতে পারে না।",
+   "pt-BR": "{name} não pode ser a pílula principal.",
+   "ru": "{name} не может быть главной пилюлей.",
+   "id": "{name} tidak bisa menjadi pil utama."
+  },
+  "Add {names}": {
+   "zh-Hans": "添加 {names}",
+   "hi": "{names} जोड़ें",
+   "es": "Añadir {names}",
+   "ar": "إضافة {names}",
+   "fr": "Ajouter {names}",
+   "bn": "{names} যোগ করুন",
+   "pt-BR": "Adicionar {names}",
+   "ru": "Добавить {names}",
+   "id": "Tambahkan {names}"
+  },
+  "Remove {names}": {
+   "zh-Hans": "移除 {names}",
+   "hi": "{names} हटाएँ",
+   "es": "Quitar {names}",
+   "ar": "إزالة {names}",
+   "fr": "Retirer {names}",
+   "bn": "{names} সরান",
+   "pt-BR": "Remover {names}",
+   "ru": "Убрать {names}",
+   "id": "Hapus {names}"
+  },
+  "Make {name} the main pill": {
+   "zh-Hans": "将 {name} 设为主胶囊",
+   "hi": "{name} को मुख्य पिल बनाएँ",
+   "es": "Hacer de {name} la píldora principal",
+   "ar": "اجعل {name} الحبة الرئيسية",
+   "fr": "Faire de {name} la pilule principale",
+   "bn": "{name}-কে প্রধান পিল করুন",
+   "pt-BR": "Tornar {name} a pílula principal",
+   "ru": "Сделать {name} главной пилюлей",
+   "id": "Jadikan {name} pil utama"
+  },
+  "Replace {old} with {new}": {
+   "zh-Hans": "用 {new} 替换 {old}",
+   "hi": "{old} की जगह {new} रखें",
+   "es": "Reemplazar {old} por {new}",
+   "ar": "استبدال {old} بـ {new}",
+   "fr": "Remplacer {old} par {new}",
+   "bn": "{old}-এর জায়গায় {new} দিন",
+   "pt-BR": "Substituir {old} por {new}",
+   "ru": "Заменить {old} на {new}",
+   "id": "Ganti {old} dengan {new}"
+  },
+  "Keep only {names}": {
+   "zh-Hans": "只保留 {names}",
+   "hi": "केवल {names} रखें",
+   "es": "Dejar solo {names}",
+   "ar": "الإبقاء على {names} فقط",
+   "fr": "Garder seulement {names}",
+   "bn": "শুধু {names} রাখুন",
+   "pt-BR": "Manter só {names}",
+   "ru": "Оставить только {names}",
+   "id": "Simpan hanya {names}"
   }
  }
 }

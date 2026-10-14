@@ -373,6 +373,9 @@ export const Bridge = {
   voiceCancel: (captureId: string) => call<void>("assistant_voice_cancel", { captureId }),
   /** The transcript as a chat draft Rust's policy allowed; throws with the refusal code. */
   voiceUse: (captureId: string) => callOrThrow<{ actionId: string; text: string }>("assistant_voice_use", { captureId }),
+  /** A command the transcript asked for (`pill-set`), for Rust's policy; the action id when allowed. */
+  voiceAct: (captureId: string, kind: "pill-set", args: unknown) =>
+    callOrThrow<string>("assistant_voice_act", { captureId, kind, args }),
   /** What came of an assistant action, for the log (never with its text). */
   actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
   /** The speech model (Settings → Voice). Only the settings window may change it. */

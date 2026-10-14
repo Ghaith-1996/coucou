@@ -7,7 +7,8 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
 import { State } from "../src/core/state.ts";
-import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
+import { CONTRACT_VERSION } from "../src/assistant/contracts.ts";
+import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceDo, voiceShortcut, voiceUse } from "../src/assistant/voice.ts";
 
 // What the fake Rust answers, per command.
 const answers = new Map();
@@ -40,6 +41,13 @@ const host = {
     State.isPinned = on;
     State.notify();
   },
+  pillsApplied: [],
+  applyPills(next) {
+    this.pillsApplied.push(next);
+    State.settings.mainPill = next.mainPill;
+    State.settings.activeIntegrations = [...next.activeIntegrations];
+    return true;
+  },
   showChatDraft(text) {
     this.drafts.push(text);
     State.view = "prompt";
@@ -62,7 +70,10 @@ beforeEach(() => {
   answers.clear();
   host.alerts = [];
   host.drafts = [];
+  host.pillsApplied = [];
   host.draftLands = true;
+  State.settings.mainPill = "integration_claude";
+  State.settings.activeIntegrations = ["integration_vercel"];
   State.pendingApproval = null;
   State.isPinned = false;
   State.view = "overview";
@@ -78,7 +89,7 @@ function registerVoiceHostOnly() {
   State.subscribe = subscribe;
 }
 
-const ev = (captureId, state, extra = {}) => ({ v: 1, captureId, state, ...extra });
+const ev = (captureId, state, extra = {}) => ({ v: CONTRACT_VERSION, captureId, state, ...extra });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 async function startListening(id = "cap-1") {
@@ -93,6 +104,24 @@ test("the shortcut opens the microphone and its card", async () => {
   assert.deepEqual(host.alerts, ["voice"]);
   assert.equal(Voice.event.state, "listening");
   assert.equal(Voice.event.level, 0.2);
+});
+
+test("the synthesized listening event uses the current contract version", async () => {
+  answers.set("assistant_voice_toggle", "cap-1");
+  await voiceShortcut();
+  assert.deepEqual(Voice.event, ev("cap-1", "listening", { level: 0, elapsedMs: 0 }));
+});
+
+test("old and future contract events cannot become spoken pill commands", async () => {
+  await startListening();
+  for (const v of [1, CONTRACT_VERSION + 1]) {
+    emit("assistant-voice", ev("cap-1", "preview", { v, transcript: "Add GitHub" }));
+    assert.equal(Voice.event.state, "listening");
+    assert.equal(Voice.command, null);
+    await voiceDo();
+  }
+  assert.deepEqual(sent("assistant_voice_act"), []);
+  assert.deepEqual(host.pillsApplied, []);
 });
 
 test("the card keeps the island open while it is up, then gives the pin back", async () => {
@@ -156,7 +185,7 @@ test("another capture's late events are ignored", async () => {
   assert.equal(Voice.event.captureId, "cap-2");
   assert.equal(Voice.event.state, "listening");
   // And anything malformed never reaches the card.
-  emit("assistant-voice", { v: 1, captureId: "cap-2", state: "approving" });
+  emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-2", state: "approving" });
   assert.equal(Voice.event.state, "listening");
 });
 
@@ -213,6 +242,41 @@ test("an error shows, then goes by itself", async (t) => {
   assert.equal(Voice.event, null);
 });
 
+test("a spoken pill command is offered, proposed as a pill-set, then applied", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Ajoute GitHub." }));
+  assert.equal(Voice.command.ok, true);
+  assert.equal(Voice.command.label, "Add GitHub");
+  answers.set("assistant_voice_act", "act-77");
+  await voiceDo();
+  assert.deepEqual(sent("assistant_voice_act"), [{
+    captureId: "cap-1",
+    kind: "pill-set",
+    args: { mainPill: "integration_claude", activeIntegrations: ["integration_vercel", "integration_github"] },
+  }]);
+  assert.deepEqual(host.pillsApplied, [{ mainPill: "integration_claude", activeIntegrations: ["integration_vercel", "integration_github"] }]);
+  assert.deepEqual(sent("assistant_action_receipt"), [
+    { receipt: { actionId: "act-77", outcome: "succeeded", evidenceRef: "settings:pills-shown" } },
+  ]);
+  assert.equal(calls.filter(([cmd]) => cmd.startsWith("approval_")).length, 0);
+});
+
+test("a simulated transcript is never taken for a command", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Ajoute GitHub.", simulated: true }));
+  assert.equal(Voice.command, null);
+  await voiceDo();
+  assert.equal(sent("assistant_voice_act").length, 0);
+});
+
+test("a refused pill-set changes nothing", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Ajoute GitHub." }));
+  answers.set("assistant_voice_act", new Error("invalid-args"));
+  await voiceDo();
+  assert.deepEqual(host.pillsApplied, []);
+  assert.equal(sent("assistant_action_receipt").length, 0);
+});
 
 function pendingStart() {
   const deferred = Promise.withResolvers();
@@ -248,6 +312,20 @@ for (const state of ["processing", "preview", "idle"]) {
       assert.deepEqual(host.alerts, []);
       assert.equal(State.isPinned, false);
     }
+  });
+}
+
+for (const state of ["listening", "processing", "preview", "error"]) {
+  test(`startup idle cannot be revived by a late ${state} event`, async () => {
+    const start = pendingStart();
+    emit("assistant-voice", ev("cap-1", "listening"));
+    emit("assistant-voice", ev("cap-1", "idle"));
+    emit("assistant-voice", ev("cap-1", state, state === "error" ? { error: "provider" } : {}));
+    start.resolve("cap-1");
+    await start.finished;
+    assert.equal(Voice.event, null);
+    assert.equal(State.isPinned, false);
+    assert.deepEqual(host.alerts, []);
   });
 }
 
@@ -366,6 +444,102 @@ for (const change of ["close", "hide", "navigate", "navigate-back"]) {
   });
 }
 
+
+test("a blocked preview becomes actionable when Settings frees a slot", async () => {
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion", "integration_resend", "integration_n8n"];
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  assert.equal(Voice.command.ok, false);
+  let rendered;
+  const unsubscribe = State.subscribe(() => { rendered = Voice.command; });
+  try {
+    State.settings.activeIntegrations.pop();
+    State.notify();
+    assert.equal(rendered.ok, true);
+    assert.equal(rendered.label, "Add GitHub");
+    assert.deepEqual(rendered.next.activeIntegrations, ["integration_vercel", "integration_notion", "integration_resend", "integration_github"]);
+    assert.deepEqual(sent("assistant_voice_act"), [], "refreshing a preview never executes it");
+    const next = rendered.next;
+    answers.set("assistant_voice_act", "act-77");
+    await voiceDo();
+    assert.deepEqual(host.pillsApplied, [next]);
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("a preview tracks valid, blocked and valid settings without extending its expiry", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  assert.equal(Voice.command.ok, true);
+  t.mock.timers.tick(60000);
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion", "integration_resend", "integration_n8n"];
+  State.notify();
+  assert.equal(Voice.command.ok, false);
+  State.settings.activeIntegrations = ["integration_github"];
+  State.notify();
+  assert.equal(Voice.command.ok, false);
+  assert.match(Voice.command.reason, /already/);
+  State.settings.activeIntegrations = [];
+  State.notify();
+  assert.equal(Voice.command.ok, true);
+  t.mock.timers.tick(60000);
+  assert.equal(Voice.event, null);
+  assert.equal(Voice.command, null);
+  assert.deepEqual(sent("assistant_voice_act"), []);
+});
+
+test("settings changes cannot turn a simulated or cancelled preview into a command", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub.", simulated: true }));
+  State.settings.activeIntegrations = [];
+  State.notify();
+  assert.equal(Voice.command, null);
+  voiceCancel();
+  State.settings.mainPill = "agent_cursor";
+  State.notify();
+  assert.equal(Voice.command, null);
+  assert.deepEqual(sent("assistant_voice_act"), []);
+});
+
+test("a pill command is replanned against settings changed since preview", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  State.settings.mainPill = "agent_cursor";
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion"];
+  answers.set("assistant_voice_act", "act-77");
+  await voiceDo();
+  const expected = { mainPill: "agent_cursor", activeIntegrations: ["integration_vercel", "integration_notion", "integration_github"] };
+  assert.deepEqual(sent("assistant_voice_act")[0].args, expected);
+  assert.deepEqual(host.pillsApplied, [expected]);
+});
+
+test("a pill command made invalid by settings changes is not proposed or applied", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion", "integration_stripe", "integration_resend"];
+  answers.set("assistant_voice_act", "act-77");
+  await voiceDo();
+  assert.equal(sent("assistant_voice_act").length, 0);
+  assert.deepEqual(host.pillsApplied, []);
+  assert.equal(Voice.command.ok, false);
+});
+
+test("settings changed during the policy request are not overwritten", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_act", deferred.promise);
+  const done = voiceDo();
+  State.settings.activeIntegrations = ["integration_vercel", "integration_notion"];
+  deferred.resolve("act-77");
+  await done;
+  assert.deepEqual(host.pillsApplied, []);
+  assert.deepEqual(State.settings.activeIntegrations, ["integration_vercel", "integration_notion"]);
+  assert.deepEqual(sent("assistant_action_receipt"), [{ receipt: { actionId: "act-77", outcome: "cancelled", errorCode: "cancelled" } }]);
+});
+
 for (const result of ["success", "failure"]) {
   test(`a stale Use ${result} cannot clear a newer capture`, async () => {
     await startListening("cap-1");
@@ -435,4 +609,49 @@ test("an old preview timeout cannot cancel a newer capture", async (t) => {
   t.mock.timers.tick(60000);
   assert.equal(Voice.event.captureId, "cap-2");
   assert.deepEqual(sent("assistant_voice_cancel"), []);
+});
+
+for (const result of ["success", "failure"]) {
+  test(`a stale Do it ${result} cannot clear a newer capture`, async () => {
+    await startListening("cap-1");
+    emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+    const deferred = Promise.withResolvers();
+    answers.set("assistant_voice_act", deferred.promise);
+    const done = voiceDo();
+    emit("assistant-voice", ev("cap-1", "idle"));
+    await startListening("cap-2");
+    if (result === "success") deferred.resolve("act-old");
+    else deferred.reject(new Error("expired"));
+    await done;
+    assert.equal(Voice.event.captureId, "cap-2");
+    assert.equal(State.isPinned, true);
+    assert.deepEqual(host.pillsApplied, []);
+  });
+}
+
+test("an approval during Do it retains the island", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_act", deferred.promise);
+  const done = voiceDo();
+  State.pendingApproval = { requestId: "r1" };
+  host.alert("approval");
+  deferred.resolve("act-old");
+  await done;
+  assert.equal(State.view, "approval");
+  assert.equal(State.isPinned, true);
+  assert.deepEqual(host.pillsApplied, []);
+});
+
+test("Do it still completes after its ordinary Rust idle event", async () => {
+  await startListening();
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Add GitHub." }));
+  const deferred = Promise.withResolvers();
+  answers.set("assistant_voice_act", deferred.promise);
+  const done = voiceDo();
+  emit("assistant-voice", ev("cap-1", "idle"));
+  deferred.resolve("act-1");
+  await done;
+  assert.equal(host.pillsApplied.length, 1);
 });

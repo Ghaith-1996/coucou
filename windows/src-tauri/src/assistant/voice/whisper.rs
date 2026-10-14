@@ -13,7 +13,8 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 use super::{Transcript, VoiceError};
 
 /// The app's own names, given to Whisper as context so it spells them right.
-const VOCABULARY: &str = "Mochi, Coucou, Claude Code, Codex, Gemini, Cursor, GitHub, pull request, commit, branch.";
+const VOCABULARY: &str =
+    "Mochi, Coucou, Claude Code, Codex, Gemini, Cursor, Copilot, Antigravity, GitHub, Vercel, Stripe, Notion, Resend, n8n, Cal.com, pull request, commit, branch.";
 
 /// What whisper.cpp wants: 16 kHz mono.
 pub const WHISPER_RATE: u32 = 16_000;
@@ -210,6 +211,7 @@ mod tests {
             .collect();
         clips.sort();
         assert!(!clips.is_empty());
+        let mut too_many = Vec::new();
         for (n, clip) in clips.iter().enumerate() {
             let expected = std::fs::read_to_string(clip.with_extension("wav.txt")).unwrap();
             let (samples, rate) = read_wav(&std::fs::read(clip).unwrap());
@@ -226,8 +228,11 @@ mod tests {
                 transcript.text
             );
             assert!(!transcript.simulated);
-            assert!(error <= 0.15, "too many errors");
+            if error > 0.15 {
+                too_many.push(clip.file_name().unwrap().to_string_lossy().into_owned());
+            }
         }
+        assert!(too_many.is_empty(), "too many errors in {too_many:?}");
     }
 
     #[test]

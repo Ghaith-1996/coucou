@@ -5187,17 +5187,6 @@
    "ru": "Память",
    "id": "Memori"
   },
-  "What the chat knows about you, in every conversation. Kept on this PC, encrypted for your Windows account. The chat can propose an item; nothing is saved until you confirm it.": {
-   "zh-Hans": "聊天在每次对话中都知道的关于你的信息。保存在这台电脑上，并针对你的 Windows 帐户加密。聊天可以提议一条内容；在你确认之前不会保存任何内容。",
-   "hi": "चैट हर बातचीत में आपके बारे में क्या जानती है। इसी PC पर रखा जाता है, आपके Windows खाते के लिए एन्क्रिप्ट किया हुआ। चैट कोई आइटम सुझा सकती है; जब तक आप पुष्टि नहीं करते, कुछ भी सहेजा नहीं जाता।",
-   "es": "Lo que el chat sabe de ti, en cada conversación. Se guarda en este PC, cifrado para tu cuenta de Windows. El chat puede proponer un elemento; no se guarda nada hasta que lo confirmes.",
-   "ar": "ما يعرفه الدردشة عنك في كل محادثة. محفوظ على هذا الكمبيوتر ومشفّر لحساب Windows الخاص بك. يمكن للدردشة اقتراح عنصر؛ لا يُحفظ شيء حتى تؤكده.",
-   "fr": "Ce que le chat sait de vous, dans chaque conversation. Conservé sur ce PC, chiffré pour votre compte Windows. Le chat peut proposer un élément ; rien n'est enregistré tant que vous ne l'avez pas confirmé.",
-   "bn": "প্রতিটি কথোপকথনে চ্যাট আপনার সম্পর্কে যা জানে। এই PC-তেই রাখা হয়, আপনার Windows অ্যাকাউন্টের জন্য এনক্রিপ্ট করা। চ্যাট একটি আইটেম প্রস্তাব করতে পারে; আপনি নিশ্চিত না করা পর্যন্ত কিছুই সংরক্ষিত হয় না।",
-   "pt-BR": "O que o chat sabe sobre você, em todas as conversas. Fica neste PC, criptografado para sua conta do Windows. O chat pode propor um item; nada é salvo até você confirmar.",
-   "ru": "Что чат знает о вас — в каждом разговоре. Хранится на этом ПК, зашифровано для вашей учётной записи Windows. Чат может предложить запись; ничего не сохраняется, пока вы не подтвердите.",
-   "id": "Apa yang diketahui chat tentang Anda, di setiap percakapan. Disimpan di PC ini, dienkripsi untuk akun Windows Anda. Chat dapat mengusulkan item; tidak ada yang disimpan sampai Anda mengonfirmasinya."
-  },
   "Use memory in the chat": {
    "zh-Hans": "在聊天中使用记忆",
    "hi": "चैट में मेमोरी का उपयोग करें",
@@ -5626,6 +5615,160 @@
    "pt-BR": "Abrir esta página?",
    "ru": "Открыть эту страницу?",
    "id": "Buka halaman ini?"
+  },
+  "Opened {label}": {
+   "zh-Hans": "已打开 {label}",
+   "hi": "{label} खोला गया",
+   "es": "Se abrió {label}",
+   "ar": "تم فتح {label}",
+   "fr": "{label} ouvert",
+   "bn": "{label} খোলা হয়েছে",
+   "pt-BR": "{label} aberto",
+   "ru": "Открыто: {label}",
+   "id": "{label} dibuka"
+  },
+  "Started {label}": {
+   "zh-Hans": "已启动 {label}",
+   "hi": "{label} शुरू किया गया",
+   "es": "Se inició {label}",
+   "ar": "تم تشغيل {label}",
+   "fr": "{label} lancé",
+   "bn": "{label} চালু করা হয়েছে",
+   "pt-BR": "{label} iniciado",
+   "ru": "Запущено: {label}",
+   "id": "{label} dijalankan"
+  },
+  "Couldn't open {label}": {
+   "zh-Hans": "无法打开 {label}",
+   "hi": "{label} नहीं खोला जा सका",
+   "es": "No se pudo abrir {label}",
+   "ar": "تعذّر فتح {label}",
+   "fr": "Impossible d’ouvrir {label}",
+   "bn": "{label} খোলা যায়নি",
+   "pt-BR": "Não foi possível abrir {label}",
+   "ru": "Не удалось открыть: {label}",
+   "id": "Tidak dapat membuka {label}"
+  },
+  "Switched to {label}": {
+   "zh-Hans": "已切换到 {label}",
+   "hi": "{label} पर स्विच किया गया",
+   "es": "Se cambió a {label}",
+   "ar": "تم التبديل إلى {label}",
+   "fr": "Passé à {label}",
+   "bn": "{label}-এ যাওয়া হয়েছে",
+   "pt-BR": "Mudou para {label}",
+   "ru": "Переключено на: {label}",
+   "id": "Beralih ke {label}"
+  },
+  "Couldn't confirm the switch to {label}": {
+   "zh-Hans": "无法确认是否已切换到 {label}",
+   "hi": "{label} पर स्विच की पुष्टि नहीं हो सकी",
+   "es": "No se pudo confirmar el cambio a {label}",
+   "ar": "تعذّر تأكيد التبديل إلى {label}",
+   "fr": "Impossible de confirmer le passage à {label}",
+   "bn": "{label}-এ যাওয়া নিশ্চিত করা যায়নি",
+   "pt-BR": "Não foi possível confirmar a troca para {label}",
+   "ru": "Не удалось подтвердить переключение на: {label}",
+   "id": "Tidak dapat memastikan peralihan ke {label}"
+  },
+  "Couldn't switch to {label}": {
+   "zh-Hans": "无法切换到 {label}",
+   "hi": "{label} पर स्विच नहीं हो सका",
+   "es": "No se pudo cambiar a {label}",
+   "ar": "تعذّر التبديل إلى {label}",
+   "fr": "Impossible de passer à {label}",
+   "bn": "{label}-এ যাওয়া যায়নি",
+   "pt-BR": "Não foi possível mudar para {label}",
+   "ru": "Не удалось переключиться на: {label}",
+   "id": "Tidak dapat beralih ke {label}"
+  },
+  "Sent {label} to your browser": {
+   "zh-Hans": "已将 {label} 发送到你的浏览器",
+   "hi": "{label} आपके ब्राउज़र को भेजा गया",
+   "es": "Se envió {label} a tu navegador",
+   "ar": "تم إرسال {label} إلى متصفحك",
+   "fr": "{label} envoyé à votre navigateur",
+   "bn": "{label} আপনার ব্রাউজারে পাঠানো হয়েছে",
+   "pt-BR": "{label} enviado ao seu navegador",
+   "ru": "{label} передано в ваш браузер",
+   "id": "{label} dikirim ke peramban Anda"
+  },
+  "Remembered: {label}": {
+   "zh-Hans": "已记住：{label}",
+   "hi": "याद रखा गया: {label}",
+   "es": "Recordado: {label}",
+   "ar": "تم التذكّر: {label}",
+   "fr": "Retenu : {label}",
+   "bn": "মনে রাখা হয়েছে: {label}",
+   "pt-BR": "Lembrado: {label}",
+   "ru": "Запомнено: {label}",
+   "id": "Diingat: {label}"
+  },
+  "Couldn't remember: {label}": {
+   "zh-Hans": "无法记住：{label}",
+   "hi": "याद नहीं रखा जा सका: {label}",
+   "es": "No se pudo recordar: {label}",
+   "ar": "تعذّر التذكّر: {label}",
+   "fr": "Impossible de retenir : {label}",
+   "bn": "মনে রাখা যায়নি: {label}",
+   "pt-BR": "Não foi possível lembrar: {label}",
+   "ru": "Не удалось запомнить: {label}",
+   "id": "Tidak dapat mengingat: {label}"
+  },
+  "Assistant": {
+   "zh-Hans": "助手",
+   "hi": "सहायक",
+   "es": "Asistente",
+   "ar": "المساعد",
+   "fr": "Assistant",
+   "bn": "সহকারী",
+   "pt-BR": "Assistente",
+   "ru": "Ассистент",
+   "id": "Asisten"
+  },
+  "Do it without asking": {
+   "zh-Hans": "无需询问直接执行",
+   "hi": "बिना पूछे करें",
+   "es": "Hacerlo sin preguntar",
+   "ar": "التنفيذ دون سؤال",
+   "fr": "Le faire sans demander",
+   "bn": "জিজ্ঞাসা না করে করুন",
+   "pt-BR": "Fazer sem perguntar",
+   "ru": "Выполнять без вопросов",
+   "id": "Lakukan tanpa bertanya"
+  },
+  "The chat and voice open apps, switch tabs, open web pages and save what you ask them to remember without a card. A note in the chat says what was done.": {
+   "zh-Hans": "聊天和语音会直接打开应用、切换标签页、打开网页，并保存你要求记住的内容，无需确认卡片。聊天中会有一条说明告诉你做了什么。",
+   "hi": "चैट और आवाज़ बिना कार्ड के ऐप खोलते हैं, टैब बदलते हैं, वेब पेज खोलते हैं और वह सहेजते हैं जो आप याद रखने को कहते हैं। चैट में एक नोट बताता है कि क्या किया गया।",
+   "es": "El chat y la voz abren apps, cambian de pestaña, abren páginas web y guardan lo que les pides recordar sin tarjeta. Una nota en el chat dice qué se hizo.",
+   "ar": "تفتح الدردشة والصوت التطبيقات وتبدّل علامات التبويب وتفتح صفحات الويب وتحفظ ما تطلب تذكّره دون بطاقة. تذكر ملاحظة في الدردشة ما تم.",
+   "fr": "Le chat et la voix ouvrent des apps, changent d’onglet, ouvrent des pages web et retiennent ce que vous leur demandez, sans carte. Une note dans le chat indique ce qui a été fait.",
+   "bn": "চ্যাট ও ভয়েস কার্ড ছাড়াই অ্যাপ খোলে, ট্যাব বদলায়, ওয়েব পেজ খোলে এবং আপনি যা মনে রাখতে বলেন তা সংরক্ষণ করে। চ্যাটে একটি নোট জানায় কী করা হয়েছে।",
+   "pt-BR": "O chat e a voz abrem apps, trocam de aba, abrem páginas da web e guardam o que você pedir para lembrar, sem cartão. Uma nota no chat diz o que foi feito.",
+   "ru": "Чат и голос открывают приложения, переключают вкладки, открывают веб-страницы и запоминают то, что вы просите, без карточки. Заметка в чате сообщает, что было сделано.",
+   "id": "Chat dan suara membuka aplikasi, berpindah tab, membuka halaman web, dan menyimpan apa yang Anda minta untuk diingat tanpa kartu. Catatan di chat memberi tahu apa yang dilakukan."
+  },
+  "Once a chat has read text from another program (tab titles, a dropped file or window, a reopened chat), pages and memories ask again until you start a new chat.": {
+   "zh-Hans": "一旦聊天读取了其他程序的文字（标签页标题、拖入的文件或窗口、重新打开的聊天），网页和记忆会再次询问，直到你开始新的聊天。",
+   "hi": "जब कोई चैट किसी दूसरे प्रोग्राम का टेक्स्ट पढ़ लेता है (टैब के शीर्षक, छोड़ी गई फ़ाइल या विंडो, फिर से खोली गई चैट), तो नई चैट शुरू करने तक पेज और यादें फिर से पूछती हैं।",
+   "es": "Cuando un chat ha leído texto de otro programa (títulos de pestañas, un archivo o una ventana soltados, un chat reabierto), las páginas y los recuerdos vuelven a preguntar hasta que empieces un chat nuevo.",
+   "ar": "بعد أن تقرأ الدردشة نصًا من برنامج آخر (عناوين علامات التبويب، أو ملف أو نافذة مُفلتة، أو دردشة أُعيد فتحها)، تعود الصفحات والذكريات إلى السؤال حتى تبدأ دردشة جديدة.",
+   "fr": "Dès qu’un chat a lu du texte d’un autre programme (titres d’onglets, fichier ou fenêtre déposés, chat rouvert), les pages et les souvenirs redemandent jusqu’à ce que vous commenciez un nouveau chat.",
+   "bn": "কোনো চ্যাট অন্য প্রোগ্রামের লেখা পড়ার পর (ট্যাবের শিরোনাম, ফেলা ফাইল বা উইন্ডো, আবার খোলা চ্যাট), নতুন চ্যাট শুরু না করা পর্যন্ত পেজ ও স্মৃতি আবার জিজ্ঞাসা করে।",
+   "pt-BR": "Depois que um chat lê texto de outro programa (títulos de abas, um arquivo ou janela soltos, um chat reaberto), páginas e memórias voltam a perguntar até você começar um novo chat.",
+   "ru": "Как только чат прочитал текст из другой программы (заголовки вкладок, перетащенный файл или окно, снова открытый чат), страницы и воспоминания снова требуют подтверждения, пока вы не начнёте новый чат.",
+   "id": "Setelah chat membaca teks dari program lain (judul tab, file atau jendela yang dijatuhkan, chat yang dibuka kembali), halaman dan ingatan akan bertanya lagi sampai Anda memulai chat baru."
+  },
+  "What the chat knows about you, in every conversation. Kept on this PC, encrypted for your Windows account. The chat can propose an item; you confirm it on a card, unless you asked it to remember and Do it without asking is on.": {
+   "zh-Hans": "聊天在每次对话中都知道的关于你的信息。保存在这台电脑上，并为你的 Windows 账户加密。聊天可以提议一项内容；你需在卡片上确认，除非是你要求它记住并且开启了“无需询问直接执行”。",
+   "hi": "हर बातचीत में चैट आपके बारे में क्या जानता है। इस पीसी पर रखा गया, आपके Windows खाते के लिए एन्क्रिप्ट किया गया। चैट कोई आइटम सुझा सकता है; आप उसे कार्ड पर पुष्टि करते हैं, जब तक आपने उसे याद रखने को न कहा हो और “बिना पूछे करें” चालू न हो।",
+   "es": "Lo que el chat sabe de ti, en cada conversación. Guardado en este PC, cifrado para tu cuenta de Windows. El chat puede proponer un elemento; lo confirmas en una tarjeta, salvo que le hayas pedido recordarlo y Hacerlo sin preguntar esté activado.",
+   "ar": "ما تعرفه الدردشة عنك في كل محادثة. محفوظ على هذا الكمبيوتر ومشفّر لحساب Windows الخاص بك. يمكن للدردشة اقتراح عنصر؛ تؤكده على بطاقة، إلا إذا طلبت منها تذكّره وكان خيار التنفيذ دون سؤال مفعّلًا.",
+   "fr": "Ce que le chat sait de vous, dans chaque conversation. Conservé sur ce PC, chiffré pour votre compte Windows. Le chat peut proposer un élément ; vous le confirmez sur une carte, sauf si vous lui avez demandé de le retenir et que Le faire sans demander est activé.",
+   "bn": "প্রতিটি কথোপকথনে চ্যাট আপনার সম্পর্কে যা জানে। এই পিসিতে রাখা, আপনার Windows অ্যাকাউন্টের জন্য এনক্রিপ্ট করা। চ্যাট একটি আইটেম প্রস্তাব করতে পারে; আপনি কার্ডে তা নিশ্চিত করেন, যদি না আপনি মনে রাখতে বলে থাকেন এবং জিজ্ঞাসা না করে করুন চালু থাকে।",
+   "pt-BR": "O que o chat sabe sobre você, em todas as conversas. Guardado neste PC, criptografado para sua conta do Windows. O chat pode propor um item; você o confirma em um cartão, a menos que tenha pedido para lembrar e Fazer sem perguntar esteja ativado.",
+   "ru": "Что чат знает о вас в каждом разговоре. Хранится на этом ПК, зашифровано для вашей учётной записи Windows. Чат может предложить пункт; вы подтверждаете его на карточке, если только вы сами не попросили запомнить и не включено «Выполнять без вопросов».",
+   "id": "Apa yang diketahui chat tentang Anda, di setiap percakapan. Disimpan di PC ini, dienkripsi untuk akun Windows Anda. Chat dapat mengusulkan item; Anda mengonfirmasinya di kartu, kecuali Anda memintanya untuk mengingat dan Lakukan tanpa bertanya aktif."
   }
  }
 }

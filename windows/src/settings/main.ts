@@ -889,6 +889,26 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
 
 // ── General section ───────────────────────────────────────────────────────────
 
+/** Settings → Assistant: whether the chat and voice act without a card
+ *  (assistant/tools.rs). Rust owns the switch and only takes it from here. */
+function assistantSection(): HTMLElement {
+  const autoRun = toggle(settings.assistantAutoRun ?? false, (v) => {
+    Bridge.assistantSetAutoRun(v).then(
+      () => { settings.assistantAutoRun = v; },
+      () => { autoRun.classList.toggle("on", !v); },
+    );
+  });
+  autoRun.setAttribute("aria-label", t("Do it without asking"));
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: t("Assistant") })),
+    h("div", { class: "row" }, h("label", { text: t("Do it without asking") }), autoRun),
+    h("div", { class: "hint", text: t("The chat and voice open apps, switch tabs, open web pages and save what you ask them to remember without a card. A note in the chat says what was done.") }),
+    h("div", { class: "hint", text: t("Once a chat has read text from another program (tab titles, a dropped file or window, a reopened chat), pages and memories ask again until you start a new chat.") }),
+  );
+}
+
 function generalSection(): HTMLElement {
   const volume = h("input", {
     type: "range", min: "0", max: "0.2", step: "0.005",
@@ -1383,6 +1403,7 @@ async function render() {
     planSection(status),
     apiSection(hasKey),
     chatgptSection(),
+    ...(IS_WINDOWS ? [assistantSection()] : []),
     ...(IS_WINDOWS ? [memorySection()] : []),
     chatProvidersSection(chatKeys, keyChanged),
     localSection(customKey),

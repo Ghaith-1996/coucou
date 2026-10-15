@@ -32,5 +32,5 @@ test("remember notifies only the successful persisted result outside the action 
 test("the notification's success value follows save and rollback handling", () => {
   assert.match(memory, /pub fn with<T>[^\n]*\{\s*let mut store = STORE\.lock\(\)\.unwrap\(\);\s*with_store\(&mut store, &path\(\), f\)\s*\}/);
   assert.match(memory, /if \*memory != before \{\s*if let Err\(err\) = save_to\(file, memory\) \{\s*\*memory = before;\s*return Err\(err\);\s*\}\s*\}\s*Ok\(out\)/);
-  assert.match(remember, /confirm\(app, ActionKind::MemorySave,[^\n]+scope\)\.await\s*else \{\s*return result\("The user declined: nothing was remembered\."\);\s*\};\s*let saved = scope\.run_if_active/);
+  assert.match(remember, /confirm\(app, ActionKind::MemorySave,[^\n]+scope, remember_asked\)\.await\s*else \{\s*return result\("The user declined: nothing was remembered\."\);\s*\};\s*let scope = approval\.scope\(scope\);\s*let saved = scope\.run_if_active/);
 });

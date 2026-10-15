@@ -519,9 +519,12 @@ export const Bridge = {
    */
   appPropose: (captureId: string, name: string) =>
     callOrThrow<{ label: string; grant: AppGrant } | null>("assistant_app_propose", { captureId, name }),
-  /** The user confirmed: Rust checks the grant, opens the app and says what came of it. */
-  appLaunch: (captureId: string, grant: AppGrant) =>
-    callOrThrow<ActionReceipt>("assistant_app_launch", { captureId, grant }),
+  /**
+   * The user confirmed, or `auto`: "Do it without asking" is on, which Rust
+   * checks itself. Rust checks the grant, opens the app and says what came of it.
+   */
+  appLaunch: (captureId: string, grant: AppGrant, auto = false) =>
+    callOrThrow<ActionReceipt>("assistant_app_launch", auto ? { captureId, grant, auto } : { captureId, grant }),
   /** A chat action card: Rust's grant on "Do it", null on "No". */
   chatActionAnswer: (actionId: string, grant: AppGrant | null) =>
     callOrThrow<void>("chat_action_answer", { actionId, grant }),
@@ -532,6 +535,8 @@ export const Bridge = {
   memoryDelete: (id: string) => callOrThrow<MemoryState>("memory_delete", { id }),
   memoryClear: () => callOrThrow<MemoryState>("memory_clear"),
   memorySetEnabled: (enabled: boolean) => callOrThrow<MemoryState>("memory_set_enabled", { enabled }),
+  /** Settings' "Do it without asking" switch. Only the settings window may ask. */
+  assistantSetAutoRun: (enabled: boolean) => callOrThrow<void>("assistant_set_auto_run", { enabled }),
   /** A plain JSON copy in Downloads; resolves with its path. */
   memoryExport: () => callOrThrow<string>("memory_export"),
   /**

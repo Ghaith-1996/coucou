@@ -27,11 +27,15 @@ test("native reset retires action authority before resetting model history", () 
 test("chat browser and launch tools pass their scope through the final OS worker gate", () => {
   assert.match(tools, /super::browser::switch_if\(a\.window, a\.tab_id, a\.title, Some\(scope\)\)/);
   assert.match(tools, /super::launch::open_if\(action_id\.clone\(\), target, Some\(scope\)\)/);
+  // An action that ran without a card also needs the switch on when it starts.
+  assert.match(tools, /let scope = approval\.scope\(scope\);\s*let receipt = super::launch::open_if/);
+  assert.match(tools, /let scope = approval\.scope\(scope\);\s*tauri::async_runtime::spawn_blocking\(move \|\| \{\s*super::browser::switch_if/);
+  assert.match(tools, /Approval::Auto => scope\.gated\(auto_run_on\)/);
   assert.match(browser, /pub fn switch_if\([^\n]*scope: Option<ActionScope>[^\n]*\{\s*with_uia\(move \|ua\| \{/);
 });
 
 test("native cancellation and immediate effects hold the same scope lock", () => {
-  assert.match(tools, /pub\(crate\) fn run_if_active<T>\([^\n]*\{\s*let active = self\.0\.lock\(\)\.unwrap\(\);\s*if !\*active \{\s*return None;\s*\}\s*let result = effect\(\);\s*drop\(active\);\s*Some\(result\)/);
+  assert.match(tools, /pub\(crate\) fn run_if_active<T>\([^\n]*\{\s*let active = self\.0\.lock\(\)\.unwrap\(\);\s*if !\*active \|\| !self\.1\.map_or\(true, \|gate\| gate\(\)\) \{\s*return None;\s*\}\s*let result = effect\(\);\s*drop\(active\);\s*Some\(result\)/);
   assert.doesNotMatch(tools, /fn try_start\(/);
   assert.match(tools, /pub fn retire\([^\n]*\{\s*let mut active = scope\.0\.lock\(\)\.unwrap\(\);\s*\*active = false/);
 });
@@ -57,15 +61,17 @@ test("both proposed and freshly resolved tabs reject same-window title ambiguity
 });
 
 test("remember carries native turn ownership through approval and the storage lock", () => {
-  assert.match(tools, /"remember" => remember\(app,[^\n]+intent, request_id, scope\)\.await/);
-  assert.match(tools, /ActionKind::MemorySave,[^\n]+intent, request_id, scope\)\.await/);
+  assert.match(tools, /"remember" => remember\(app,[^\n]+intent, request_id, scope, remember_asked\)\.await/);
+  assert.match(tools, /ActionKind::MemorySave,[^\n]+intent, request_id, scope, remember_asked\)\.await/);
+  assert.match(tools, /let scope = approval\.scope\(scope\);\s*let saved = scope\.run_if_active/);
   assert.match(tools, /let saved = scope\.run_if_active\(\|\| \{\s*crate::memory::with\(\|m\| m\.add/);
 });
 
 test("web approval and the actual URL launch worker retain native turn ownership", () => {
   const launch = native("assistant/launch.rs");
   assert.match(tools, /"open_web" => open_web\(app,[^\n]+intent, request_id, scope\)\.await/);
-  assert.match(tools, /ActionKind::OpenUrl,[^\n]+intent, request_id, scope\)\.await/);
+  assert.match(tools, /ActionKind::OpenUrl,[^\n]+intent, request_id, scope, false\)\.await/);
+  assert.match(tools, /let scope = approval\.scope\(scope\);\s*super::launch::open_url_if/);
   assert.match(tools, /open_url_if\(action_id\.clone\(\), a\.url, Some\(scope\)\)/);
   assert.match(launch, /pub async fn open_url_if\([^\n]*scope: Option<ActionScope>[^\n]*\{\s*on_launch_thread\(move \|\| \{[\s\S]*let mut execute = \|\| unsafe \{ ShellExecuteExW\(&mut info\) \};\s*let executed = match scope \{\s*Some\(scope\) => scope\.run_if_active\(execute\),\s*None => Some\(execute\(\)\),\s*\};/);
 });

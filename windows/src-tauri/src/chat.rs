@@ -59,6 +59,11 @@ struct Conversation {
     native: Vec<Value>,
     /// `{"role", "content": text}` turns, the same whoever answered.
     plain: Vec<Value>,
+    /// Text from another program reached the model (tab titles, a dropped
+    /// file or window, or a reopened chat whose turns can't be vouched for).
+    /// Until "New chat", pages and memories only go through a card
+    /// (assistant/tools.rs). Only native code sets it; nothing clears it.
+    tainted: bool,
 }
 
 /// What a provider needs to build one turn.
@@ -87,7 +92,16 @@ impl Chat {
             .iter()
             .flat_map(|(q, a)| [json!({ "role": "user", "content": q }), json!({ "role": "assistant", "content": a })])
             .collect();
-        *c = Conversation { epoch, plain, ..Default::default() };
+        *c = Conversation { epoch, plain, tainted: true, ..Default::default() };
+    }
+
+    /// Text from another program is about to reach the model.
+    pub fn taint(&self) {
+        self.inner.lock().unwrap().tainted = true;
+    }
+
+    pub fn tainted(&self) -> bool {
+        self.inner.lock().unwrap().tainted
     }
 
     /// Regenerate: the last question and its answer leave the history, so the
@@ -264,6 +278,9 @@ pub async fn send(
     action_scope: &crate::assistant::tools::ActionScope,
 ) -> Result<ChatReply, String> {
     let context = chat.context_for_turn(context)?;
+    if context.is_some() {
+        chat.taint();
+    }
     let provider = settings.chat_provider.as_str();
     let model = model_for(settings, provider);
     if provider == ANTHROPIC || provider.is_empty() {
@@ -276,11 +293,12 @@ pub async fn send(
         // What the chat may do on this PC (assistant/tools.rs), each action
         // confirmed by the user on a card.
         let intent = crate::assistant::policy::new_id("chat");
+        let remember_asked = crate::assistant::tools::asks_to_remember(&query);
         let runner = |call: crate::assistant::tools::ToolCall| -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + '_>> {
             let app = app.clone();
             let intent = intent.clone();
             let request_id = request_id.clone();
-            Box::pin(async move { crate::assistant::tools::run(&app, &call, &intent, request_id.as_deref(), action_scope).await })
+            Box::pin(async move { crate::assistant::tools::run(&app, &call, &intent, request_id.as_deref(), action_scope, remember_asked).await })
         };
         return chatgpt::send(
             chat,
@@ -419,6 +437,22 @@ mod tests {
         let _other = chat.begin("google");
         chat.commit(&t, json!({"role":"user","content":"q"}), json!({"role":"assistant","content":"a"}), "q", "a");
         assert!(chat.begin("google").first);
+    }
+
+    #[test]
+    fn outside_text_marks_the_conversation_until_a_new_chat() {
+        let chat = Chat::default();
+        assert!(!chat.tainted(), "a new conversation starts clean");
+        chat.taint();
+        let t = chat.begin("chatgpt");
+        chat.commit(&t, json!({"role":"user","content":"q"}), json!({"role":"assistant","content":"a"}), "q", "a");
+        assert!(chat.tainted(), "later turns keep it");
+        assert!(chat.undo_last());
+        assert!(chat.tainted(), "regenerating keeps it");
+        chat.reset();
+        assert!(!chat.tainted(), "New chat clears it");
+        chat.restore(&[("hi".into(), "hello".into())]);
+        assert!(chat.tainted(), "a reopened conversation can't be vouched for");
     }
 
     #[test]

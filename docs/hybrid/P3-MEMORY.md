@@ -3,7 +3,10 @@
 Short facts the user wants every chat to know ("I write in French",
 "I use Rust at work"). The user owns them: they can see, edit, delete and
 export every item. The chat can only *propose* one, on a card the user
-confirms.
+confirms. With Do it without asking on, a memory is saved without the card
+only when the user's own message asked to remember it and the conversation
+never took in text from another program
+([CHAT-ACTIONS.md](CHAT-ACTIONS.md#do-it-without-asking-assistantautorun)).
 
 ## Store (`src-tauri/src/memory.rs`)
 

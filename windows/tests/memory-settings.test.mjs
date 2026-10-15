@@ -756,3 +756,103 @@ test("deleting all memory retires the editor and its retained submit handlers", 
   assert.deepEqual(sent("memory_edit"), []);
   assert.equal(section.find(".memory-item").length, 0);
 });
+
+
+test("pending clear cannot re-arm deletion for a newly added item", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = deferred();
+  answering(t, {
+    memory_list: state([item("old", "Old fact")]),
+    memory_clear: pending.promise,
+    memory_add: ({ text }) => state([item("new", text)]),
+  });
+  const section = memorySection();
+  await settle();
+  const clearBtn = button(section, "Delete everything");
+  clearBtn.fire("click");
+  clearBtn.fire("click");
+  clearBtn.fire("click");
+  assert.equal(sent("memory_clear").length, 1);
+  assert.equal(clearBtn.disabled, true);
+  assert.equal(clearBtn.textContent, "Delete everything", "pending deletion is no longer armed");
+  pending.resolve(state([]));
+  await settle();
+  assert.equal(clearBtn.hidden, true);
+  section.find("input")[0].value = "New fact";
+  button(section, "Add").fire("click");
+  await settle();
+  assert.equal(clearBtn.disabled, false);
+  assert.equal(clearBtn.textContent, "Delete everything");
+  clearBtn.fire("click");
+  await settle();
+  assert.equal(sent("memory_clear").length, 1, "the new item requires a fresh first confirmation click");
+  assert.equal(clearBtn.textContent, "Really delete everything?");
+});
+
+test("failed clear releases controls but requires fresh confirmation for retry", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = deferred();
+  let clears = 0;
+  answering(t, {
+    memory_list: state([item("old", "Old fact")]),
+    memory_clear: () => ++clears === 1 ? pending.promise : state([]),
+  });
+  const section = memorySection();
+  await settle();
+  const clearBtn = button(section, "Delete everything");
+  clearBtn.fire("click");
+  clearBtn.fire("click");
+  clearBtn.fire("click");
+  pending.reject(new Error("clear failed"));
+  await settle();
+  assert.equal(clearBtn.disabled, false);
+  assert.equal(clearBtn.textContent, "Delete everything");
+  assert.match(section.textContent, /Old fact/);
+  assert.match(section.textContent, /clear failed/);
+  clearBtn.fire("click");
+  assert.equal(sent("memory_clear").length, 1);
+  clearBtn.fire("click");
+  await settle();
+  assert.equal(sent("memory_clear").length, 2);
+  assert.match(section.textContent, /Nothing yet/);
+  assert.doesNotMatch(section.textContent, /clear failed/);
+});
+
+test("new memory state invalidates an old clear confirmation and its timer", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  answering(t, {
+    memory_list: state([item("old", "Old fact")]),
+    memory_add: ({ text }) => state([item("old", "Old fact"), item("new", text)]),
+    memory_clear: state([]),
+  });
+  const section = memorySection();
+  await settle();
+  const clearBtn = button(section, "Delete everything");
+  clearBtn.fire("click");
+  t.mock.timers.tick(3000);
+  section.find("input")[0].value = "New fact";
+  button(section, "Add").fire("click");
+  await settle();
+  assert.equal(clearBtn.textContent, "Delete everything", "updated state invalidates the previous confirmation");
+  clearBtn.fire("click");
+  assert.equal(sent("memory_clear").length, 0);
+  t.mock.timers.tick(1000);
+  assert.equal(clearBtn.textContent, "Really delete everything?", "the old timer cannot expire the newer confirmation");
+  t.mock.timers.tick(3000);
+  assert.equal(clearBtn.textContent, "Delete everything");
+});
+
+test("hidden clear controls cannot arm or delete an empty or unloaded store", async (t) => {
+  const pending = deferred();
+  answering(t, { memory_list: pending.promise, memory_clear: state([]) });
+  const section = memorySection();
+  const clearBtn = button(section, "Delete everything");
+  clearBtn.fire("click");
+  clearBtn.fire("click");
+  assert.equal(sent("memory_clear").length, 0);
+  pending.resolve(state([]));
+  await settle();
+  clearBtn.fire("click");
+  clearBtn.fire("click");
+  assert.equal(sent("memory_clear").length, 0);
+});

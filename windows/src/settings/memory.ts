@@ -44,6 +44,14 @@ export function memorySection(): HTMLElement {
   // typed into, but must wait before submitting another edit.
   let saving: Editor | null = null;
   let confirmingClear = false;
+  let clearing = false;
+  let clearTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function resetClear() {
+    confirmingClear = false;
+    if (clearTimer !== null) clearTimeout(clearTimer);
+    clearTimer = null;
+  }
 
   const fail = (err: unknown) => {
     note.textContent = String(err).replace(/^Error:\s*/, "");
@@ -52,6 +60,7 @@ export function memorySection(): HTMLElement {
     if (next) {
       state = next;
       loaded = true;
+      resetClear();
     }
     draw();
   };
@@ -127,6 +136,7 @@ export function memorySection(): HTMLElement {
       focused.focus();
       focused.setSelectionRange(selection[0], selection[1]);
     }
+    clearBtn.disabled = !loaded || clearing;
     clearBtn.textContent = confirmingClear ? STRINGS.confirmClear : STRINGS.clearAll;
     clearBtn.hidden = !state.items.length;
   }
@@ -172,19 +182,33 @@ export function memorySection(): HTMLElement {
       draw();
     }
   });
-  // Two clicks: the first asks, the second deletes (the question goes after 4 s).
-  clearBtn.addEventListener("click", () => {
+  // Two clicks for the current state. An in-flight deletion cannot re-arm
+  // confirmation for items added later, and a changed state requires asking again.
+  clearBtn.addEventListener("click", async () => {
+    if (!loaded || clearing || !state.items.length) return;
     if (!confirmingClear) {
       confirmingClear = true;
       draw();
-      setTimeout(() => {
+      clearTimer = setTimeout(() => {
+        clearTimer = null;
         confirmingClear = false;
         draw();
       }, 4000);
       return;
     }
-    confirmingClear = false;
-    Bridge.memoryClear().then(apply, fail);
+    resetClear();
+    clearing = true;
+    draw();
+    try {
+      apply(await Bridge.memoryClear());
+      note.textContent = "";
+    } catch (err) {
+      fail(err);
+    } finally {
+      clearing = false;
+      resetClear();
+      draw();
+    }
   });
   const exportBtn = h("button", {
     text: STRINGS.exportFile,

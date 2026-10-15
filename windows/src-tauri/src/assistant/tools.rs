@@ -289,7 +289,7 @@ async fn open_app(app: &AppHandle, args: OpenArgs, intent: &str) -> String {
     #[cfg(windows)]
     {
         let catalog = tauri::async_runtime::spawn_blocking(super::apps::catalog).await.unwrap_or_default();
-        let Some(entry) = super::apps::find(&catalog, &args.name).cloned() else {
+        let Some(entry) = super::apps::find_typed(&catalog, &args.name).cloned() else {
             return result(format!("No app called \"{}\" in the Start menu.", args.name));
         };
         let Some((action_id, ValidArgs::LaunchApp(a))) = confirm(

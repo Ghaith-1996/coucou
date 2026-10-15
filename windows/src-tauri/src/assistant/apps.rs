@@ -4,7 +4,9 @@
 // under the name Start shows. Never a path, a command line or arguments from
 // the page; an app is named by an id this module made from its AppsFolder
 // entry, found again from the id when the user confirms, and opened the way
-// Start opens it (`shell:AppsFolder\<AppID>`, launch.rs).
+// Start opens it (`shell:AppsFolder\<AppID>`, launch.rs). A Start menu
+// shortcut AppsFolder is missing (a broken registration) is taken from the
+// Start menu's own folders and opened as that shortcut.
 //
 // Uninstallers, readmes, help and web links are left out. Matching a spoken
 // name is deterministic: exact names before interpreting leading articles or
@@ -137,6 +139,17 @@ const OPEN_FILLERS: [&str; 14] = [
 /// The app a spoken query means, if any. Exact labels at each leading-filler
 /// boundary win longest-first; only the fully stripped tail may match loosely.
 pub fn find<'a>(entries: &'a [AppEntry], spoken: &str) -> Option<&'a AppEntry> {
+    find_with(entries, spoken, true)
+}
+
+/// The app a typed name means (the chat's `open_app`): the same, without
+/// near spellings. A model spells "Chrome" right; when Chrome isn't in the
+/// list, "Dev Home" is not what it meant.
+pub fn find_typed<'a>(entries: &'a [AppEntry], name: &str) -> Option<&'a AppEntry> {
+    find_with(entries, name, false)
+}
+
+fn find_with<'a>(entries: &'a [AppEntry], spoken: &str, near: bool) -> Option<&'a AppEntry> {
     let q = normalise(spoken);
     if q.is_empty() {
         return None;
@@ -158,13 +171,21 @@ pub fn find<'a>(entries: &'a [AppEntry], spoken: &str) -> Option<&'a AppEntry> {
     if OPEN_FILLERS.contains(&candidate) {
         return None;
     }
-    find_normalised(entries, candidate).or_else(|| {
+    find_normalised(entries, candidate, near).or_else(|| {
         let english = FRENCH_NAMES.iter().find(|(fr, _)| *fr == candidate)?.1;
-        find_normalised(entries, english)
+        find_normalised(entries, english, near)
     })
 }
 
-fn find_normalised<'a>(entries: &'a [AppEntry], q: &str) -> Option<&'a AppEntry> {
+/// How many edits a near spelling may have: one for short words, where two
+/// turn "chrome" into "home", two from seven letters.
+fn near_enough(q: &str, name: &str) -> Option<usize> {
+    let shorter = q.chars().count().min(name.chars().count());
+    let d = levenshtein(q, name);
+    (d <= if shorter >= 7 { 2 } else { 1 }).then_some(d)
+}
+
+fn find_normalised<'a>(entries: &'a [AppEntry], q: &str, near: bool) -> Option<&'a AppEntry> {
     let q = q.to_string();
     let q_words: Vec<&str> = q.split(' ').collect();
     let rank = |e: &AppEntry| -> Option<usize> {
@@ -183,9 +204,9 @@ fn find_normalised<'a>(entries: &'a [AppEntry], q: &str) -> Option<&'a AppEntry>
         }
         // Whisper's spelling: "figmah", "spotfy". Not for short names, which
         // would match anything.
-        if q.chars().count() >= 4 {
-            let d = levenshtein(&q, &l).min(words.iter().map(|w| levenshtein(&q, w)).min().unwrap_or(usize::MAX));
-            if d <= 2 {
+        if near && q.chars().count() >= 4 {
+            let d = std::iter::once(l.as_str()).chain(words.iter().copied()).filter_map(|w| near_enough(&q, w)).min();
+            if let Some(d) = d {
                 return Some(3 + d);
             }
         }
@@ -217,7 +238,77 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(windows)]
 pub fn catalog() -> Vec<AppEntry> {
     // Its own thread: the shell's COM objects need an apartment of their own.
-    std::thread::spawn(|| entries(apps_folder::items())).join().unwrap_or_default()
+    std::thread::spawn(|| entries(apps_folder::items().into_iter().chain(start_menu::shortcuts()))).join().unwrap_or_default()
+}
+
+/// Whether `target` is a shortcut from the Start menu's own folders, opened
+/// as a file rather than through AppsFolder (launch.rs).
+#[cfg(windows)]
+pub fn is_start_shortcut(target: &str) -> bool {
+    start_menu::is_shortcut(target)
+}
+
+/// The Start menu's shortcuts (`*.lnk` under both Programs folders), by
+/// name. AppsFolder normally lists them all, but an app whose registration
+/// is broken can be missing there while its shortcut is in Start (seen
+/// with Google Chrome). They come after AppsFolder's items, so an app
+/// AppsFolder lists keeps its entry there (one entry per name).
+#[cfg(windows)]
+mod start_menu {
+    use std::path::{Path, PathBuf};
+
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_CommonPrograms, FOLDERID_Programs, KF_FLAG_DEFAULT};
+
+    /// Folders deep enough for "Vendor\App.lnk" and one more level.
+    const DEPTH: usize = 3;
+    const MAX: usize = 2000;
+
+    fn roots() -> Vec<PathBuf> {
+        [FOLDERID_Programs, FOLDERID_CommonPrograms]
+            .iter()
+            .filter_map(|id| unsafe {
+                let raw = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
+                let path = raw.to_string().ok();
+                CoTaskMemFree(Some(raw.0 as *const _));
+                path.map(PathBuf::from)
+            })
+            .collect()
+    }
+
+    pub fn shortcuts() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for root in roots() {
+            walk(&root, DEPTH, &mut out);
+        }
+        out
+    }
+
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<(String, String)>) {
+        let Ok(list) = std::fs::read_dir(dir) else { return };
+        for item in list.flatten() {
+            if out.len() >= MAX {
+                return;
+            }
+            let Ok(kind) = item.file_type() else { continue };
+            let path = item.path();
+            if kind.is_dir() && depth > 1 {
+                walk(&path, depth - 1, out);
+            } else if kind.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) {
+                if let (Some(name), Some(target)) = (path.file_stem().and_then(|s| s.to_str()), path.to_str()) {
+                    out.push((name.to_string(), target.to_string()));
+                }
+            }
+        }
+    }
+
+    pub fn is_shortcut(target: &str) -> bool {
+        let path = Path::new(target);
+        path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
+            && !path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+            && roots().iter().any(|root| path.starts_with(root))
+            && path.is_file()
+    }
 }
 
 #[cfg(windows)]
@@ -293,6 +384,54 @@ mod tests {
         assert_eq!(found("Spotfy").as_deref(), Some("Spotify"), "Whisper's spelling");
         assert_eq!(found("notepad").as_deref(), Some("Notepad"));
         assert_eq!(found("Paint").as_deref(), Some("Paint"));
+    }
+
+    #[test]
+    fn a_short_name_is_not_taken_for_another_two_letters_away() {
+        let list: Vec<AppEntry> = ["Dev Home", "Spotify", "Google Play Games"].iter().map(|l| entry(l)).collect();
+        assert_eq!(find(&list, "chrome").map(|e| e.label.as_str()), None, "not Dev Home");
+        assert_eq!(find(&list, "Google Chrome").map(|e| e.label.as_str()), None);
+        assert_eq!(find(&list, "spotfy").map(|e| e.label.as_str()), Some("Spotify"), "one edit still matches");
+        assert_eq!(near_enough("chrome", "home"), None);
+        assert_eq!(near_enough("calculater", "calculator"), Some(1));
+        assert_eq!(near_enough("calculatr0", "calculator"), Some(2), "two edits from seven letters");
+    }
+
+    #[test]
+    fn a_typed_name_takes_no_near_spelling() {
+        let list = list();
+        assert_eq!(find_typed(&list, "Spotfy"), None);
+        assert_eq!(find_typed(&list, "Spotify").map(|e| e.label.as_str()), Some("Spotify"));
+        assert_eq!(find_typed(&list, "word").map(|e| e.label.as_str()), Some("Microsoft Word"), "whole words still do");
+        assert_eq!(find_typed(&list, "the app Visual Studio").map(|e| e.label.as_str()), Some("Visual Studio Code"));
+    }
+
+    #[test]
+    fn a_start_menu_shortcut_is_an_app_after_appsfolder_items() {
+        let found: Vec<(String, String)> = entries([
+            ("Google Chrome".to_string(), r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Google Chrome.lnk".to_string()),
+            ("Paint".to_string(), "Microsoft.Paint_8wekyb3d8bbwe!App".to_string()),
+            ("paint".to_string(), r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Paint.lnk".to_string()),
+        ])
+        .into_iter()
+        .map(|e| (e.label, e.target))
+        .collect();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].0, "Google Chrome");
+        assert_eq!(found[1].1, "Microsoft.Paint_8wekyb3d8bbwe!App", "AppsFolder's entry wins");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_shortcuts_inside_start_menu_folders_open_as_files() {
+        assert!(!is_start_shortcut(r"C:\Windows\System32\calc.exe"));
+        assert!(!is_start_shortcut(r"C:\Users\Public\Desktop\x.lnk"));
+        assert!(!is_start_shortcut(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\..\..\x.lnk"));
+        assert!(!is_start_shortcut("Microsoft.Paint_8wekyb3d8bbwe!App"));
+        let chrome = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Google Chrome.lnk";
+        if std::path::Path::new(chrome).is_file() {
+            assert!(is_start_shortcut(chrome));
+        }
     }
 
     #[test]
@@ -413,7 +552,7 @@ mod tests {
     fn this_computers_start_list() {
         let list = catalog();
         println!("{} apps", list.len());
-        for name in ["calculatrice", "Calculator", "Notepad", "Spotify", "Visual Studio Code", "paint", "Discord"] {
+        for name in ["calculatrice", "Calculator", "Notepad", "Spotify", "Visual Studio Code", "paint", "Discord", "Google Chrome", "chrome"] {
             println!("{name:>20} → {:?}", find(&list, name).map(|e| (&e.label, &e.target)));
         }
         assert!(list.len() > 10);

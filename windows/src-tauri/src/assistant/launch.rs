@@ -73,7 +73,13 @@ impl Drop for Sta {
 }
 
 fn open_in_sta(action_id: &str, app_id: &str) -> ActionReceipt {
-    let file = HSTRING::from(format!(r"shell:AppsFolder\{app_id}"));
+    // A Start menu shortcut AppsFolder doesn't list (apps.rs) opens as the
+    // shortcut itself, the way a click on it in Start does.
+    let file = if super::apps::is_start_shortcut(app_id) {
+        HSTRING::from(app_id)
+    } else {
+        HSTRING::from(format!(r"shell:AppsFolder\{app_id}"))
+    };
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,

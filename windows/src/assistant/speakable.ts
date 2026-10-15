@@ -21,6 +21,46 @@ export function speakable(markdown: string): string {
     .trim();
 }
 
+/** Both providers in assistant/speech.rs cap a clip at this many Unicode scalars. */
+export const MAX_SPEECH_CHARS = 1500;
+// Older non-Windows webviews still import this module even without audio mode.
+const speechSegments = typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/**
+ * Split cleaned speech, not raw markdown: splitting markup could expose a link
+ * target or fenced code. Preserve every character, preferring word/punctuation
+ * boundaries and keeping graphemes whole whenever they fit the provider cap.
+ */
+export function speechChunks(text: string): string[] {
+  if (!text) return [];
+  if ([...text].length <= MAX_SPEECH_CHARS) return [text];
+  const segments = speechSegments ? [...speechSegments.segment(text)].map(({ segment }) => segment) : [...text];
+  const units = segments.flatMap(segment => {
+    const points = [...segment];
+    // A pathological grapheme (e.g. thousands of combining marks) must still
+    // respect the native scalar limit; split only that unit by code point.
+    return points.length > MAX_SPEECH_CHARS
+      ? points.map(text => ({ text, size: 1 }))
+      : [{ text: segment, size: points.length }];
+  });
+  const chunks: string[] = [];
+  for (let start = 0; start < units.length;) {
+    let end = start;
+    let size = 0;
+    let boundary = start;
+    while (end < units.length && size + units[end].size <= MAX_SPEECH_CHARS) {
+      size += units[end].size;
+      if (/[\s,;:!?…。！？、，；：]$/u.test(units[end].text)) boundary = end + 1;
+      end++;
+    }
+    const cut = end < units.length && boundary > start ? boundary : end;
+    chunks.push(units.slice(start, cut).map(unit => unit.text).join(""));
+    start = cut;
+  }
+  return chunks;
+}
+
 /** The shortest chunk worth a clip of its own (except the last). */
 export const MIN_CHUNK = 24;
 

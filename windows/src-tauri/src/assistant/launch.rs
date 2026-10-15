@@ -24,6 +24,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::BOOL;
 
 use super::contracts::{ActionReceipt, ErrorCode};
+use super::tools::ActionScope;
 
 /// How long a window has to appear.
 pub const WAIT: Duration = Duration::from_secs(10);
@@ -31,30 +32,26 @@ pub const WAIT: Duration = Duration::from_secs(10);
 /// Opens the app with this AppsFolder AppID (apps.rs) and reports what came
 /// of it, for `action_id`.
 pub async fn open(action_id: String, app_id: String) -> Result<ActionReceipt, ErrorCode> {
-    open_if(action_id, app_id, || true).await
+    open_if(action_id, app_id, None).await
 }
 
 /// The chat can retire a grant while this STA thread is still queued. Check
-/// its native start gate on that thread, immediately before touching the shell.
-/// Once the gate succeeds, stopping the chat cannot undo the OS operation.
-pub async fn open_if(action_id: String, app_id: String, start: impl FnOnce() -> bool + Send + 'static) -> Result<ActionReceipt, ErrorCode> {
-    on_launch_thread(move || {
-        if !start() {
-            return ActionReceipt::failed(&action_id, ErrorCode::Expired);
-        }
-        open_in_sta(&action_id, &app_id)
-    }).await
+/// its scope on that thread and hold it through only the immediate shell call.
+/// Evidence polling never delays cancellation after that call has finished.
+pub async fn open_if(action_id: String, app_id: String, scope: Option<ActionScope>) -> Result<ActionReceipt, ErrorCode> {
+    on_launch_thread(move || open_in_sta(&action_id, &app_id, scope.as_ref())).await
 }
 
 /// Hands a checked web address (policy::url_ok) to the default browser.
 /// Nothing tells which window or tab shows it, so a launch Windows accepted
 /// is `unknown`, never `succeeded`.
 pub async fn open_url(action_id: String, url: String) -> Result<ActionReceipt, ErrorCode> {
-    open_url_if(action_id, url, || true).await
+    open_url_if(action_id, url, None).await
 }
 
-/// Preserve the native chat lifetime while a URL launch waits for its STA worker.
-pub async fn open_url_if(action_id: String, url: String, start: impl FnOnce() -> bool + Send + 'static) -> Result<ActionReceipt, ErrorCode> {
+/// Hold the native chat scope across the actual shell call on its STA worker,
+/// just as for app launches, never a boolean snapshot before the effect.
+pub async fn open_url_if(action_id: String, url: String, scope: Option<ActionScope>) -> Result<ActionReceipt, ErrorCode> {
     on_launch_thread(move || {
         let file = HSTRING::from(url.as_str());
         let mut info = SHELLEXECUTEINFOW {
@@ -65,13 +62,16 @@ pub async fn open_url_if(action_id: String, url: String, start: impl FnOnce() ->
             nShow: SW_SHOWNORMAL.0,
             ..Default::default()
         };
-        if !start() {
-            return ActionReceipt::failed(&action_id, ErrorCode::Expired);
+        let mut execute = || unsafe { ShellExecuteExW(&mut info) };
+        let executed = match scope {
+            Some(scope) => scope.run_if_active(execute),
+            None => Some(execute()),
+        };
+        match executed {
+            None => ActionReceipt::failed(&action_id, ErrorCode::Expired),
+            Some(Err(_)) => ActionReceipt::failed(&action_id, ErrorCode::Failed),
+            Some(Ok(())) => ActionReceipt::unknown(&action_id),
         }
-        if unsafe { ShellExecuteExW(&mut info) }.is_err() {
-            return ActionReceipt::failed(&action_id, ErrorCode::Failed);
-        }
-        ActionReceipt::unknown(&action_id)
     })
     .await
 }
@@ -114,7 +114,7 @@ impl Drop for Sta {
     }
 }
 
-fn open_in_sta(action_id: &str, app_id: &str) -> ActionReceipt {
+fn open_in_sta(action_id: &str, app_id: &str, scope: Option<&ActionScope>) -> ActionReceipt {
     // A Start menu shortcut AppsFolder doesn't list (apps.rs) opens as the
     // shortcut itself, the way a click on it in Start does.
     let file = if super::apps::is_start_shortcut(app_id) {
@@ -130,8 +130,15 @@ fn open_in_sta(action_id: &str, app_id: &str) -> ActionReceipt {
         nShow: SW_SHOWNORMAL.0,
         ..Default::default()
     };
-    if unsafe { ShellExecuteExW(&mut info) }.is_err() {
-        return ActionReceipt::failed(action_id, ErrorCode::Failed);
+    let mut execute = || unsafe { ShellExecuteExW(&mut info) };
+    let executed = match scope {
+        Some(scope) => scope.run_if_active(execute),
+        None => Some(execute()),
+    };
+    match executed {
+        None => return ActionReceipt::failed(action_id, ErrorCode::Expired),
+        Some(Err(_)) => return ActionReceipt::failed(action_id, ErrorCode::Failed),
+        Some(Ok(())) => {}
     }
     // No process when the shell handed it to one already running.
     let process = info.hProcess;
@@ -226,13 +233,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a_retired_chat_gate_is_checked_on_the_sta_thread_before_opening() {
-        let caller = std::thread::current().id();
-        let receipt = open_if("act-retired".into(), "Not.A.Real.App".into(), move || {
-            assert_ne!(std::thread::current().id(), caller);
-            assert_sta();
-            false
-        }).await.unwrap();
+    async fn a_retired_chat_scope_prevents_the_sta_shell_operation() {
+        let scope = ActionScope::new();
+        crate::assistant::tools::ChatActions::default().retire(&scope);
+        let receipt = open_if("act-retired".into(), "Not.A.Real.App".into(), Some(scope)).await.unwrap();
         assert_eq!(receipt, ActionReceipt::failed("act-retired", ErrorCode::Expired));
     }
 
@@ -321,7 +325,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_retired_url_launch_returns_before_touching_the_shell() {
         let id = "act-retired-url".to_string();
-        let receipt = open_url_if(id.clone(), "https://example.com/".into(), || false).await.unwrap();
+        let scope = ActionScope::new();
+        crate::assistant::tools::ChatActions::default().retire(&scope);
+        let receipt = open_url_if(id.clone(), "https://example.com/".into(), Some(scope)).await.unwrap();
         assert_eq!(receipt, ActionReceipt::failed(&id, ErrorCode::Expired));
     }
 

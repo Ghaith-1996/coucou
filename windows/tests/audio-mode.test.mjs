@@ -14,10 +14,16 @@ import {
 const answers = new Map();
 const realInvoke = internals.invoke;
 let captures = 0;
+let speechProvider = "windows";
 internals.invoke = async (cmd, args) => {
   await realInvoke(cmd, args);
   if (cmd === "assistant_voice_hands_free") return `cap-${++captures}`;
-  if (cmd === "speech_say") return { audio: `data:audio/wav;base64,${args.text}`, language: "en", matched: true };
+  if (cmd === "speech_say") {
+    // Both speech.rs provider paths enforce Rust's Unicode-scalar cap. Model
+    // their real truncation here so a too-large queued chunk loses its tail.
+    const spoken = [...args.text].slice(0, 1500).join("");
+    return { audio: `data:audio/wav;base64,${spoken}`, language: "en", matched: true, voice: speechProvider };
+  }
   if (!answers.has(cmd)) return null;
   const answer = answers.get(cmd);
   if (answer instanceof Error) throw answer;
@@ -69,6 +75,7 @@ beforeEach(() => {
   played.length = 0;
   asked.length = 0;
   captures = 0;
+  speechProvider = "windows";
   playing = null;
   reply = null;
   island.pins = [];
@@ -184,3 +191,28 @@ test("events of another capture are ignored", async () => {
   assert.equal(AudioMode.state, "listening");
   assert.deepEqual(asked, []);
 });
+
+for (const provider of ["windows", "chatgpt"]) for (const streaming of [false, true]) {
+  test(`${provider} reads every character of an oversized ${streaming ? "streamed sentence" : "final fragment"} before listening`, async () => {
+    speechProvider = provider;
+    const long = Array.from({ length: 500 }, (_, i) => `mot${i}é😀`).join(" ");
+    const full = streaming ? `${long}. A final short sentence follows.` : long;
+    await startAudioMode();
+    await heard("Read the entire answer");
+    if (streaming) {
+      emit("chat-delta", `${long}. A final`);
+      await flush();
+      assert.equal(AudioMode.state, "speaking", "complete long sentences start before the reply finishes");
+    }
+    reply(full); await flush();
+    for (let i = 0; i < 20 && AudioMode.state === "speaking"; i++) {
+      assert.equal(sent("assistant_voice_hands_free").length, 1, "capture waits for every split clip");
+      await finishClip();
+    }
+    assert.equal(AudioMode.state, "listening");
+    assert.ok(sent("speech_say").length > 1, "the oversized sentence is split before either provider sees it");
+    for (const { text } of sent("speech_say")) assert.ok([...text].length <= 1500);
+    assert.equal(played.join(" ").replace(/\s+/g, " ").trim(), full, "no tail is truncated and streamed prefixes are not repeated");
+    assert.equal(sent("assistant_voice_hands_free").length, 2);
+  });
+}

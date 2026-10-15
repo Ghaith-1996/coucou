@@ -29,7 +29,9 @@
 // chat instead.
 
 import { Bridge, onEvent } from "../core/bridge";
+import { voiceRelease, retryCaptureRelease } from "./capture-release";
 import { AudioMode } from "./audio-mode";
+import { Region } from "./region";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
@@ -72,8 +74,6 @@ let pinnedByVoice = false;
 let userPinned = false;
 /** Only events belonging to a capture this page started may change its card. */
 let captureId: string | null = null;
-/** Cancel requests return before the native microphone closes. */
-let releasing: string | null = null;
 /** Rust may emit before the command reply identifies the new capture. */
 let starting: {
   events: Map<string, VoiceEvent>;
@@ -111,7 +111,7 @@ export const Voice = {
 
   /** Includes native startup and cancellation until microphone release. */
   get busy(): boolean {
-    return starting !== null || releasing !== null || this.active;
+    return starting !== null || voiceRelease.busy || this.active;
   },
 
   get active(): boolean {
@@ -162,7 +162,8 @@ export async function voiceShortcut() {
     Sound.play("error");
     return;
   }
-  if (AudioMode.busy || releasing) return;
+  // Global shortcuts bypass the composer buttons: preserve the region session.
+  if (Region.status !== "idle" || retryCaptureRelease(true) || AudioMode.busy) return;
   if (starting) {
     starting.stop = true;
     return;
@@ -207,6 +208,7 @@ export function voiceStop() {
 }
 
 export function voiceCancel() {
+  if (retryCaptureRelease(true)) return;
   generation++;
   if (starting) starting.cancelled = true;
   const current = Voice.event;
@@ -221,9 +223,7 @@ export function voiceCancel() {
 
 /** Reserve cancellation until native idle/error confirms the microphone closed. */
 function cancelCapture(id: string, event?: VoiceEvent) {
-  if (event?.state === "idle" || event?.state === "error") return;
-  releasing = id;
-  void Bridge.voiceCancel(id);
+  voiceRelease.begin(id, event);
 }
 
 /** Use: Rust's policy turns the transcript into a chat draft; the chat opens with it. */
@@ -481,13 +481,7 @@ function unpin() {
 }
 
 function accept(event: VoiceEvent) {
-  if (event.captureId === releasing) {
-    if (event.state === "idle" || event.state === "error") {
-      releasing = null;
-      State.notify();
-    }
-    return;
-  }
+  if (voiceRelease.accept(event)) return;
   if (starting) {
     // Release events retire this capture even if a previously queued preview
     // or level reaches the page later, including during cancelled startup.
@@ -597,7 +591,7 @@ export function resetVoiceForTests() {
   pinnedByVoice = false;
   userPinned = false;
   starting = null;
-  releasing = null;
+  voiceRelease.reset();
   host = null;
 }
 

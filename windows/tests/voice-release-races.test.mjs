@@ -14,7 +14,7 @@ const stops = { audio: stopAudioMode, voice: voiceCancel };
 const busy = { audio: () => AudioMode.busy, voice: () => Voice.busy };
 const listeners = new Map();
 const nativeInvoke = internals.invoke;
-let pending, sequence;
+let pending, sequence, cancel;
 internals.invoke = async (cmd, args) => {
   if (cmd === "plugin:event|listen") {
     listeners.set(args.event, [...(listeners.get(args.event) ?? []), args.handler]);
@@ -24,6 +24,7 @@ internals.invoke = async (cmd, args) => {
   }
   const result = await nativeInvoke(cmd, args);
   if (Object.values(commands).includes(cmd)) return pending?.command === cmd ? pending.promise : `capture-${++sequence}`;
+  if (cmd === "assistant_voice_cancel") return cancel(args);
   return result;
 };
 const flush = async () => { for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
@@ -35,7 +36,7 @@ const host = {
 };
 const player = { play: async () => {}, stop() {} };
 beforeEach(() => {
-  listeners.clear(); pending = null; sequence = 0;
+  listeners.clear(); pending = null; sequence = 0; cancel = () => false;
   resetVoiceForTests(); resetAudioModeForTests(player);
   registerVoice(host); registerAudioMode(host); setAudioAsk(async () => null);
   State.pendingApproval = null; State.isPinned = false; State.view = "prompt"; State.mode = "expanded";
@@ -126,4 +127,67 @@ for (const target of ["audio", "voice"]) test(`dismissing a voice error card all
   assert.equal(Voice.busy, false);
   assert.deepEqual(sent("assistant_voice_cancel"), []);
   await start(target); assert.equal(captureCalls(), 2);
+});
+
+for (const owner of ["audio", "voice"]) for (const target of ["audio", "voice"]) {
+  test(`${owner} retries a failed cancel and releases only after checked acknowledgement for ${target}`, async () => {
+    let attempts = 0;
+    const acknowledgement = Promise.withResolvers();
+    cancel = () => { if (++attempts === 1) throw new Error("lost cancel reply"); return acknowledgement.promise; };
+    await start(owner); stops[owner](); await flush();
+    assert.equal(attempts, 2, "failed transport is retried with the same capture id");
+    assert.equal(busy[owner](), true);
+    await start(target); assert.equal(captureCalls(), 1);
+    acknowledgement.resolve(true); await flush();
+    assert.equal(busy[owner](), false, "checked native release reconciles a missing terminal event");
+    await start(target); assert.equal(captureCalls(), 2);
+    assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "capture-1" }, { captureId: "capture-1" }]);
+  });
+}
+
+test("Preview cancellation failure retries even though no later native event is coming", async () => {
+  let attempts = 0;
+  cancel = () => { if (++attempts === 1) throw new Error("IPC failed before cancellation"); return true; };
+  await start("voice");
+  emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "capture-1", state: "preview", transcript: "unused preview" });
+  voiceCancel(); await flush();
+  assert.equal(attempts, 2);
+  assert.equal(Voice.busy, false);
+  await start("audio"); assert.equal(captureCalls(), 2);
+});
+
+for (const owner of ["audio", "voice"]) test(`${owner} retains ownership after bounded failures and a later user attempt can retry`, async () => {
+  cancel = () => { throw new Error("native temporarily unavailable"); };
+  await start(owner); stops[owner](); await flush();
+  assert.equal(sent("assistant_voice_cancel").length, 3, "automatic retries are bounded");
+  assert.equal(busy[owner](), true);
+  cancel = () => true;
+  await start(owner); await flush();
+  assert.equal(captureCalls(), 1, "retrying release does not start a capture prematurely");
+  assert.equal(busy[owner](), false);
+  await start(owner); assert.equal(captureCalls(), 2);
+});
+
+for (const owner of ["audio", "voice"]) for (const failure of [false, true]) test(`late ${owner} cancel ${failure ? "failure" : "acknowledgement"} cannot retire a newer release`, async () => {
+  const old = Promise.withResolvers();
+  cancel = () => old.promise;
+  await start(owner); stops[owner](); await flush();
+  event("capture-1", "idle");
+  await start(owner);
+  cancel = () => false;
+  stops[owner](); await flush();
+  if (failure) old.reject(new Error("late failure")); else old.resolve(true);
+  await flush();
+  assert.equal(busy[owner](), true);
+  assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "capture-1" }, { captureId: "capture-2" }]);
+  event("capture-2", "idle");
+  assert.equal(busy[owner](), false);
+});
+
+test("a null cancel result is not confused with a release acknowledgement", async () => {
+  let attempts = 0;
+  cancel = () => ++attempts === 1 ? null : true;
+  await start("voice"); voiceCancel(); await flush();
+  assert.equal(attempts, 2);
+  assert.equal(Voice.busy, false);
 });

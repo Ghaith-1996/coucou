@@ -298,7 +298,7 @@ fn cancel_while_transcribing_stops_the_transcription() {
     h.voice.toggle();
     h.wait(VoiceState::Processing);
     let cancelled = Instant::now();
-    h.voice.cancel(&id);
+    assert!(h.voice.cancel(&id), "transcription begins only after microphone release");
     assert_eq!(h.wait(VoiceState::Idle).capture_id, id, "idle at once");
     while heard.lock().unwrap().is_none() && cancelled.elapsed() < Duration::from_secs(6) {
         std::thread::sleep(Duration::from_millis(5));
@@ -421,9 +421,10 @@ fn cancelled_audio_is_not_claimed_by_a_new_audio_or_dictation_start() {
         let first = h.voice.listen_hands_free().unwrap();
         assert_eq!(h.wait(VoiceState::Listening).capture_id, first);
         buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        h.voice.cancel(&first);
+        assert!(!h.voice.cancel(&first), "a cancellation request is not microphone release");
         // Cancellation has returned, but the blocked read still owns the mic.
         assert_eq!(h.mic_open(), 1);
+        assert!(!h.voice.cancel(&first), "a retry must still wait for the blocked read");
         assert_eq!(start(), None, "a pending cancel cannot supply a new capture id");
         h.voice.stop(&first);
         assert!(matches!(&*h.voice.0.phase.lock().unwrap(),
@@ -433,17 +434,19 @@ fn cancelled_audio_is_not_claimed_by_a_new_audio_or_dictation_start() {
         assert_eq!(h.wait(VoiceState::Idle).capture_id, first);
         assert_eq!(h.mic_open(), 0, "idle acknowledges that the microphone has closed");
         assert_eq!(h.voice.use_transcript(&first), Err(ErrorCode::Expired));
+        assert!(h.voice.cancel(&first), "a retry recovers a lost cancellation reply or idle event");
+        assert!(h.events.try_recv().is_err(), "completed retries need no second idle event");
 
         let second = start().unwrap();
         assert_ne!(second, first, "the next mode receives a fresh capture");
         assert_eq!(h.wait(VoiceState::Listening).capture_id, second);
         buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        h.voice.cancel(&first);
+        assert!(h.voice.cancel(&first), "a stale ID is already released");
         h.voice.stop(&first);
         assert!(matches!(&*h.voice.0.phase.lock().unwrap(),
             Phase::Listening { id, signal } if id == &second && signal.load(Ordering::SeqCst) == RUN));
         assert_eq!(h.mic_open(), 1);
-        h.voice.cancel(&second);
+        assert!(!h.voice.cancel(&second), "the new capture still owns the microphone");
         resume_tx.send(()).unwrap();
         assert_eq!(h.wait(VoiceState::Idle).capture_id, second);
         assert_eq!(h.mic_open(), 0);
@@ -948,6 +951,21 @@ fn spoken(h: &Harness, capture_id: &str, text: &str) {
     };
 }
 
+#[test]
+fn preview_cancellation_acknowledges_release_even_when_its_reply_or_event_is_lost() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-preview", "Discard this transcript");
+    assert_eq!(h.mic_open(), 0);
+    assert!(h.voice.cancel("cap-preview"), "a preview's microphone is already closed");
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-preview");
+    assert_eq!(h.voice.use_transcript("cap-preview"), Err(ErrorCode::Expired));
+    // If the frontend missed the first reply and idle event, a retry must
+    // positively acknowledge release without depending on another event.
+    assert!(h.voice.cancel("cap-preview"));
+    assert!(h.events.try_recv().is_err());
+    assert!(h.voice.cancel("cap-never-started"), "an absent capture owns no microphone");
+}
+
 fn insertion(text: &str) -> serde_json::Value {
     serde_json::json!({ "text": text, "targetWindow": 4242, "targetPid": 77 })
 }
@@ -1136,7 +1154,7 @@ fn cancellation_interruption_and_shutdown_retire_the_pending_write_without_resto
         let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Discard me")).unwrap();
         let (action, _, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
         match reason {
-            "cancel" => h.voice.cancel("cap-dictate"),
+            "cancel" => assert!(h.voice.cancel("cap-dictate")),
             "cancel-before-probe" => h.voice.cancel_preview(),
             "interrupt" => h.voice.interrupt("screen locked"),
             "shutdown" => h.voice.shutdown(),
@@ -1273,7 +1291,7 @@ async fn copy_rechecks_capture_ownership_and_expiry_after_the_native_read() {
         spoken(&h, "cap-copy", "Old words");
         let result = checked_copy_preview(&h.voice, "cap-copy", |_| {
             match change {
-                "cancel" => h.voice.cancel("cap-copy"),
+                "cancel" => assert!(h.voice.cancel("cap-copy")),
                 "replace" => spoken(&h, "cap-new", "New words"),
                 "expire" => {
                     let mut phase = h.voice.0.phase.lock().unwrap();

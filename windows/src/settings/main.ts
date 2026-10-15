@@ -18,7 +18,7 @@ import {
 import { h, clear } from "../views/dom";
 import { agentsSection } from "./agents";
 import { chatgptSection } from "./chatgpt";
-import { memorySection } from "./memory";
+import { memorySection, refreshMemorySection } from "./memory";
 import { phoneSection } from "./phone";
 import { voiceSection } from "./voice";
 import { colorDot } from "./colors";
@@ -27,8 +27,9 @@ import {
   LANGUAGES, N_, isRtl, onLanguageChange, resolveLanguage, setLanguage, systemLanguages, t, tn,
 } from "../i18n/i18n";
 
+const IS_WINDOWS = navigator.userAgent.includes("Windows");
 /** Where secrets.rs keeps the keys on this OS. */
-const KEY_STORE = navigator.userAgent.includes("Windows")
+const KEY_STORE = IS_WINDOWS
   ? "Windows Credential Manager"
   : "Secret Service (GNOME Keyring, KWallet)";
 
@@ -36,6 +37,16 @@ let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
 
 const root = document.getElementById("settings-root")!;
+
+// One listener for the Settings window, even when language changes rebuild it.
+window.addEventListener("focus", refreshMemorySection);
+if (IS_WINDOWS) {
+  // A remember write can finish after focus already read the old store.
+  // Refresh again after installation too, closing any initial snapshot gap.
+  void onEvent("memory-changed", refreshMemorySection)
+    .then(refreshMemorySection)
+    .catch((error) => console.warn("[coucou] memory change listener failed", error));
+}
 
 async function save() {
   await Bridge.saveSettings(settings);
@@ -1372,7 +1383,7 @@ async function render() {
     planSection(status),
     apiSection(hasKey),
     chatgptSection(),
-    memorySection(),
+    ...(IS_WINDOWS ? [memorySection()] : []),
     chatProvidersSection(chatKeys, keyChanged),
     localSection(customKey),
     activePillsSection(connected),

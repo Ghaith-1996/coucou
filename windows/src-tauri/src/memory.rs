@@ -18,12 +18,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 /// The format on disk. A newer file is never read by an older Coucou.
 pub const VERSION: u32 = 1;
 pub const MAX_ITEMS: usize = 200;
 pub const MAX_CHARS: usize = 500;
-/// The most memory that goes into one chat's instructions.
+/// Unicode scalar values, including the instruction prefix and item separators.
 pub const MAX_PROMPT_CHARS: usize = 6000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,12 +117,15 @@ impl Memory {
             "What the user asked you to remember about them (they can see and edit it in Coucou's settings). \
 Use it when it helps; don't repeat it back unasked:",
         );
+        let mut used_chars = block.chars().count();
         for item in &self.items {
             let line = format!("\n- {}", item.text);
-            if block.len() + line.len() > MAX_PROMPT_CHARS {
+            let line_chars = line.chars().count();
+            if used_chars + line_chars > MAX_PROMPT_CHARS {
                 break;
             }
             block.push_str(&line);
+            used_chars += line_chars;
         }
         Some(block)
     }
@@ -189,9 +193,25 @@ fn save_to(file: &Path, memory: &Memory) -> Result<(), String> {
     let sealed = seal(&plain)?;
     let dir = file.parent().ok_or("no folder")?;
     crate::platform::ensure_private_dir(dir).map_err(|e| e.to_string())?;
+    replace_sealed(file, &sealed, |output, bytes| output.write_all(bytes), |output| output.sync_all())
+        .map_err(|e| e.to_string())
+}
+
+/// The previous store remains intact until the encrypted replacement is fully
+/// written and synced. Close its handle before rename or cleanup on Windows.
+fn replace_sealed(
+    file: &Path,
+    sealed: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+    sync: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let tmp = file.with_extension("bin.tmp");
-    std::fs::write(&tmp, sealed).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, file).map_err(|e| e.to_string())
+    let mut output = std::fs::File::create(&tmp)?;
+    let result = write(&mut output, sealed).and_then(|()| sync(&output));
+    drop(output);
+    let result = result.and_then(|()| std::fs::rename(&tmp, file));
+    if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+    result
 }
 
 /// Runs `f` on the memory, loading it first, and saves it when `f` changed it.
@@ -230,15 +250,25 @@ pub fn now() -> u64 {
 }
 
 /// A plain JSON copy in the user's Downloads folder, for them to keep.
-pub fn export() -> Result<PathBuf, String> {
+pub fn export(webview: &tauri::Webview) -> Result<PathBuf, String> {
     // Unlike optional prompt memory, a backup must not silently export an
     // empty placeholder when the real store could not be read.
     let memory = with(|m| Ok(m.clone()))?;
     let t = crate::platform::local_time();
-    let dir = crate::platform::home_dir().join("Downloads");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = format!("Coucou memory {:04}-{:02}-{:02} {:02}.{:02}", t.year, t.month, t.day, t.hour, t.minute);
-    export_to(&dir, &stem, &memory)
+    // Tauri resolves Windows' FOLDERID_Downloads, including redirected folders.
+    // Never guess a home/Downloads fallback if the native lookup fails.
+    export_using(|| webview.path().download_dir().map_err(|e| e.to_string()), &stem, &memory)
+}
+
+fn export_using(
+    resolve_downloads: impl FnOnce() -> Result<PathBuf, String>,
+    stem: &str,
+    memory: &Memory,
+) -> Result<PathBuf, String> {
+    let dir = resolve_downloads()?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    export_to(&dir, stem, memory)
 }
 
 fn export_to(dir: &Path, stem: &str, memory: &Memory) -> Result<PathBuf, String> {
@@ -382,7 +412,7 @@ pub fn memory_set_enabled(webview: tauri::Webview, enabled: bool) -> Result<Memo
 #[tauri::command]
 pub fn memory_export(webview: tauri::Webview) -> Result<String, String> {
     from_settings(&webview)?;
-    let file = export()?;
+    let file = export(&webview)?;
     crate::log::line("memory: exported".to_string());
     Ok(file.to_string_lossy().to_string())
 }
@@ -395,6 +425,78 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("coucou-memory-{test}-{}", crate::assistant::policy::new_id("test")));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn failed_encrypted_writes_or_syncs_preserve_the_previous_store() {
+        for fail_write in [true, false] {
+            for has_previous in [true, false] {
+                let dir = temp_dir_for("durable-save-failure");
+                let file = dir.join("memory.bin");
+                if has_previous { std::fs::write(&file, b"previous encrypted bytes").unwrap(); }
+                let steps = std::cell::RefCell::new(Vec::new());
+                let saved = replace_sealed(&file, b"new encrypted bytes", |output, bytes| {
+                    steps.borrow_mut().push("write");
+                    if fail_write {
+                        output.write_all(&bytes[..3])?;
+                        Err(std::io::Error::new(ErrorKind::Other, "injected write failure"))
+                    } else {
+                        output.write_all(bytes)
+                    }
+                }, |_| {
+                    steps.borrow_mut().push("sync");
+                    Err(std::io::Error::new(ErrorKind::Other, "injected sync failure"))
+                });
+                let expected = if fail_write { "injected write failure" } else { "injected sync failure" };
+                assert_eq!(saved.unwrap_err().to_string(), expected);
+                assert_eq!(*steps.borrow(), if fail_write { vec!["write"] } else { vec!["write", "sync"] });
+                if has_previous {
+                    assert_eq!(std::fs::read(&file).unwrap(), b"previous encrypted bytes");
+                } else {
+                    assert!(!file.exists(), "a failed first save must not publish a store");
+                }
+                assert!(!file.with_extension("bin.tmp").exists(), "partial replacement is cleaned up");
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn encrypted_bytes_are_written_and_synced_before_replacing_the_store() {
+        let dir = temp_dir_for("durable-save-order");
+        let file = dir.join("memory.bin");
+        let tmp = file.with_extension("bin.tmp");
+        std::fs::write(&file, b"previous encrypted bytes").unwrap();
+        let steps = std::cell::RefCell::new(Vec::new());
+        replace_sealed(&file, b"new encrypted bytes", |output, bytes| {
+            assert_eq!(std::fs::read(&file).unwrap(), b"previous encrypted bytes");
+            steps.borrow_mut().push("write");
+            output.write_all(bytes)
+        }, |output| {
+            assert_eq!(*steps.borrow(), ["write"]);
+            assert_eq!(std::fs::read(&tmp).unwrap(), b"new encrypted bytes");
+            assert_eq!(std::fs::read(&file).unwrap(), b"previous encrypted bytes", "rename has not happened before sync");
+            output.sync_all()?;
+            steps.borrow_mut().push("sync");
+            Ok(())
+        }).unwrap();
+        assert_eq!(*steps.borrow(), ["write", "sync"]);
+        assert_eq!(std::fs::read(&file).unwrap(), b"new encrypted bytes");
+        assert!(!tmp.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_rename_keeps_the_destination_and_cleans_the_synced_temp() {
+        let dir = temp_dir_for("durable-rename-failure");
+        let file = dir.join("memory.bin");
+        std::fs::create_dir(&file).unwrap();
+        let held = file.join("keep");
+        std::fs::write(&held, b"untouched").unwrap();
+        assert!(replace_sealed(&file, b"new encrypted bytes", |output, bytes| output.write_all(bytes), |output| output.sync_all()).is_err());
+        assert_eq!(std::fs::read(held).unwrap(), b"untouched");
+        assert!(!file.with_extension("bin.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -433,6 +535,52 @@ mod tests {
         assert_eq!(restored.items.len(), 2);
         assert_eq!(restored.items[0], original.items[0], "retry loads before adding");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn exports_use_the_resolved_downloads_folder_without_appending_or_guessing() {
+        let root = temp_dir_for("redirected-downloads");
+        let profile = root.join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let downloads = root.join("redirected volume").join("Téléchargements 私用");
+        let mut memory = Memory::default();
+        memory.add("Keep this fact", Source::User, 1).unwrap();
+        let mut lookups = 0;
+        let file = export_using(|| {
+            lookups += 1;
+            Ok(downloads.clone())
+        }, "backup", &memory).unwrap();
+        assert_eq!(lookups, 1);
+        assert_eq!(file, downloads.join("backup.json"));
+        assert_eq!(serde_json::from_slice::<Memory>(&std::fs::read(&file).unwrap()).unwrap(), memory);
+        assert!(!profile.join("Downloads").exists(), "no obsolete profile folder is created");
+        assert!(!downloads.join("Downloads").exists(), "the resolved directory is already Downloads");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_downloads_lookup_failure_does_not_export_to_a_fallback() {
+        let root = temp_dir_for("downloads-lookup-failure");
+        let mut lookups = 0;
+        let result = export_using(|| {
+            lookups += 1;
+            Err("Downloads is unavailable".to_string())
+        }, "backup", &Memory::default());
+        assert_eq!(result, Err("Downloads is unavailable".to_string()));
+        assert_eq!(lookups, 1);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_unwritable_resolved_downloads_path_does_not_fall_back() {
+        let root = temp_dir_for("downloads-path-failure");
+        let blocked = root.join("redirected downloads");
+        std::fs::write(&blocked, b"keep this file").unwrap();
+        assert!(export_using(|| Ok(blocked.clone()), "backup", &Memory::default()).is_err());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep this file");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -509,6 +657,77 @@ mod tests {
         assert_eq!(store, Some(original));
         assert!(!file.exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_retired_chat_cannot_load_mutate_or_save_memory() {
+        let dir = temp_dir_for("cancelled-chat");
+        let file = dir.join("memory.bin");
+        let scope = crate::assistant::tools::ActionScope::new();
+        let actions = crate::assistant::tools::ChatActions::default();
+        actions.retire(&scope);
+        let mut store = None;
+        let result = scope.run_if_active(|| with_store(&mut store, &file, |m| m.add("Cancelled fact", Source::Chat, 1)));
+        assert!(result.is_none());
+        assert!(store.is_none(), "a retired request cannot initialize the cache");
+        assert!(!file.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancellation_waits_until_the_memory_transaction_is_persisted_or_rolled_back() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        for fail_save in [false, true] {
+            let dir = temp_dir_for("atomic-chat-save");
+            let file = dir.join("memory.bin");
+            if fail_save { std::fs::create_dir(&file).unwrap(); }
+            let scope = crate::assistant::tools::ActionScope::new();
+            let worker_scope = scope.clone();
+            let worker_file = file.clone();
+            let (mutated, mutation) = mpsc::channel();
+            let (resume, resumed) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mut store = Some(Memory::default());
+                let result = worker_scope.run_if_active(|| with_store(&mut store, &worker_file, |m| {
+                    let item = m.add("Confirmed fact", Source::Chat, 1)?;
+                    mutated.send(()).unwrap();
+                    // Still inside the transaction, before its disk save.
+                    resumed.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(item)
+                }));
+                (result, store)
+            });
+            mutation.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (attempting, attempted) = mpsc::channel();
+            let (retired, retirement) = mpsc::channel();
+            let cancelling_scope = scope.clone();
+            let cancellation = std::thread::spawn(move || {
+                attempting.send(()).unwrap();
+                crate::assistant::tools::ChatActions::default().retire(&cancelling_scope);
+                retired.send(()).unwrap();
+            });
+            attempted.recv_timeout(Duration::from_secs(5)).unwrap();
+            let early = retirement.recv_timeout(Duration::from_millis(50));
+            // Release before asserting so a regression does not strand workers.
+            resume.send(()).unwrap();
+            assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)), "cancellation cannot return between mutation and save");
+            let (result, store) = worker.join().unwrap();
+            retirement.recv_timeout(Duration::from_secs(5)).unwrap();
+            cancellation.join().unwrap();
+            let result = result.expect("the transaction won the scope lock");
+            if fail_save {
+                assert!(result.is_err());
+                assert_eq!(store, Some(Memory::default()), "failed persistence rolls the cache back before retirement");
+                assert!(file.is_dir(), "failed save did not replace the existing path");
+            } else {
+                let item = result.unwrap();
+                assert_eq!(load_from(&file).unwrap().items, vec![item]);
+            }
+            assert!(scope.run_if_active(|| ()).is_none(), "retirement prevents another transaction");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
@@ -644,7 +863,57 @@ mod tests {
         for n in 0..MAX_ITEMS - 1 {
             m.add(&format!("{n} {}", "y".repeat(400)), Source::User, 2).unwrap();
         }
-        assert!(m.prompt_block().unwrap().len() <= MAX_PROMPT_CHARS);
+        assert!(m.prompt_block().unwrap().chars().count() <= MAX_PROMPT_CHARS);
+    }
+
+    #[test]
+    fn prompt_character_boundaries_include_prefix_and_every_separator() {
+        fn fact(pattern: &str, index: usize, chars: usize) -> String {
+            let label = format!("{index}:");
+            let body: String = pattern.chars().cycle().take(chars - label.chars().count()).collect();
+            let text = format!("{label}{body}");
+            assert_eq!(text.chars().count(), chars);
+            assert_eq!(clean(&text).unwrap(), text);
+            text
+        }
+
+        for pattern in ["x", "日", "😀", "A日😀e\u{301}"] {
+            for adjustment in [-1isize, 0, 1] {
+                let mut memory = Memory::default();
+                memory.add("seed", Source::User, 0).unwrap();
+                let seed = memory.prompt_block().unwrap();
+                let mut expected = seed.strip_suffix("\n- seed").unwrap().to_string();
+                memory.items.clear();
+                // Each fact is valid under the existing 500-character limit;
+                // unique labels avoid deduplication changing the budget.
+                for index in 0..11 {
+                    let text = fact(pattern, index, MAX_CHARS);
+                    memory.add(&text, Source::User, index as u64).unwrap();
+                    expected.push_str(&format!("\n- {text}"));
+                }
+                let before_final = expected.clone();
+                let remaining = MAX_PROMPT_CHARS - expected.chars().count() - "\n- ".chars().count();
+                assert!(remaining > 1 && remaining < MAX_CHARS);
+                let text = fact(pattern, 11, (remaining as isize + adjustment) as usize);
+                memory.add(&text, Source::Chat, 11).unwrap();
+                memory.add("Later fact", Source::User, 12).unwrap();
+                if adjustment <= 0 {
+                    expected.push_str(&format!("\n- {text}"));
+                }
+                let block = memory.prompt_block().unwrap();
+                assert_eq!(block, expected, "pattern {pattern:?}, boundary adjustment {adjustment}");
+                if adjustment <= 0 {
+                    assert_eq!(block.chars().count(), (MAX_PROMPT_CHARS as isize + adjustment) as usize);
+                    if pattern != "x" {
+                        assert!(block.len() > MAX_PROMPT_CHARS, "UTF-8 bytes must not consume the character budget");
+                    }
+                } else {
+                    assert_eq!(block, before_final, "an overflowing fact is omitted whole, never truncated");
+                }
+                assert!(!block.contains("Later fact"), "the budget retains its existing stop-at-first-overflow behavior");
+                assert!(block.chars().count() <= MAX_PROMPT_CHARS);
+            }
+        }
     }
 
     #[test]

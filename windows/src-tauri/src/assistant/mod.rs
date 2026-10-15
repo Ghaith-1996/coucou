@@ -10,6 +10,7 @@ pub mod dictation;
 #[cfg(windows)]
 pub mod launch;
 pub mod policy;
+pub mod region;
 pub mod speech;
 pub mod tools;
 pub mod voice;
@@ -95,25 +96,24 @@ mod tests {
         }
     }
 
-    /// A reserved kind is refused, so its `ask` and grant are exercised
-    /// through `decide`'s logic with the availability check bypassed: the
-    /// binding itself must already hold before any kind uses it.
-    fn grant_ignoring_availability(action: &AssistantAction) -> Grant {
+    /// The binding computed straight from the arguments, whatever the
+    /// policy says of the action: what a forged or stale grant would carry.
+    fn grant_ignoring_policy(action: &AssistantAction) -> Grant {
         let args = validate(action.kind, &action.args).unwrap();
         Grant { action_id: action.id.clone(), digest: binding_digest(action, &args), expires_at_ms: action.expires_at_ms }
     }
 
-    fn reserved() -> AssistantAction {
+    fn region() -> AssistantAction {
         AssistantAction {
             kind: ActionKind::AskRegion,
-            args: json!({ "question": "what is this?", "monitor": "DISPLAY1", "x": 0, "y": 0, "width": 10, "height": 10 }),
+            args: json!({ "monitor": "DISPLAY1", "x": 10, "y": 20, "width": 300, "height": 200 }),
             ..insert("hi")
         }
     }
 
     #[test]
-    fn only_an_available_kind_that_asks_gets_a_grant() {
-        assert!(grant_for(&reserved(), NOW).is_none(), "reserved kind");
+    fn only_a_kind_that_asks_gets_a_grant() {
+        assert!(grant_for(&region(), NOW).is_some(), "ask-region asks");
         assert!(grant_for(&insert("hi"), NOW).is_some(), "insert-text asks");
         let mut draft = insert("hi");
         draft.kind = ActionKind::ChatDraft;
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn a_grant_is_bound_to_the_exact_arguments_id_and_expiry() {
         let action = insert("hello");
-        let grant = grant_ignoring_availability(&action);
+        let grant = grant_for(&action, NOW).unwrap();
 
         let same_but_reordered = AssistantAction {
             args: json!({ "targetPid": 7, "targetWindow": 42, "text": "hello" }),
@@ -162,9 +162,19 @@ mod tests {
         assert_eq!(check_grant(&grant, &draft, draft.expires_at_ms), Err(ErrorCode::Expired));
 
         // A refused action never gets through, grant or not.
-        let reserved = reserved();
-        let grant = grant_ignoring_availability(&reserved);
-        assert_eq!(check_grant(&grant, &reserved, NOW), Err(ErrorCode::Unavailable));
+        let future = AssistantAction { v: CONTRACT_VERSION + 1, ..insert("hi") };
+        let grant = grant_ignoring_policy(&future);
+        assert_eq!(check_grant(&grant, &future, NOW), Err(ErrorCode::Version));
+
+        // A region the user confirmed passes; the same grant for a wider one does not.
+        let picked = region();
+        let grant = grant_for(&picked, NOW).unwrap();
+        assert!(check_grant(&grant, &picked, NOW).is_ok());
+        let wider = AssistantAction {
+            args: json!({ "monitor": "DISPLAY1", "x": 10, "y": 20, "width": 3000, "height": 200 }),
+            ..picked
+        };
+        assert_eq!(check_grant(&grant, &wider, NOW), Err(ErrorCode::GrantMismatch));
 
         // An insertion the user confirmed passes; the same grant for other
         // words or another window does not.

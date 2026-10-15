@@ -260,3 +260,14 @@ for (const cancel of ["clear", "retire", "new answer", "replace transcript", "cl
     assert.deepEqual(sent("chat_action_answer"), [], "a retired click cannot submit its grant after a reentrant reset");
   });
 }
+
+test("a spoken answer shares its request identity with speech and its action cards", () => {
+  const previous = requestId;
+  const spoken = "audio-answer-identity";
+  assert.equal(beginToolNotes(spoken), spoken);
+  emit("chat-action", { ...card("old-card"), requestId: previous });
+  emit("chat-action", { ...card("spoken-card"), requestId: spoken });
+  assert.deepEqual(ChatActions.cards.map(card => card.actionId), ["spoken-card"]);
+  emit("chat-tool-used", { requestId: spoken, tool: "browser-tabs" });
+  assert.deepEqual(ChatActions.used, ["browser-tabs"]);
+});

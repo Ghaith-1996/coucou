@@ -29,8 +29,10 @@ import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
 import { Voice, voiceShortcut } from "../assistant/voice";
+import { captureReleasePending, captureReleaseFailed, retryCaptureRelease } from "../assistant/capture-release";
 import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
 import { ChatActions, answerCard, beginToolNotes, clearToolNotes, retireActionCards } from "../assistant/chat-actions";
+import { Region, startRegion } from "../assistant/region";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -46,6 +48,8 @@ const STRINGS = {
   audioThinking: N_("Thinking…"),
   audioSpeaking: N_("Speaking — tap to interrupt"),
   audioEnd: N_("End"),
+  captureReleasing: N_("Waiting for the microphone to close…"),
+  captureReleaseFailed: N_("Could not release the microphone. Retry to reconnect."),
   audioSilence: N_("Audio mode ended: nothing was heard."),
   switchTab: N_("Switch to this tab?"),
   openApp: N_("Open this app?"),
@@ -59,6 +63,7 @@ const STRINGS = {
   audioModel: N_("Download a speech model in Settings to use audio mode."),
   audioMicrophone: N_("Microphone unavailable"),
   audioDenied: N_("Windows blocks the microphone for desktop apps. Allow it in Settings → Privacy & security → Microphone."),
+  region: N_("Ask about a screen region"),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
@@ -871,16 +876,25 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     title: tl(STRINGS.audio),
     "aria-label": tl(STRINGS.audio),
     onclick: () => {
-      if (AudioMode.state === "off" && (sending || undoPending || startingVoice || AudioMode.busy || Voice.busy || history.isOpening)) return;
+      if (AudioMode.state === "off" && (sending || undoPending || composerReserved() || AudioMode.busy || Voice.busy || history.isOpening)) return;
       toggleAudioMode();
     },
   }, svg(ICONS.wave, 15, { stroke: 1.8 })) : null;
-  const bar = h("div", { class: "chat-bar" }, input, audioBtn, voice, send);
+  const region = HOST_OS === "windows" ? h("button", {
+    type: "button",
+    class: "region-btn",
+    title: tl(STRINGS.region),
+    "aria-label": tl(STRINGS.region),
+  }, svg(ICONS.region, 15, { stroke: 1.8 })) : null;
+  const bar = h("div", { class: "chat-bar" }, input, audioBtn, region, voice, send);
   // Audio mode's state, above the bar while it is on.
   const audioLabel = h("span", { class: "audio-label" });
   const audioDot = h("i", { class: "audio-dot" });
   const audioStatus = h("button", { type: "button", class: "audio-status", onclick: () => interruptAudio() }, audioDot, audioLabel);
-  const audioEnd = h("button", { type: "button", class: "audio-end", text: t(STRINGS.audioEnd), onclick: () => stopAudioMode() });
+  const audioEnd = h("button", { type: "button", class: "audio-end", text: t(STRINGS.audioEnd), onclick: () => {
+    if (AudioMode.state !== "off") stopAudioMode();
+    else retryCaptureRelease();
+  } });
   const audioRow = h("div", { class: "audio-row" }, audioStatus, audioEnd);
   audioRow.hidden = true;
   // Cards for what the chat wants to do on the PC (chat-actions.ts).
@@ -945,6 +959,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   let usageLimit = false;
   let effortKey = "";
 
+  function composerReserved(): boolean {
+    return startingVoice || Region.status !== "idle";
+  }
+
   function onChatGpt(): boolean {
     return providerDef(State.settings.chatProvider).id === CHATGPT;
   }
@@ -982,10 +1000,11 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.classList.toggle("open", history.isOpen);
     modelBtn.disabled = sending;
     historyBtn.disabled = sending;
-    if (voice) voice.disabled = sending || startingVoice || AudioMode.busy || history.isOpening;
-    if (audioBtn) audioBtn.disabled = AudioMode.state === "off" && (sending || undoPending || startingVoice || AudioMode.busy || Voice.busy || history.isOpening);
+    if (voice) voice.disabled = sending || composerReserved() || AudioMode.busy || history.isOpening;
+    if (region) region.disabled = sending || composerReserved() || AudioMode.busy || Voice.busy || history.isOpening;
+    if (audioBtn) audioBtn.disabled = AudioMode.state === "off" && (sending || undoPending || composerReserved() || AudioMode.busy || Voice.busy || history.isOpening);
     // While an answer comes, the send button is Stop.
-    send.disabled = startingVoice || undoPending || history.isOpening;
+    send.disabled = composerReserved() || undoPending || history.isOpening;
     send.classList.toggle("stop", sending);
     const label = t(sending ? STRINGS.stop : STRINGS.send);
     send.title = label;
@@ -1112,7 +1131,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.notify();
   });
 
-  async function ask(query: string): Promise<string | null> {
+  async function ask(query: string, spokenRequestId?: string): Promise<string | null> {
     if (picker.isOpen) picker.close();
     if (history.isOpen) history.close();
     sending = true;
@@ -1142,7 +1161,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     let answer: string | null = null;
     try {
-      const requestId = beginToolNotes();
+      const requestId = beginToolNotes(spokenRequestId);
       // Notes and state notifications may synchronously reset the conversation.
       if (!isCurrent() || stopRequested) return null;
       State.chatHistory.push({ id: nextId++, role: "user", content: query });
@@ -1200,18 +1219,18 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     return answer;
   }
 
-  const audioReady = () => !sending && !undoPending && !startingVoice && !history.isOpening;
+  const audioReady = () => !sending && !undoPending && !composerReserved() && !history.isOpening;
   const stopAnswer = () => {
     if (!sending || undoPending || stopRequested) return;
     stopRequested = true;
     retireActionCards();
     void Bridge.chatStop();
   };
-  setAudioAsk((text) => audioReady() ? ask(text) : Promise.resolve(null), audioReady, stopAnswer);
+  setAudioAsk((text, requestId) => audioReady() ? ask(text, requestId) : Promise.resolve(null), audioReady, stopAnswer);
 
   async function submit() {
     const query = input.value.trim();
-    if (!query || sending || startingVoice || history.isOpening) return;
+    if (!query || sending || composerReserved() || history.isOpening) return;
     stopAudioMode();
     input.value = "";
     await ask(query);
@@ -1219,7 +1238,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   /** The last answer again, with the model and effort picked now. */
   async function regenerate() {
-    if (sending || startingVoice || history.isOpening) return;
+    if (sending || composerReserved() || history.isOpening) return;
     const messages = State.chatHistory;
     const answer = messages[messages.length - 1];
     const question = messages[messages.length - 2];
@@ -1267,8 +1286,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     }
     void submit();
   });
+  region?.addEventListener("click", () => {
+    if (sending || composerReserved() || AudioMode.busy || Voice.busy || history.isOpening) return;
+    if (picker.isOpen) picker.close();
+    if (history.isOpen) history.close();
+    void startRegion();
+  });
   voice?.addEventListener("click", async () => {
-    if (sending || startingVoice || AudioMode.busy || history.isOpening) return;
+    if (sending || composerReserved() || AudioMode.busy || history.isOpening) return;
     startingVoice = true;
     if (picker.isOpen) picker.close();
     drawModelButton();
@@ -1332,12 +1357,15 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   function drawAudio() {
     const on = AudioMode.state !== "off";
-    audioRow.hidden = !on && !AudioMode.note;
+    const releasing = captureReleasePending();
+    audioRow.hidden = !on && !AudioMode.note && !releasing;
     audioBtn?.classList.toggle("on", on);
     audioRow.dataset.state = AudioMode.state;
     audioDot.style.transform = AudioMode.state === "listening" ? `scale(${1 + AudioMode.level * 1.5})` : "";
     audioLabel.textContent = t(
-      AudioMode.state === "listening" ? STRINGS.audioListening
+      captureReleaseFailed() ? STRINGS.captureReleaseFailed
+      : releasing && !AudioMode.note ? STRINGS.captureReleasing
+      : AudioMode.state === "listening" ? STRINGS.audioListening
       : AudioMode.state === "transcribing" ? STRINGS.audioTranscribing
       : AudioMode.state === "thinking" ? STRINGS.audioThinking
       : AudioMode.state === "speaking" ? STRINGS.audioSpeaking
@@ -1348,7 +1376,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       : AudioMode.note === "microphone-denied" ? STRINGS.audioDenied
       : AudioMode.note ? STRINGS.audioError : "",
     );
-    audioEnd.hidden = !on;
+    audioEnd.hidden = !on && !releasing;
+    audioEnd.textContent = t(on ? STRINGS.audioEnd : STRINGS.retryHistory);
   }
 
   return {

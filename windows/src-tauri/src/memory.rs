@@ -24,7 +24,7 @@ use tauri::Manager;
 pub const VERSION: u32 = 1;
 pub const MAX_ITEMS: usize = 200;
 pub const MAX_CHARS: usize = 500;
-/// The most memory that goes into one chat's instructions.
+/// Unicode scalar values, including the instruction prefix and item separators.
 pub const MAX_PROMPT_CHARS: usize = 6000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,12 +117,15 @@ impl Memory {
             "What the user asked you to remember about them (they can see and edit it in Coucou's settings). \
 Use it when it helps; don't repeat it back unasked:",
         );
+        let mut used_chars = block.chars().count();
         for item in &self.items {
             let line = format!("\n- {}", item.text);
-            if block.len() + line.len() > MAX_PROMPT_CHARS {
+            let line_chars = line.chars().count();
+            if used_chars + line_chars > MAX_PROMPT_CHARS {
                 break;
             }
             block.push_str(&line);
+            used_chars += line_chars;
         }
         Some(block)
     }
@@ -860,7 +863,57 @@ mod tests {
         for n in 0..MAX_ITEMS - 1 {
             m.add(&format!("{n} {}", "y".repeat(400)), Source::User, 2).unwrap();
         }
-        assert!(m.prompt_block().unwrap().len() <= MAX_PROMPT_CHARS);
+        assert!(m.prompt_block().unwrap().chars().count() <= MAX_PROMPT_CHARS);
+    }
+
+    #[test]
+    fn prompt_character_boundaries_include_prefix_and_every_separator() {
+        fn fact(pattern: &str, index: usize, chars: usize) -> String {
+            let label = format!("{index}:");
+            let body: String = pattern.chars().cycle().take(chars - label.chars().count()).collect();
+            let text = format!("{label}{body}");
+            assert_eq!(text.chars().count(), chars);
+            assert_eq!(clean(&text).unwrap(), text);
+            text
+        }
+
+        for pattern in ["x", "日", "😀", "A日😀e\u{301}"] {
+            for adjustment in [-1isize, 0, 1] {
+                let mut memory = Memory::default();
+                memory.add("seed", Source::User, 0).unwrap();
+                let seed = memory.prompt_block().unwrap();
+                let mut expected = seed.strip_suffix("\n- seed").unwrap().to_string();
+                memory.items.clear();
+                // Each fact is valid under the existing 500-character limit;
+                // unique labels avoid deduplication changing the budget.
+                for index in 0..11 {
+                    let text = fact(pattern, index, MAX_CHARS);
+                    memory.add(&text, Source::User, index as u64).unwrap();
+                    expected.push_str(&format!("\n- {text}"));
+                }
+                let before_final = expected.clone();
+                let remaining = MAX_PROMPT_CHARS - expected.chars().count() - "\n- ".chars().count();
+                assert!(remaining > 1 && remaining < MAX_CHARS);
+                let text = fact(pattern, 11, (remaining as isize + adjustment) as usize);
+                memory.add(&text, Source::Chat, 11).unwrap();
+                memory.add("Later fact", Source::User, 12).unwrap();
+                if adjustment <= 0 {
+                    expected.push_str(&format!("\n- {text}"));
+                }
+                let block = memory.prompt_block().unwrap();
+                assert_eq!(block, expected, "pattern {pattern:?}, boundary adjustment {adjustment}");
+                if adjustment <= 0 {
+                    assert_eq!(block.chars().count(), (MAX_PROMPT_CHARS as isize + adjustment) as usize);
+                    if pattern != "x" {
+                        assert!(block.len() > MAX_PROMPT_CHARS, "UTF-8 bytes must not consume the character budget");
+                    }
+                } else {
+                    assert_eq!(block, before_final, "an overflowing fact is omitted whole, never truncated");
+                }
+                assert!(!block.contains("Later fact"), "the budget retains its existing stop-at-first-overflow behavior");
+                assert!(block.chars().count() <= MAX_PROMPT_CHARS);
+            }
+        }
     }
 
     #[test]

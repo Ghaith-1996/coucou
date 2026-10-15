@@ -1012,6 +1012,7 @@ impl Access {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct RequestAccount {
     client_id: String,
     generation: u64,
@@ -1316,7 +1317,7 @@ pub fn as_model_infos(models: &[CatalogModel]) -> Vec<ModelInfo> {
 // rules out audio input and transcription, and says nothing of speech out.
 // Audio mode asks for OpenAI's voice once in a while: when the account may
 // use it, replies are read by it, on the plan like everything else here;
-// when it may not, the first refusal is remembered for this run and Windows'
+// when it may not, the first refusal is remembered for that session and Windows'
 // own voices read instead. Never an API key, never another billing.
 
 const SPEECH: &str = "https://api.openai.com/v1/audio/speech";
@@ -1325,8 +1326,17 @@ pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
 pub const SPEECH_VOICE: &str = "marin";
 const SPEECH_STYLE: &str = "Speak naturally and warmly, like a friendly assistant in a relaxed conversation. Match the language of the text.";
 
-/// Set once the account was refused speech: not asked again until restart.
-static SPEECH_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A refusal belongs to the account session that issued it. Reconnecting or
+/// switching accounts may allow speech and must not inherit an old refusal.
+static SPEECH_REFUSED: std::sync::Mutex<Option<RequestAccount>> = std::sync::Mutex::new(None);
+
+fn check_speech_session(request: &RequestAccount, current_generation: u64, refused: Option<&RequestAccount>) -> Result<(), String> {
+    check_session_generation(request, current_generation)?;
+    if refused == Some(request) {
+        return Err("refused earlier".into());
+    }
+    Ok(())
+}
 
 pub fn speech_body(text: &str) -> Value {
     json!({
@@ -1339,19 +1349,17 @@ pub fn speech_body(text: &str) -> Value {
 }
 
 /// True when OpenAI's voice may be tried: signed in with plan usage and not
-/// refused earlier in this run.
-pub fn speech_available() -> bool {
-    let s = status();
-    !SPEECH_REFUSED.load(std::sync::atomic::Ordering::SeqCst) && s.connected && s.plan_enabled
+/// refused earlier in this account session.
+pub async fn speech_available() -> bool {
+    let Ok(account) = plan_ready().await else { return false };
+    check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref()).is_ok()
 }
 
 /// `text` read by OpenAI's voice, as MP3 bytes. Err when it can't be
 /// (refused, offline, signed out): the caller reads it another way.
 pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
     let account = plan_ready().await?;
-    if SPEECH_REFUSED.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("refused earlier".into());
-    }
+    check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref())?;
     let body = speech_body(text);
     let mut token = access_token(false, &account).await?;
     for attempt in 0..2 {
@@ -1365,16 +1373,20 @@ pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
             .map_err(|_| t("ChatGPT can't be reached."))?;
         check_session_generation(&account, session_generation())?;
         let status = reply.status().as_u16();
+        // Speech is optional on this sign-in. An endpoint-specific refusal
+        // falls back to Windows; it must not expire an otherwise valid chat.
         if status == 401 && attempt == 0 {
             token = access_token(true, &account).await?;
             continue;
         }
         if !reply.status().is_success() {
             let body: Value = reply.json().await.unwrap_or(Value::Null);
+            let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+            check_session_generation(&account, session_generation())?;
             let code = body.pointer("/error/code").and_then(Value::as_str).unwrap_or("");
             // A refusal of this kind of request, not a passing failure.
             if matches!(status, 400 | 401 | 403 | 404) {
-                SPEECH_REFUSED.store(true, std::sync::atomic::Ordering::SeqCst);
+                *SPEECH_REFUSED.lock().unwrap() = Some(account.clone());
                 crate::log::line(format!("chatgpt: speech not available on this sign-in (HTTP {status} {code})"));
             } else {
                 crate::log::line(format!("chatgpt: speech HTTP {status} {code}"));
@@ -1382,6 +1394,8 @@ pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
             return Err(error_message(status, &body).text);
         }
         let bytes = reply.bytes().await.map_err(|_| t("ChatGPT can't be reached."))?;
+        let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+        check_session_generation(&account, session_generation())?;
         if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
             return Err("empty or oversized audio".into());
         }
@@ -1655,13 +1669,14 @@ pub async fn send(
     let mut answer = String::new();
     let mut extra: Vec<Value> = Vec::new();
     for round in 0..=MAX_TOOL_ROUNDS {
+        check_session_generation(&account, session_generation())?;
         let body = match tools {
             Some(_) => with_tools(&base, &extra, round == MAX_TOOL_ROUNDS),
             None => base.clone(),
         };
-        let reply = open_stream(&body, &account, &mut token, &on_usage_limit).await?;
+        let reply = open_stream(&body, &mut token, &account, &on_usage_limit).await?;
         let prefix = if answer.is_empty() { String::new() } else { format!("{answer}\n\n") };
-        let (text, items) = read_stream(reply, &account, &prefix, &mut on_delta, &on_usage_limit).await?;
+        let (text, items) = read_stream(reply, &prefix, &account, &mut on_delta, &on_usage_limit).await?;
         if !text.is_empty() {
             answer = format!("{prefix}{text}");
         }
@@ -1669,12 +1684,12 @@ pub async fn send(
         let Some(run) = tools.filter(|_| !calls.is_empty()) else { break };
         extra.extend(items);
         for call in calls {
+            check_session_generation(&account, session_generation())?;
             crate::log::line(format!("chatgpt: tool {}", call.name));
             let output = run(call.clone()).await;
+            check_session_generation(&account, session_generation())?;
             extra.push(json!({ "type": "function_call_output", "call_id": call.call_id, "output": output }));
         }
-        // The user may have switched accounts while a card was waiting.
-        check_session_generation(&account, session_generation())?;
     }
     let _serial = REFRESHING.get_or_init(Default::default).lock().await;
     check_session_generation(&account, session_generation())?;
@@ -1684,12 +1699,7 @@ pub async fn send(
 }
 
 /// The request, retried after a refreshed token (401) or a passing failure.
-async fn open_stream(
-    body: &Value,
-    account: &RequestAccount,
-    token: &mut String,
-    on_usage_limit: &impl Fn(),
-) -> Result<reqwest::Response, String> {
+async fn open_stream(body: &Value, token: &mut String, account: &RequestAccount, on_usage_limit: &impl Fn()) -> Result<reqwest::Response, String> {
     let mut tries = 0;
     let mut refreshed = false;
     loop {
@@ -1707,9 +1717,8 @@ async fn open_stream(
         if reply.status().is_success() {
             return Ok(reply);
         }
-        let current = token.clone();
         if let Some(next) = recover_authentication_with(status, &mut refreshed,
-            || access_token(true, account), || reject_session(account, &current),
+            || access_token(true, account), || reject_session(account, token),
         ).await? {
             *token = next;
             continue;
@@ -1735,8 +1744,8 @@ async fn open_stream(
 /// One round's stream: its text (shown after `prefix`) and its output items.
 async fn read_stream(
     mut reply: reqwest::Response,
-    account: &RequestAccount,
     prefix: &str,
+    account: &RequestAccount,
     on_delta: &mut impl FnMut(String),
     on_usage_limit: &impl Fn(),
 ) -> Result<(String, Vec<Value>), String> {
@@ -1791,6 +1800,8 @@ async fn read_stream(
     if !done {
         return Err(t("ChatGPT stopped before finishing the answer."));
     }
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    check_session_generation(account, session_generation())?;
     Ok((answer, items))
 }
 

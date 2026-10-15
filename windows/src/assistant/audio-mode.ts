@@ -55,20 +55,29 @@ class ElementPlayer implements Player {
 
   play(audio: string): Promise<void> {
     this.stop();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const el = new Audio(audio);
       this.current = el;
-      this.finish = resolve;
-      const done = () => {
+      let settled = false;
+      const done = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
         if (this.current === el) {
           this.current = null;
           this.finish = null;
         }
-        resolve();
+        if (ok) resolve();
+        else {
+          el.pause();
+          reject(new Error("Speech playback failed"));
+        }
       };
-      el.addEventListener("ended", done);
-      el.addEventListener("error", done);
-      el.play().catch(done);
+      // Explicit stop is cancellation, not a media failure. Settling once also
+      // ignores errors delivered by a stopped element during a newer clip.
+      this.finish = () => done(true);
+      el.addEventListener("ended", () => done(true));
+      el.addEventListener("error", () => done(false));
+      el.play().catch(() => done(false));
     });
   }
 
@@ -297,14 +306,33 @@ function enqueue(at: number) {
 async function speak(at: number) {
   // The next clip is asked for while the current one plays.
   let next: Promise<string | null> | null = null;
-  const fetch = (text: string) => Bridge.speechSay(text).then((c) => c.audio).catch(() => null);
-  while (at === turn && (queue.length || next)) {
-    const audio = await (next ?? fetch(queue.shift()!));
+  const failed = () => {
     if (at !== turn) return;
-    next = queue.length ? fetch(queue.shift()!) : null;
-    if (!audio) continue;
-    set("speaking");
-    await player.play(audio);
+    Sound.play("error");
+    stopAudioMode("speech");
+  };
+  const fetch = async (text: string): Promise<string | null> => {
+    try {
+      const clip = await Bridge.speechSay(text);
+      if (!clip.audio) throw new Error("Speech synthesis returned no audio");
+      return clip.audio;
+    } catch {
+      // Attach the handler when prefetch starts: it can fail before playback
+      // finishes, or after this turn is cancelled. Only this turn may end mode.
+      failed();
+      return null;
+    }
+  };
+  try {
+    while (at === turn && (queue.length || next)) {
+      const audio = await (next ?? fetch(queue.shift()!));
+      if (at !== turn || !audio) return;
+      next = queue.length ? fetch(queue.shift()!) : null;
+      set("speaking");
+      await player.play(audio);
+    }
+  } catch {
+    failed();
   }
 }
 

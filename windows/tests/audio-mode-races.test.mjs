@@ -170,3 +170,64 @@ test("late synthesis cannot play or release the next turn's playback", async (t)
   player.stop(); await flush();
   assert.equal(sent("assistant_voice_hands_free").length, 3);
 });
+
+function speechEnded() {
+  view.sync();
+  assert.equal(AudioMode.state, "off");
+  assert.equal(AudioMode.note, "speech");
+  assert.equal(State.isPinned, false);
+  assert.equal($(".audio-row").hidden, false);
+  assert.match($(".audio-label").textContent, /read.*aloud/i);
+  assert.equal(sent("assistant_voice_hands_free").length, 1, "failed speech cannot reopen the microphone");
+}
+for (const kind of ["rejected", "empty"]) test(`${kind} synthesis ends audio with a visible speech error`, async () => {
+  answers.chat_send = { text: "This answer could not be read aloud." };
+  answers.speech_say = () => { if (kind === "rejected") throw new Error("remote and Windows voices unavailable"); return { audio: "" }; };
+  await startAudioMode(); await heard();
+  speechEnded(); assert.deepEqual(played, []);
+});
+
+test("a failed prefetched chunk ends a partially spoken answer instead of skipping it", async () => {
+  answers.chat_send = { text: "The first sentence is spoken correctly. The second sentence fails to synthesize. The third sentence must not be requested." };
+  let clips = 0;
+  answers.speech_say = () => { if (++clips === 1) return { audio: "first clip" }; throw new Error("no voice available"); };
+  await startAudioMode(); await heard();
+  assert.deepEqual(played, ["first clip"]);
+  speechEnded(); // Prefetch failure must also stop the still-playing first clip.
+  assert.equal(playing, null);
+  assert.equal(clips, 2); assert.deepEqual(played, ["first clip"]);
+});
+
+test("failed streamed speech cancels the pending answer and ignores its late result", async (t) => {
+  const reply = deferred(t, "chat_send", { text: "late answer" });
+  answers.speech_say = () => { throw new Error("no voice available"); };
+  await startAudioMode(); await heard();
+  emit("chat-delta", "This streamed sentence fails to synthesize. "); await flush();
+  speechEnded(); assert.equal(sent("chat_stop").length, 1);
+  emit("chat-delta", "The stale request keeps producing text. ");
+  reply.resolve({ text: "This stale final answer cannot restart audio." }); await flush();
+  speechEnded(); assert.equal(sent("speech_say").length, 1);
+});
+
+test("late synthesis rejection cannot end or overwrite a newer spoken turn", async (t) => {
+  const old = deferred(t, "speech_say", { audio: "old clip" });
+  answers.chat_send = { text: "This older answer is still synthesizing." };
+  await startAudioMode(); await heard(); stopAudioMode(); await startAudioMode();
+  answers.speech_say = { audio: "new clip" };
+  await heard("new question");
+  old.reject(new Error("old voice failed")); await flush();
+  assert.equal(AudioMode.state, "speaking"); assert.equal(AudioMode.note, "");
+  assert.deepEqual(played, ["new clip"]); assert.equal(sent("assistant_voice_hands_free").length, 2);
+  player.stop(); await flush(); assert.equal(AudioMode.state, "listening");
+});
+
+test("late rejected prefetch after interruption cannot end the next listening turn", async (t) => {
+  const old = Promise.withResolvers(); t.after(() => old.resolve({ audio: "unused" }));
+  answers.chat_send = { text: "The first sentence is spoken correctly. The next sentence is still being synthesized." };
+  let clips = 0; answers.speech_say = () => ++clips === 1 ? { audio: "first clip" } : old.promise;
+  await startAudioMode(); await heard(); interruptAudio(); await flush();
+  assert.equal(AudioMode.state, "listening");
+  old.reject(new Error("obsolete prefetched clip failed")); await flush();
+  assert.equal(AudioMode.state, "listening"); assert.equal(AudioMode.note, "");
+  assert.equal(sent("assistant_voice_hands_free").length, 2);
+});

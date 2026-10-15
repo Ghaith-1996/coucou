@@ -47,6 +47,7 @@ const STRINGS = {
   audioEnd: N_("End"),
   audioSilence: N_("Audio mode ended: nothing was heard."),
   audioError: N_("Audio mode ended. Check your microphone and speech model in Settings, then try again."),
+  audioSpeechError: N_("Could not read the answer aloud. Audio mode ended. Please try again."),
   audioModel: N_("Download a speech model in Settings to use audio mode."),
   audioMicrophone: N_("Microphone unavailable"),
   audioDenied: N_("Windows blocks the microphone for desktop apps. Allow it in Settings → Privacy & security → Microphone."),
@@ -1277,6 +1278,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       : AudioMode.state === "thinking" ? STRINGS.audioThinking
       : AudioMode.state === "speaking" ? STRINGS.audioSpeaking
       : AudioMode.note === "silence" ? STRINGS.audioSilence
+      : AudioMode.note === "speech" ? STRINGS.audioSpeechError
       : AudioMode.note === "model" ? STRINGS.audioModel
       : AudioMode.note === "no-microphone" ? STRINGS.audioMicrophone
       : AudioMode.note === "microphone-denied" ? STRINGS.audioDenied

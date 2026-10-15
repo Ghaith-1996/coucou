@@ -573,6 +573,17 @@
    "ru": "Coucou подключён к вашим сессиям Claude Code. Вызовы инструментов, вопросы и запросы разрешений появляются в острове, и отвечать можно прямо там.",
    "id": "Coucou terhubung ke sesi Claude Code Anda. Panggilan alat, pertanyaan, dan permintaan izin muncul di pulau, dan Anda bisa menjawabnya di sana."
   },
+  "Could not read the answer aloud. Audio mode ended. Please try again.": {
+   "zh-Hans": "无法朗读回答。语音模式已结束。请重试。",
+   "hi": "उत्तर को बोलकर सुनाया नहीं जा सका। ऑडियो मोड समाप्त हो गया। कृपया फिर से कोशिश करें।",
+   "es": "No se pudo leer la respuesta en voz alta. El modo de audio ha finalizado. Inténtalo de nuevo.",
+   "ar": "تعذّرت قراءة الإجابة بصوت عالٍ. انتهى الوضع الصوتي. يُرجى المحاولة مجددًا.",
+   "fr": "Impossible de lire la réponse à voix haute. Le mode audio est terminé. Réessaie.",
+   "bn": "উত্তরটি উচ্চস্বরে পড়া যায়নি। অডিও মোড শেষ হয়েছে। আবার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível ler a resposta em voz alta. O modo de áudio foi encerrado. Tente novamente.",
+   "ru": "Не удалось прочитать ответ вслух. Аудиорежим завершён. Попробуйте ещё раз.",
+   "id": "Jawaban tidak dapat dibacakan. Mode audio telah berakhir. Silakan coba lagi."
+  },
   "Could not remove {path}: {error}": {
    "zh-Hans": "无法删除 {path}：{error}",
    "hi": "{path} हटाया नहीं जा सका: {error}",

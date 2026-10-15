@@ -369,3 +369,54 @@ test("the plaintext export label and warning are visible in every supported lang
     setLanguage("en");
   }
 });
+
+
+test("adding waits for initial memory state so a stale list cannot hide a new fact", async (t) => {
+  const initial = deferred();
+  const old = item("old", "Existing fact");
+  answering(t, {
+    memory_list: initial.promise,
+    memory_add: ({ text }) => state([old, item("new", text)]),
+  });
+  const section = memorySection();
+  const field = section.find("input")[0];
+  const addBtn = button(section, "Add");
+  field.value = "New fact";
+  addBtn.fire("click");
+  for (const listener of field.listeners.get("keydown") ?? []) listener({ key: "Enter" });
+  await settle();
+  assert.deepEqual(sent("memory_add"), [], "pending initial state blocks both click and keyboard mutations");
+  assert.equal(field.disabled, true);
+  assert.equal(addBtn.disabled, true);
+  initial.resolve(state([old]));
+  await settle();
+  assert.equal(field.disabled, false);
+  assert.equal(addBtn.disabled, false);
+  assert.equal(field.value, "New fact", "loading never erases a draft");
+  addBtn.fire("click");
+  await settle();
+  assert.deepEqual(sent("memory_add"), [{ text: "New fact" }]);
+  assert.match(section.textContent, /Existing fact/);
+  assert.match(section.textContent, /New fact/);
+  assert.equal(section.find(".memory-item").length, 2);
+});
+
+test("a failed initial memory load keeps Add guarded and preserves the error and draft", async (t) => {
+  answering(t, {
+    memory_list: new Error("memory could not be loaded"),
+    memory_add: state([item("unexpected", "New fact")]),
+  });
+  const section = memorySection();
+  await settle();
+  const field = section.find("input")[0];
+  const addBtn = button(section, "Add");
+  field.value = "New fact";
+  addBtn.fire("click");
+  for (const listener of field.listeners.get("keydown") ?? []) listener({ key: "Enter" });
+  await settle();
+  assert.deepEqual(sent("memory_add"), []);
+  assert.equal(field.disabled, true);
+  assert.equal(addBtn.disabled, true);
+  assert.equal(field.value, "New fact");
+  assert.match(section.textContent, /memory could not be loaded/);
+});

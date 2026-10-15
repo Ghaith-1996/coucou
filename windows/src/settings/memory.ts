@@ -33,6 +33,7 @@ export function memorySection(): HTMLElement {
   const input = h("input", { type: "text", placeholder: STRINGS.placeholder, maxlength: "500", style: "flex:1" }) as HTMLInputElement;
   const useSwitch = h("button", { class: "switch", "aria-label": STRINGS.use }) as HTMLButtonElement;
   const clearBtn = h("button", { class: "danger", text: STRINGS.clearAll });
+  const addBtn = h("button", { text: STRINGS.add });
   let state: MemoryState = { version: 1, enabled: true, items: [] };
   let loaded = false;
   let toggling = false;
@@ -83,6 +84,8 @@ export function memorySection(): HTMLElement {
   }
 
   function draw() {
+    input.disabled = !loaded;
+    addBtn.disabled = !loaded;
     useSwitch.disabled = !loaded || toggling;
     useSwitch.classList.toggle("on", state.enabled);
     useSwitch.setAttribute("aria-pressed", String(state.enabled));
@@ -94,6 +97,9 @@ export function memorySection(): HTMLElement {
   }
 
   const add = () => {
+    // An older initial list must not arrive after and overwrite an add result.
+    // Guard both keyboard and synthetic clicks, not only disabled controls.
+    if (!loaded) return;
     const text = input.value.trim();
     if (!text) return;
     Bridge.memoryAdd(text).then((next) => {
@@ -102,6 +108,7 @@ export function memorySection(): HTMLElement {
       apply(next);
     }, fail);
   };
+  addBtn.addEventListener("click", add);
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") add();
   });
@@ -150,7 +157,7 @@ export function memorySection(): HTMLElement {
     h("div", { class: "hint", text: STRINGS.hint }),
     h("div", { class: "hint", text: STRINGS.sent }),
     h("div", { class: "row" }, h("label", { text: STRINGS.use }), useSwitch),
-    h("div", { class: "row" }, input, h("button", { text: STRINGS.add, onclick: add })),
+    h("div", { class: "row" }, input, addBtn),
     list,
     h("div", { class: "hint", text: STRINGS.exportHint }),
     h("div", { class: "row", style: "gap:8px" }, exportBtn, clearBtn),

@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 /// The format on disk. A newer file is never read by an older Coucou.
 pub const VERSION: u32 = 1;
@@ -230,15 +231,25 @@ pub fn now() -> u64 {
 }
 
 /// A plain JSON copy in the user's Downloads folder, for them to keep.
-pub fn export() -> Result<PathBuf, String> {
+pub fn export(webview: &tauri::Webview) -> Result<PathBuf, String> {
     // Unlike optional prompt memory, a backup must not silently export an
     // empty placeholder when the real store could not be read.
     let memory = with(|m| Ok(m.clone()))?;
     let t = crate::platform::local_time();
-    let dir = crate::platform::home_dir().join("Downloads");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = format!("Coucou memory {:04}-{:02}-{:02} {:02}.{:02}", t.year, t.month, t.day, t.hour, t.minute);
-    export_to(&dir, &stem, &memory)
+    // Tauri resolves Windows' FOLDERID_Downloads, including redirected folders.
+    // Never guess a home/Downloads fallback if the native lookup fails.
+    export_using(|| webview.path().download_dir().map_err(|e| e.to_string()), &stem, &memory)
+}
+
+fn export_using(
+    resolve_downloads: impl FnOnce() -> Result<PathBuf, String>,
+    stem: &str,
+    memory: &Memory,
+) -> Result<PathBuf, String> {
+    let dir = resolve_downloads()?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    export_to(&dir, stem, memory)
 }
 
 fn export_to(dir: &Path, stem: &str, memory: &Memory) -> Result<PathBuf, String> {
@@ -382,7 +393,7 @@ pub fn memory_set_enabled(webview: tauri::Webview, enabled: bool) -> Result<Memo
 #[tauri::command]
 pub fn memory_export(webview: tauri::Webview) -> Result<String, String> {
     from_settings(&webview)?;
-    let file = export()?;
+    let file = export(&webview)?;
     crate::log::line("memory: exported".to_string());
     Ok(file.to_string_lossy().to_string())
 }
@@ -433,6 +444,52 @@ mod tests {
         assert_eq!(restored.items.len(), 2);
         assert_eq!(restored.items[0], original.items[0], "retry loads before adding");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn exports_use_the_resolved_downloads_folder_without_appending_or_guessing() {
+        let root = temp_dir_for("redirected-downloads");
+        let profile = root.join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let downloads = root.join("redirected volume").join("Téléchargements 私用");
+        let mut memory = Memory::default();
+        memory.add("Keep this fact", Source::User, 1).unwrap();
+        let mut lookups = 0;
+        let file = export_using(|| {
+            lookups += 1;
+            Ok(downloads.clone())
+        }, "backup", &memory).unwrap();
+        assert_eq!(lookups, 1);
+        assert_eq!(file, downloads.join("backup.json"));
+        assert_eq!(serde_json::from_slice::<Memory>(&std::fs::read(&file).unwrap()).unwrap(), memory);
+        assert!(!profile.join("Downloads").exists(), "no obsolete profile folder is created");
+        assert!(!downloads.join("Downloads").exists(), "the resolved directory is already Downloads");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_downloads_lookup_failure_does_not_export_to_a_fallback() {
+        let root = temp_dir_for("downloads-lookup-failure");
+        let mut lookups = 0;
+        let result = export_using(|| {
+            lookups += 1;
+            Err("Downloads is unavailable".to_string())
+        }, "backup", &Memory::default());
+        assert_eq!(result, Err("Downloads is unavailable".to_string()));
+        assert_eq!(lookups, 1);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_unwritable_resolved_downloads_path_does_not_fall_back() {
+        let root = temp_dir_for("downloads-path-failure");
+        let blocked = root.join("redirected downloads");
+        std::fs::write(&blocked, b"keep this file").unwrap();
+        assert!(export_using(|| Ok(blocked.clone()), "backup", &Memory::default()).is_err());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep this file");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

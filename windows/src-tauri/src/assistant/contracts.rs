@@ -41,7 +41,8 @@ pub enum ActionKind {
     /// Set which pills the island shows: the main one and up to four more,
     /// as a spoken pill command asked (P1, the Mac's pill intents).
     PillSet,
-    /// Type text into another app's focused field. Reserved for P2.
+    /// Put dictated text into the field of another app that had the keyboard
+    /// when the capture started (dictation.rs), after the user confirmed it.
     InsertText,
     /// Start an app from the Start menu's own list (apps.rs), after the user
     /// confirmed exactly that app.
@@ -70,7 +71,15 @@ impl ActionKind {
     /// Implemented in this version. A reserved kind is always refused, and its
     /// arguments may still change before it becomes available.
     pub fn available(self) -> bool {
-        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::LaunchApp | ActionKind::SwitchTab | ActionKind::MemorySave)
+        matches!(
+            self,
+            ActionKind::ChatDraft
+                | ActionKind::PillSet
+                | ActionKind::InsertText
+                | ActionKind::LaunchApp
+                | ActionKind::SwitchTab
+                | ActionKind::MemorySave
+        )
     }
 
     /// Running it twice leaves the same result as running it once. Only
@@ -112,8 +121,8 @@ pub struct PillSetArgs {
     pub active_integrations: Vec<String>,
 }
 
-/// Reserved (P2). The target is fixed when the action is proposed and checked
-/// again right before writing; a changed focus stops it.
+/// The target is fixed when the capture starts (the field that had the
+/// keyboard) and checked again right before writing; a changed focus stops it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InsertTextArgs {

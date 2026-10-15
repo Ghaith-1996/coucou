@@ -88,9 +88,12 @@ windows = { version = "0.61", features = [
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
-  # The chat's browser-tab tools read and select tab strips with UI Automation
-  # (assistant/browser.rs).
+  # UI Automation: the chat's browser-tab tools read and select tab strips
+  # (assistant/browser.rs); dictation writes into another app's field
+  # (assistant/dictation).
   "Win32_UI_Accessibility",
+  # Dictation: the app's name from its file's version info.
+  "Win32_Storage_FileSystem",
   # "Open <app>" (assistant/launch.rs): a Start menu shortcut, as Start opens it.
   "Win32_UI_Shell",
   "Win32_System_Registry",

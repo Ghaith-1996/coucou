@@ -6,6 +6,7 @@ pub mod app;
 pub mod apps;
 pub mod browser;
 pub mod contracts;
+pub mod dictation;
 #[cfg(windows)]
 pub mod launch;
 pub mod policy;
@@ -94,7 +95,7 @@ mod tests {
         }
     }
 
-    /// Reserved kinds are refused today, so `ask` and grants are exercised
+    /// A reserved kind is refused, so its `ask` and grant are exercised
     /// through `decide`'s logic with the availability check bypassed: the
     /// binding itself must already hold before any kind uses it.
     fn grant_ignoring_availability(action: &AssistantAction) -> Grant {
@@ -102,9 +103,18 @@ mod tests {
         Grant { action_id: action.id.clone(), digest: binding_digest(action, &args), expires_at_ms: action.expires_at_ms }
     }
 
+    fn reserved() -> AssistantAction {
+        AssistantAction {
+            kind: ActionKind::AskRegion,
+            args: json!({ "question": "what is this?", "monitor": "DISPLAY1", "x": 0, "y": 0, "width": 10, "height": 10 }),
+            ..insert("hi")
+        }
+    }
+
     #[test]
-    fn nothing_available_today_asks_so_no_grant_is_handed_out() {
-        assert!(grant_for(&insert("hi"), NOW).is_none(), "reserved kind");
+    fn only_an_available_kind_that_asks_gets_a_grant() {
+        assert!(grant_for(&reserved(), NOW).is_none(), "reserved kind");
+        assert!(grant_for(&insert("hi"), NOW).is_some(), "insert-text asks");
         let mut draft = insert("hi");
         draft.kind = ActionKind::ChatDraft;
         draft.args = json!({ "text": "hi" });
@@ -152,9 +162,17 @@ mod tests {
         assert_eq!(check_grant(&grant, &draft, draft.expires_at_ms), Err(ErrorCode::Expired));
 
         // A refused action never gets through, grant or not.
-        let reserved = insert("hi");
+        let reserved = reserved();
         let grant = grant_ignoring_availability(&reserved);
         assert_eq!(check_grant(&grant, &reserved, NOW), Err(ErrorCode::Unavailable));
+
+        // An insertion the user confirmed passes; the same grant for other
+        // words or another window does not.
+        let action = insert("hello");
+        let grant = grant_for(&action, NOW).unwrap();
+        assert!(check_grant(&grant, &action, NOW).is_ok());
+        let other = AssistantAction { args: json!({ "text": "hello", "targetWindow": 43, "targetPid": 7 }), ..action };
+        assert_eq!(check_grant(&grant, &other, NOW), Err(ErrorCode::GrantMismatch));
     }
 
     // ── Receipts and retries ─────────────────────────────────────────────────

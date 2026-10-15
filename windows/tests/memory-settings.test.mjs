@@ -223,3 +223,18 @@ test("a duplicate edit refusal keeps both rows and the draft, then permits a cor
   assert.match(rows[1].textContent, /I write in French/);
   assert.doesNotMatch(section.textContent, /This memory already exists\./);
 });
+
+
+test("a memory read failure is visible and a failed export never claims a backup was saved", async (t) => {
+  answering(t, {
+    memory_list: new Error("memory.bin could not be read: sharing violation"),
+    memory_export: new Error("memory.bin could not be read: sharing violation"),
+  });
+  const section = memorySection();
+  await settle();
+  assert.match(section.textContent, /memory.bin could not be read/);
+  button(section, "Export").fire("click");
+  await settle();
+  assert.match(section.textContent, /sharing violation/);
+  assert.doesNotMatch(section.textContent, /Saved to/);
+});

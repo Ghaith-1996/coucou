@@ -13,6 +13,7 @@
 // that can't be read or comes from a newer Coucou is set aside, never
 // overwritten; memory then starts empty and says so in the log.
 
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -156,34 +157,34 @@ fn path() -> PathBuf {
     crate::settings::config_dir().join("memory.bin")
 }
 
-/// Set once a file could not be read, so it is never overwritten.
-static SET_ASIDE_FAILED: Mutex<bool> = Mutex::new(false);
 static STORE: Mutex<Option<Memory>> = Mutex::new(None);
 
 fn now_ms() -> u64 {
     crate::assistant::policy::now_ms()
 }
 
-fn load_from(file: &Path) -> Memory {
-    let Ok(sealed) = std::fs::read(file) else { return Memory::default() };
+fn load_from(file: &Path) -> Result<Memory, String> {
+    let sealed = match std::fs::read(file) {
+        Ok(sealed) => sealed,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Memory::default()),
+        // A sharing/permission/device error says nothing about the contents.
+        // Never cache an empty replacement; the next operation can retry.
+        Err(err) => return Err(format!("memory.bin could not be read: {err}")),
+    };
     let parsed = unseal(&sealed).map_err(|_| Unreadable::Damaged).and_then(|plain| parse(&plain));
     match parsed {
-        Ok(memory) => memory,
+        Ok(memory) => Ok(memory),
         Err(why) => {
-            let aside = file.with_extension(format!("bin.unreadable-{}", now_ms()));
+            let aside = file.with_extension(format!("bin.unreadable-{}-{}", now_ms(), crate::assistant::policy::new_id("backup")));
+            std::fs::rename(file, &aside)
+                .map_err(|err| format!("memory.bin could not be read nor set aside: not overwriting it ({err})"))?;
             crate::log::line(format!("memory: {why:?}; the file is kept aside and memory starts empty"));
-            if std::fs::rename(file, &aside).is_err() {
-                *SET_ASIDE_FAILED.lock().unwrap() = true;
-            }
-            Memory::default()
+            Ok(Memory::default())
         }
     }
 }
 
 fn save_to(file: &Path, memory: &Memory) -> Result<(), String> {
-    if *SET_ASIDE_FAILED.lock().unwrap() {
-        return Err("memory.bin could not be read nor set aside: not overwriting it".into());
-    }
     let plain = serde_json::to_vec(memory).map_err(|e| e.to_string())?;
     let sealed = seal(&plain)?;
     let dir = file.parent().ok_or("no folder")?;
@@ -196,11 +197,23 @@ fn save_to(file: &Path, memory: &Memory) -> Result<(), String> {
 /// Runs `f` on the memory, loading it first, and saves it when `f` changed it.
 pub fn with<T>(f: impl FnOnce(&mut Memory) -> Result<T, String>) -> Result<T, String> {
     let mut store = STORE.lock().unwrap();
-    let memory = store.get_or_insert_with(|| load_from(&path()));
+    with_store(&mut store, &path(), f)
+}
+
+fn with_store<T>(store: &mut Option<Memory>, file: &Path, f: impl FnOnce(&mut Memory) -> Result<T, String>) -> Result<T, String> {
+    if store.is_none() {
+        // Failed reads leave the cache uninitialized, so no mutation can turn
+        // a transient failure into an empty-derived overwrite on a later save.
+        *store = Some(load_from(file)?);
+    }
+    let memory = store.as_mut().expect("loaded above");
     let before = memory.clone();
-    let out = f(memory)?;
+    let out = match f(memory) {
+        Ok(out) => out,
+        Err(error) => { *memory = before; return Err(error); }
+    };
     if *memory != before {
-        if let Err(err) = save_to(&path(), memory) {
+        if let Err(err) = save_to(file, memory) {
             *memory = before;
             return Err(err);
         }
@@ -218,14 +231,48 @@ pub fn now() -> u64 {
 
 /// A plain JSON copy in the user's Downloads folder, for them to keep.
 pub fn export() -> Result<PathBuf, String> {
-    let memory = get();
+    // Unlike optional prompt memory, a backup must not silently export an
+    // empty placeholder when the real store could not be read.
+    let memory = with(|m| Ok(m.clone()))?;
     let t = crate::platform::local_time();
     let dir = crate::platform::home_dir().join("Downloads");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let file = dir.join(format!("Coucou memory {:04}-{:02}-{:02} {:02}.{:02}.json", t.year, t.month, t.day, t.hour, t.minute));
-    let text = serde_json::to_string_pretty(&memory).map_err(|e| e.to_string())?;
-    std::fs::write(&file, text).map_err(|e| e.to_string())?;
-    Ok(file)
+    let stem = format!("Coucou memory {:04}-{:02}-{:02} {:02}.{:02}", t.year, t.month, t.day, t.hour, t.minute);
+    export_to(&dir, &stem, &memory)
+}
+
+fn export_to(dir: &Path, stem: &str, memory: &Memory) -> Result<PathBuf, String> {
+    let text = serde_json::to_vec_pretty(memory).map_err(|e| e.to_string())?;
+    // Atomic create-new also protects against a concurrent export or a file
+    // placed here between checking its name and opening it.
+    for suffix in 0..10_000 {
+        let name = if suffix == 0 { format!("{stem}.json") } else { format!("{stem} ({suffix}).json") };
+        let file = dir.join(name);
+        match write_new_export(&file, &text, |output, bytes| output.write_all(bytes)) {
+            Ok(()) => return Ok(file),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+    Err("No unused memory export filename is available.".into())
+}
+
+/// Only the file this call created is removed on failure, never an older backup.
+fn write_new_export(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    let result = write(&mut output, bytes).and_then(|_| output.sync_all());
+    drop(output);
+    if let Err(error) = result {
+        return match std::fs::remove_file(path) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(std::io::Error::new(ErrorKind::Other, format!("{error}; partial export cleanup failed: {cleanup}"))),
+        };
+    }
+    Ok(())
 }
 
 // ── DPAPI ────────────────────────────────────────────────────────────────────
@@ -284,7 +331,7 @@ fn from_settings(webview: &tauri::Webview) -> Result<(), String> {
 #[tauri::command]
 pub fn memory_list(webview: tauri::Webview) -> Result<Memory, String> {
     from_settings(&webview)?;
-    Ok(get())
+    with(|m| Ok(m.clone()))
 }
 
 #[tauri::command]
@@ -343,6 +390,126 @@ pub fn memory_export(webview: tauri::Webview) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_dir_for(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("coucou-memory-{test}-{}", crate::assistant::policy::new_id("test")));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn only_a_missing_file_initializes_an_empty_store() {
+        let dir = temp_dir_for("read-failure");
+        let file = dir.join("memory.bin");
+        assert_eq!(load_from(&file).unwrap(), Memory::default());
+        std::fs::create_dir(&file).unwrap();
+        assert!(load_from(&file).is_err(), "an existing unreadable path is not an empty store");
+        let mut store = None;
+        let mut called = false;
+        assert!(with_store(&mut store, &file, |_| { called = true; Ok(()) }).is_err());
+        assert!(!called, "no mutation runs after a failed read");
+        assert!(store.is_none(), "failed loads are retryable, never cached as empty");
+        assert!(file.is_dir());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_temporary_sharing_failure_cannot_replace_existing_memory() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = temp_dir_for("sharing-failure");
+        let file = dir.join("memory.bin");
+        let mut original = Memory::default();
+        original.add("Keep the existing fact", Source::User, 1).unwrap();
+        save_to(&file, &original).unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&file).unwrap();
+        let mut store = None;
+        assert!(with_store(&mut store, &file, |m| m.add("New fact", Source::User, 2)).is_err());
+        assert!(store.is_none());
+        drop(lock);
+        assert_eq!(load_from(&file).unwrap(), original, "failed mutation did not alter disk");
+        with_store(&mut store, &file, |m| m.add("New fact", Source::User, 2)).unwrap();
+        let restored = load_from(&file).unwrap();
+        assert_eq!(restored.items.len(), 2);
+        assert_eq!(restored.items[0], original.items[0], "retry loads before adding");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn repeated_exports_preserve_all_preexisting_files() {
+        let dir = temp_dir_for("exports");
+        let stem = "Coucou memory 2026-10-15 04.00";
+        let existing = dir.join(format!("{stem}.json"));
+        std::fs::write(&existing, b"previous backup").unwrap();
+        let mut memory = Memory::default();
+        memory.add("First fact", Source::User, 1).unwrap();
+        let first = export_to(&dir, stem, &memory).unwrap();
+        let first_bytes = std::fs::read(&first).unwrap();
+        memory.add("Second fact", Source::User, 2).unwrap();
+        let second = export_to(&dir, stem, &memory).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&existing).unwrap(), b"previous backup");
+        assert_eq!(std::fs::read(&first).unwrap(), first_bytes);
+        let latest: Memory = serde_json::from_slice(&std::fs::read(&second).unwrap()).unwrap();
+        assert_eq!(latest, memory);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_exports_claim_different_names_atomically() {
+        let dir = temp_dir_for("concurrent-exports");
+        let jobs: Vec<_> = (0..8).map(|_| {
+            let dir = dir.clone();
+            std::thread::spawn(move || export_to(&dir, "same minute", &Memory::default()).unwrap())
+        }).collect();
+        let paths: std::collections::BTreeSet<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
+        assert_eq!(paths.len(), 8);
+        for file in paths {
+            assert_eq!(serde_json::from_slice::<Memory>(&std::fs::read(file).unwrap()).unwrap(), Memory::default());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn export_io_failure_reports_an_error_without_replacing_anything() {
+        let dir = temp_dir_for("export-failure");
+        let blocked = dir.join("not-a-directory");
+        std::fs::write(&blocked, b"keep me").unwrap();
+        assert!(export_to(&blocked, "backup", &Memory::default()).is_err());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep me");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_export_write_removes_only_its_own_partial_file() {
+        let dir = temp_dir_for("partial-export");
+        let older = dir.join("older.json");
+        std::fs::write(&older, b"keep this backup").unwrap();
+        let partial = dir.join("partial.json");
+        assert!(write_new_export(&partial, b"private memory", |output, bytes| {
+            output.write_all(&bytes[..5])?;
+            Err(std::io::Error::new(ErrorKind::Other, "simulated disk full"))
+        }).is_err());
+        assert!(!partial.exists());
+        assert!(write_new_export(&older, b"replacement", |output, bytes| output.write_all(bytes)).is_err());
+        assert_eq!(std::fs::read(&older).unwrap(), b"keep this backup");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_refused_mutation_restores_the_cached_memory() {
+        let dir = temp_dir_for("refused-mutation");
+        let file = dir.join("memory.bin");
+        let original = Memory::default();
+        let mut store = Some(original.clone());
+        assert!(with_store(&mut store, &file, |memory| {
+            memory.enabled = false;
+            Err::<(), _>("refused".to_string())
+        }).is_err());
+        assert_eq!(store, Some(original));
+        assert!(!file.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn items_are_cleaned_deduplicated_and_bounded() {
@@ -507,7 +674,7 @@ mod tests {
         save_to(&file, &m).unwrap();
         let raw = std::fs::read(&file).unwrap();
         assert!(!String::from_utf8_lossy(&raw).contains("pineapple"), "never in clear on disk");
-        assert_eq!(load_from(&file), m);
+        assert_eq!(load_from(&file).unwrap(), m);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -518,7 +685,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("memory.bin");
         std::fs::write(&file, b"garbage that DPAPI can't open").unwrap();
-        assert_eq!(load_from(&file), Memory::default());
+        assert_eq!(load_from(&file).unwrap(), Memory::default());
         assert!(!file.exists());
         let aside: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
         assert_eq!(aside.len(), 1);

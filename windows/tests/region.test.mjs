@@ -323,3 +323,39 @@ test("approval notification before navigation does not fold the island", async (
   assert.equal(State.mode, "expanded");
   assert.equal(State.isPinned, true);
 });
+
+for (const early of [false, true]) {
+  test(`native picker expiration ${early ? "before" : "after"} startup resolves releases the flow for another pick`, async t => {
+    const native = early ? deferredAnswer(t, "region_start", "reg-1") : null;
+    if (!early) answers.set("region_start", "reg-1");
+    const starting = startRegion();
+    if (!early) await starting;
+    emit("region-ended", { sessionId: "reg-1", reason: "expired" });
+    native?.resolve("reg-1");
+    await starting;
+    assert.equal(Region.status, "idle");
+    assert.equal(Region.session, null);
+    assert.equal(Region.preview, null);
+    assert.deepEqual(host.alerts, []);
+    answers.set("region_start", "reg-new");
+    await startRegion();
+    emit("region-ended", { sessionId: "reg-1", reason: "expired" });
+    await flush();
+    assert.equal(Region.status, "picking");
+    assert.equal(Region.session, "reg-new", "an old timer cannot end the next pick");
+  });
+}
+
+test("a late picker expiration cannot discard a valid preview or committed attachment", async t => {
+  await picked();
+  emit("region-ended", { sessionId: "reg-1", reason: "expired" });
+  assert.equal(Region.status, "preview");
+  const result = { file: { name: "Screen region.png", path: "C:/inbox/region.png" } };
+  const native = deferredAnswer(t, "region_attach", result);
+  const attaching = regionAsk();
+  emit("region-ended", { sessionId: "reg-1", reason: "expired" });
+  assert.equal(Region.status, "attaching");
+  native.resolve(result);
+  await attaching;
+  assert.deepEqual(host.files, [result.file]);
+});

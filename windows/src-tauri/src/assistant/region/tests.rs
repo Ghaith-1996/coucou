@@ -209,3 +209,76 @@ fn a_canceled_capture_cannot_publish_over_its_replacement() {
     assert_eq!(regions.picked(&old, &m, rect(0, 0, 30, 40), solid(30, 40, [0; 4])).unwrap_err(), ErrorCode::Expired);
     assert_eq!(regions.waiting().as_deref(), Some(new.as_str()));
 }
+
+fn age_picker(regions: &Regions) {
+    regions.0.lock().unwrap().as_mut().unwrap().started = Instant::now() - SESSION_TTL;
+}
+
+#[test]
+fn expiration_drops_an_unused_picker_once_and_allows_a_new_one() {
+    let regions = Regions::default();
+    let old = regions.start(vec![monitor()]);
+    assert!(!regions.expire(&old), "a live picker remains usable");
+    assert_eq!(regions.waiting().as_deref(), Some(old.as_str()));
+    age_picker(&regions);
+    assert!(regions.waiting().is_none());
+    assert!(regions.monitor(&old, 0).is_none());
+    assert!(regions.claim_pick(&old, 0).is_none());
+    assert!(regions.expire(&old), "the caller must close overlays and emit ended");
+    assert!(!regions.owns(&old));
+    assert!(!regions.expire(&old), "duplicate expiry cannot emit a second ending");
+    assert!(!regions.cancel(&old));
+    let new = regions.start(vec![monitor()]);
+    assert_eq!(regions.waiting().as_deref(), Some(new.as_str()));
+}
+
+#[test]
+fn a_stale_expiration_cannot_end_a_replacement_even_if_it_is_also_old() {
+    let regions = Regions::default();
+    let old = regions.start(vec![monitor()]);
+    age_picker(&regions);
+    let new = regions.start(vec![monitor()]);
+    assert!(!regions.expire(&old));
+    assert_eq!(regions.waiting().as_deref(), Some(new.as_str()));
+    age_picker(&regions);
+    assert!(!regions.expire(&old));
+    assert!(regions.owns(&new));
+    assert!(regions.expire(&new));
+}
+
+#[test]
+fn expiration_cannot_cancel_a_capture_claimed_before_the_deadline() {
+    let regions = Regions::default();
+    let id = regions.start(vec![monitor()]);
+    let m = regions.claim_pick(&id, 0).unwrap();
+    age_picker(&regions);
+    assert!(!regions.expire(&id));
+    assert!(regions.owns(&id));
+    let preview = regions.picked(&id, &m, rect(0, 0, 30, 40), solid(30, 40, [0; 4])).unwrap();
+    assert!(!regions.expire(&id), "confirmation has its own grant lifetime");
+    assert!(regions.confirm(&id, &preview.grant).is_ok());
+    assert!(!regions.expire(&id), "a consumed attachment cannot be expired");
+}
+
+#[test]
+fn an_expired_picker_cannot_publish_pixels_into_its_replacement() {
+    let regions = Regions::default();
+    let old = regions.start(vec![monitor()]);
+    let m = regions.monitor(&old, 0).unwrap();
+    age_picker(&regions);
+    assert!(regions.expire(&old));
+    let new = regions.start(vec![monitor()]);
+    assert_eq!(regions.picked(&old, &m, rect(0, 0, 30, 40), solid(30, 40, [0; 4])).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(regions.waiting().as_deref(), Some(new.as_str()));
+}
+
+#[test]
+fn a_preview_has_its_own_confirmation_deadline() {
+    let regions = Regions::default();
+    let id = regions.start(vec![monitor()]);
+    let m = regions.monitor(&id, 0).unwrap();
+    let preview = regions.picked(&id, &m, rect(0, 0, 30, 40), solid(30, 40, [0; 4])).unwrap();
+    age_picker(&regions);
+    assert!(!regions.expire(&id));
+    assert!(regions.confirm(&id, &preview.grant).is_ok());
+}

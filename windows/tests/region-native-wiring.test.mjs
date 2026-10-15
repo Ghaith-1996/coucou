@@ -40,3 +40,27 @@ test("native capture is claimed once before overlay teardown or async screen cop
   assert.ok(claim < pick.indexOf("close_overlays"));
   assert.ok(claim < pick.indexOf("spawn_blocking"));
 });
+
+test("a picker schedules native expiration without waiting for another drag", () => {
+  const start = commands.slice(commands.indexOf("pub async fn region_start"), commands.indexOf("pub struct OverlayInfo"));
+  const timer = start.indexOf("tokio::time::sleep(SESSION_TTL)");
+  assert.ok(timer > start.indexOf("regions.start("));
+  assert.ok(timer < start.indexOf("for (i, m)"), "expiration covers overlay construction too");
+  assert.match(start, /expire_session\(&expiry_app, &expiry_app\.state::<Regions>\(\), &expiry_id\)/);
+});
+
+test("native expiration atomically owns teardown and an island event", () => {
+  const expire = commands.slice(commands.indexOf("fn expire_session"), commands.indexOf("/// The island"));
+  assert.match(expire, /if regions\.expire\(session_id\)/);
+  assert.match(expire, /close_overlays\(app, Some\(session_id\)\)/);
+  assert.match(expire, /ended\(app, session_id, "expired"\)/);
+  assert.doesNotMatch(expire, /close_overlays\(app, None\)/);
+});
+
+test("expired overlay info and pick lookups also run session-scoped cleanup", () => {
+  const info = commands.slice(commands.indexOf("pub fn region_overlay_info"), commands.indexOf("pub async fn region_pick"));
+  assert.match(info, /expire_session\(&app, &regions, session_id\)/);
+  const pick = commands.slice(commands.indexOf("pub async fn region_pick"), commands.indexOf("pub fn region_cancel"));
+  assert.match(pick, /regions\.monitor\(&session_id, index\)\.ok_or_else\(\|\| \{\s*expire_session\(&app, &regions, &session_id\)/);
+  assert.match(pick, /regions\.claim_pick\(&session_id, index\)\.ok_or_else\(\|\| \{\s*expire_session\(&app, &regions, &session_id\)/);
+});

@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 use super::contracts::*;
 use super::policy::{self, Grant};
 
-/// How long the overlays wait for a pick, and the picture for "Ask about it".
+/// How long the overlays wait for a pick. A claimed capture and its preview
+/// use the proposal's own lifetime instead, so a late pick still can be confirmed.
 pub const SESSION_TTL: Duration = Duration::from_secs(5 * 60);
 /// How long the `ask-region` action stays valid once the picture is shown.
 pub const PROPOSAL_TTL_MS: u64 = 120_000;
@@ -215,6 +216,17 @@ impl Regions {
     /// Still this session, including a capture or preview which no longer has overlays.
     pub fn owns(&self, session_id: &str) -> bool {
         self.0.lock().unwrap().as_ref().is_some_and(|s| s.id == session_id)
+    }
+
+    /// Expire only an unused picker. The winner closes its overlays and emits
+    /// the terminal event; stale timers and concurrent cleanup do nothing.
+    pub fn expire(&self, session_id: &str) -> bool {
+        let mut guard = self.0.lock().unwrap();
+        if guard.as_ref().is_some_and(|s| s.id == session_id && !s.capturing && s.picked.is_none() && s.started.elapsed() >= SESSION_TTL) {
+            *guard = None;
+            return true;
+        }
+        false
     }
 
     /// Reserve the one screen copy before closing overlays or yielding to GDI.

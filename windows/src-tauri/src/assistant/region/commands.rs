@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Webview, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-use super::{apply_masks, capture, clamp, file_name, png, Monitor, Rect, Regions, MAX_MASKS};
+use super::{apply_masks, capture, clamp, file_name, png, Monitor, Rect, Regions, MAX_MASKS, SESSION_TTL};
 use crate::assistant::contracts::{ActionReceipt, ErrorCode};
 use crate::assistant::policy::Grant;
 use crate::files::DroppedFile;
@@ -17,7 +17,7 @@ use crate::island::WINDOW_LABEL;
 const OVERLAY: &str = "region-";
 /// To the island: the picture to confirm (`Preview`).
 pub const PREVIEW_EVENT: &str = "region-preview";
-/// To the island: the pick ended without a picture ("cancelled" or "failed").
+/// To the island: the pick ended without a picture ("cancelled", "failed", or "expired").
 pub const ENDED_EVENT: &str = "region-ended";
 /// Long enough for the closed overlays to leave the screen before the copy.
 const SETTLE: Duration = Duration::from_millis(220);
@@ -79,6 +79,14 @@ fn cancel_session(app: &AppHandle, regions: &Regions, session_id: &str) {
     }
 }
 
+fn expire_session(app: &AppHandle, regions: &Regions, session_id: &str) {
+    if regions.expire(session_id) {
+        close_overlays(app, Some(session_id));
+        log("region: picker expired".into());
+        ended(app, session_id, "expired");
+    }
+}
+
 /// The island's "Ask about a screen region": an overlay on every monitor.
 /// Returns the session id.
 #[tauri::command]
@@ -98,6 +106,15 @@ pub async fn region_start(app: AppHandle, webview: Webview, regions: State<'_, R
         return Err(ErrorCode::Failed);
     }
     let id = regions.start(monitors.clone());
+    // A forgotten picker must end even if the user never drags again. The
+    // callback owns only this still-unused session, never a newer pick or an
+    // in-flight capture/preview whose confirmation has its own grant deadline.
+    let expiry_app = app.clone();
+    let expiry_id = id.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(SESSION_TTL).await;
+        expire_session(&expiry_app, &expiry_app.state::<Regions>(), &expiry_id);
+    });
     for (i, m) in monitors.iter().enumerate() {
         let built = WebviewWindowBuilder::new(&app, format!("{OVERLAY}{id}-{i}"), page_url(&app))
             .additional_browser_args(crate::BROWSER_ARGS)
@@ -120,6 +137,7 @@ pub async fn region_start(app: AppHandle, webview: Webview, regions: State<'_, R
         };
         // A user can close the first monitor while the others are building.
         // Do not bring back overlays for a canceled or replaced session.
+        expire_session(&app, &regions, &id);
         if regions.waiting().as_deref() != Some(id.as_str()) {
             let _ = win.destroy();
             close_overlays(&app, Some(&id));
@@ -158,12 +176,14 @@ pub struct OverlayInfo {
 }
 
 #[tauri::command]
-pub fn region_overlay_info(webview: Webview, regions: State<Regions>, shared: State<crate::Shared>) -> Option<OverlayInfo> {
-    let session_id = regions.waiting()?;
-    let index = overlay_index(&webview, &session_id)?;
-    regions.monitor(&session_id, index)?;
+pub fn region_overlay_info(app: AppHandle, webview: Webview, regions: State<Regions>, shared: State<crate::Shared>) -> Option<OverlayInfo> {
+    let (session_id, index) = overlay_owner(webview.label())?;
+    regions.monitor(session_id, index).or_else(|| {
+        expire_session(&app, &regions, session_id);
+        None
+    })?;
     let language = shared.settings.lock().unwrap().language.clone();
-    Some(OverlayInfo { session_id, index, language })
+    Some(OverlayInfo { session_id: session_id.to_string(), index, language })
 }
 
 /// The user let go of a rectangle on one overlay (its physical pixels).
@@ -178,12 +198,18 @@ pub async fn region_pick(
     rect: Rect,
 ) -> Result<(), ErrorCode> {
     let index = overlay_index(&webview, &session_id).ok_or(ErrorCode::Unavailable)?;
-    let monitor = regions.monitor(&session_id, index).ok_or(ErrorCode::Expired)?;
+    let monitor = regions.monitor(&session_id, index).ok_or_else(|| {
+        expire_session(&app, &regions, &session_id);
+        ErrorCode::Expired
+    })?;
     let Some(region) = clamp(rect, (monitor.bounds.width, monitor.bounds.height)) else {
         // A click, not a region: the overlays stay for another try.
         return Err(ErrorCode::InvalidArgs);
     };
-    let monitor = regions.claim_pick(&session_id, index).ok_or(ErrorCode::Expired)?;
+    let monitor = regions.claim_pick(&session_id, index).ok_or_else(|| {
+        expire_session(&app, &regions, &session_id);
+        ErrorCode::Expired
+    })?;
     close_overlays(&app, Some(&session_id));
     let ours: Vec<isize> = app.webview_windows()
         .into_iter()

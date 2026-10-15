@@ -707,8 +707,86 @@ fn a_cough_is_not_a_turn_and_silence_ends_the_capture() {
 }
 
 #[test]
+fn moderate_speech_from_the_first_frame_ends_the_turn() {
+    for amplitude in [0.02, 0.05] {
+        let mut e = Endpoint::new(RATE);
+        assert_eq!(e.feed(&tone(600, amplitude)), None, "initial speech at {amplitude}");
+        assert_eq!(e.feed(&tone(1100, 0.002)), Some(Heard::Spoke), "speech at {amplitude} must not become the noise floor");
+    }
+}
+
+#[test]
+fn stationary_startup_noise_times_out_without_becoming_speech() {
+    for amplitude in [0.012, 0.02, 0.05, 0.1, 0.3] {
+        let mut e = Endpoint::new(RATE);
+        assert_eq!(e.feed(&tone(12_000, amplitude)), Some(Heard::Nothing),
+            "stationary startup noise at {amplitude} must not reach transcription");
+    }
+}
+
+#[test]
+fn slightly_varying_startup_noise_is_still_room_noise() {
+    let mut e = Endpoint::new(RATE);
+    for i in 0..239 {
+        let amplitude = if i % 2 == 0 { 0.019 } else { 0.021 };
+        assert_eq!(e.feed(&tone(50, amplitude)), None);
+    }
+    assert_eq!(e.feed(&tone(50, 0.02)), Some(Heard::Nothing));
+}
+
+#[test]
+fn stationary_startup_noise_ending_does_not_submit_a_turn() {
+    let mut e = Endpoint::new(RATE);
+    assert_eq!(e.feed(&tone(1500, 0.05)), None);
+    assert_eq!(e.feed(&tone(1100, 0.002)), None, "the fan stopping is not speech ending");
+    assert_eq!(e.feed(&tone(9400, 0.002)), Some(Heard::Nothing));
+}
+
+#[test]
+fn immediate_modulated_speech_is_not_calibrated_away() {
+    let mut e = Endpoint::new(RATE);
+    // Ordinary speech varies over syllables even when it begins immediately.
+    for _ in 0..5 {
+        for amplitude in [0.02, 0.05, 0.025, 0.04] {
+            assert_eq!(e.feed(&tone(100, amplitude)), None);
+        }
+    }
+    assert_eq!(e.feed(&tone(1100, 0.002)), Some(Heard::Spoke));
+}
+
+#[test]
+fn speech_after_stationary_startup_noise_can_still_end_the_turn() {
+    let mut e = Endpoint::new(RATE);
+    assert_eq!(e.feed(&tone(1500, 0.02)), None);
+    assert_eq!(e.feed(&tone(600, 0.08)), None);
+    assert_eq!(e.feed(&tone(1100, 0.02)), Some(Heard::Spoke));
+}
+
+#[test]
+fn isolated_short_noises_never_accumulate_into_a_turn() {
+    let mut e = Endpoint::new(RATE);
+    for _ in 0..3 {
+        assert_eq!(e.feed(&tone(150, 0.2)), None, "a short noise is not a turn");
+        assert_eq!(e.feed(&tone(1200, 0.001)), None, "a full endpoint pause discards tentative speech");
+    }
+    assert_eq!(e.feed(&tone(8000, 0.001)), Some(Heard::Nothing));
+}
+
+#[test]
+fn tentative_speech_resets_at_the_endpoint_pause_boundary() {
+    for pause in [1050, 1100] {
+        let mut e = Endpoint::new(RATE);
+        assert_eq!(e.feed(&tone(150, 0.2)), None);
+        assert_eq!(e.feed(&tone(pause, 0.001)), None);
+        assert_eq!(e.feed(&tone(150, 0.2)), None);
+        let expected = if pause < 1100 { Some(Heard::Spoke) } else { None };
+        assert_eq!(e.feed(&tone(1100, 0.001)), expected, "pause: {pause} ms");
+    }
+}
+
+#[test]
 fn speech_is_measured_against_the_room() {
-    // A noisy room (0.02) is not speech; talking well above it is.
+    // A steady noisy room is learned directly, without a quieter prelude.
     let mut e = Endpoint::new(RATE);
     assert_eq!(e.feed(&tone(1000, 0.02)), None);
     assert_eq!(e.feed(&tone(500, 0.2)), None);
@@ -749,6 +827,24 @@ fn a_hands_free_capture_with_nothing_said_ends_in_silence() {
 }
 
 #[test]
+fn a_hands_free_capture_of_startup_noise_never_transcribes() {
+    for seconds in [13, 30] {
+        let h = harness(SimMic::new(RATE, vec![Chunk::Tone(RATE as usize * seconds, 0.02)]));
+        h.voice.listen_hands_free().unwrap();
+        loop {
+            let event = h.events.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!matches!(event.state, VoiceState::Processing | VoiceState::Preview),
+                "stationary noise must not be handed to a transcriber");
+            if event.state == VoiceState::Error {
+                assert_eq!(event.error, Some(VoiceError::Silence));
+                assert_eq!(h.mic_open(), 0);
+                break;
+            }
+        }
+    }
+}
+
+#[test]
 fn audio_mode_sends_a_real_transcript_once_and_never_a_simulated_one() {
     let h = harness(speaking(0));
     *h.voice.0.phase.lock().unwrap() = Phase::Preview {
@@ -763,4 +859,379 @@ fn audio_mode_sends_a_real_transcript_once_and_never_a_simulated_one() {
     let h = harness(speaking(400));
     let id = preview(&h);
     assert_eq!(h.voice.converse(&id), Err(ErrorCode::Unavailable), "simulated");
+}
+
+/// A real (not simulated) transcript waiting on the card, set directly.
+fn spoken(h: &Harness, capture_id: &str, text: &str) {
+    *h.voice.0.phase.lock().unwrap() = Phase::Preview {
+        id: capture_id.into(),
+        transcript: Transcript { text: text.into(), simulated: false },
+        since: Instant::now(),
+    };
+}
+
+fn insertion(text: &str) -> serde_json::Value {
+    serde_json::json!({ "text": text, "targetWindow": 4242, "targetPid": 77 })
+}
+
+#[test]
+fn insertion_offers_and_retries_share_the_native_previews_exact_deadline() {
+    let h = harness(speaking(0));
+    // Keep a scheduling margin here; the target tests exercise the last
+    // millisecond and exact deadline with explicit instants and no sleep.
+    let since = Instant::now() - Duration::from_secs(110);
+    *h.voice.0.phase.lock().unwrap() = Phase::Preview {
+        id: "cap-late".into(),
+        transcript: Transcript { text: "Still valid".into(), simulated: false },
+        since,
+    };
+    let (text, expires) = h.voice.insertion_preview("cap-late").unwrap();
+    assert_eq!(text, "Still valid");
+    assert_eq!(expires, since + PREVIEW_TTL);
+    let grant = h.voice.propose("cap-late", ActionKind::InsertText, insertion(&text)).unwrap();
+    let (action, _, permit) = h.voice.begin_insert("cap-late", &grant).unwrap();
+    assert!(permit.expires <= expires, "the write cannot outlive the target's preview");
+    h.voice.finish_insert("cap-late", &action, true).unwrap();
+    assert_eq!(h.voice.insertion_preview("cap-late").unwrap(), (text.clone(), expires));
+    let reoffered = h.voice.propose("cap-late", ActionKind::InsertText, insertion(&text)).unwrap();
+    let (_, _, retry_permit) = h.voice.begin_insert("cap-late", &reoffered).unwrap();
+    assert!(retry_permit.expires <= expires, "even a new offer cannot renew the preview");
+}
+
+#[test]
+fn an_expired_preview_cannot_supply_a_target_deadline() {
+    let h = harness(speaking(0));
+    *h.voice.0.phase.lock().unwrap() = Phase::Preview {
+        id: "cap-expired".into(),
+        transcript: Transcript { text: "Too late".into(), simulated: false },
+        since: Instant::now() - PREVIEW_TTL,
+    };
+    assert_eq!(h.voice.insertion_preview("cap-expired"), Err(ErrorCode::Expired));
+}
+
+#[test]
+fn dictated_text_is_proposed_for_its_field_then_confirmed_once() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "Hello there");
+    assert_eq!(h.voice.insertion_preview("cap-dictate").unwrap().0, "Hello there");
+    assert_eq!(h.voice.insertion_preview("cap-other"), Err(ErrorCode::Expired));
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Hello there")).unwrap();
+    // Peeking and proposing leave the transcript on the card.
+    assert_eq!(h.voice.insertion_preview("cap-dictate").unwrap().0, "Hello there");
+    let (action, args, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    assert_eq!(action, grant.action_id);
+    assert_eq!(
+        args,
+        InsertTextArgs { text: "Hello there".into(), target_window: 4242, target_pid: 77 },
+    );
+    assert!(!permit.cancelled.load(Ordering::SeqCst));
+    assert!(h.events.try_recv().is_err(), "a pending write does not dismiss the card");
+    h.voice.finish_insert("cap-dictate", &action, false).unwrap();
+    assert!(permit.cancelled.load(Ordering::SeqCst));
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-dictate");
+    assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired, "only once");
+    assert_eq!(h.voice.confirm("cap-dictate", &grant), Err(ErrorCode::Expired), "only once");
+    assert_eq!(h.voice.insertion_preview("cap-dictate"), Err(ErrorCode::Expired), "the transcript is used");
+}
+
+#[test]
+fn a_prewrite_refusal_restores_the_exact_preview_and_same_grant_without_extending_its_lifetime() {
+    let h = harness(speaking(0));
+    let since = Instant::now() - Duration::from_secs(60);
+    let original = Transcript { text: "Keep these words".into(), simulated: false };
+    *h.voice.0.phase.lock().unwrap() = Phase::Preview {
+        id: "cap-dictate".into(), transcript: original.clone(), since,
+    };
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion(&original.text)).unwrap();
+    let original_action = h.voice.0.proposal.lock().unwrap().as_ref().unwrap().action.clone();
+    assert!(grant.expires_at_ms <= policy::now_ms() + 60_000, "proposing cannot restart the preview's TTL");
+
+    let (action, args, first_permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    assert!(first_permit.expires <= since + PREVIEW_TTL);
+    h.voice.finish_insert("cap-dictate", &action, true).unwrap();
+    assert!(first_permit.cancelled.load(Ordering::SeqCst), "the refused attempt's permit is retired");
+    assert!(h.events.try_recv().is_err(), "refusal leaves the existing card in place");
+    {
+        let phase = h.voice.0.phase.lock().unwrap();
+        let Phase::Preview { id, transcript, since: restored_since } = &*phase else { panic!("preview was not restored") };
+        assert_eq!(id, "cap-dictate");
+        assert_eq!(transcript, &original);
+        assert_eq!(*restored_since, since, "the preview keeps its original deadline");
+        let proposal = h.voice.0.proposal.lock().unwrap();
+        let restored = proposal.as_ref().unwrap();
+        assert_eq!(restored.capture, "cap-dictate");
+        assert_eq!(serde_json::to_value(&restored.action).unwrap(), serde_json::to_value(&original_action).unwrap());
+    }
+
+    let (retry_action, retry_args, retry_permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    assert_eq!(retry_action, action, "the card retries the grant it already has");
+    assert_eq!(retry_args, args);
+    assert!(retry_permit.expires <= since + PREVIEW_TTL);
+    assert!(!retry_permit.cancelled.load(Ordering::SeqCst));
+    assert!(!Arc::ptr_eq(&first_permit.cancelled, &retry_permit.cancelled), "a retry gets its own permit");
+    h.voice.finish_insert("cap-dictate", &retry_action, false).unwrap();
+    assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired);
+}
+
+#[test]
+fn pending_insertion_cannot_be_consumed_by_duplicate_or_other_ipc_actions() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "Keep these words");
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Keep these words")).unwrap();
+    let (action, _, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+
+    assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(h.voice.confirm("cap-dictate", &grant), Err(ErrorCode::Expired));
+    assert_eq!(h.voice.use_transcript("cap-dictate"), Err(ErrorCode::Expired));
+    let pills = serde_json::json!({ "mainPill": "integration_claude", "activeIntegrations": [] });
+    assert_eq!(h.voice.act("cap-dictate", ActionKind::PillSet, pills), Err(ErrorCode::Expired));
+    assert_eq!(h.voice.propose("cap-dictate", ActionKind::LaunchApp, app()).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("different words")).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(h.voice.insertion_preview("cap-dictate"), Err(ErrorCode::Expired));
+    h.voice.cancel("cap-stale");
+    for refused in [false, true] {
+        assert_eq!(h.voice.finish_insert("cap-stale", &action, refused), Err(ErrorCode::Cancelled));
+        assert_eq!(h.voice.finish_insert("cap-dictate", "act-stale", refused), Err(ErrorCode::Cancelled));
+    }
+    assert!(!permit.cancelled.load(Ordering::SeqCst), "stale calls leave the active write alone");
+    assert!(h.events.try_recv().is_err());
+    assert_eq!(h.voice.0.proposal.lock().unwrap().as_ref().unwrap().action.id, action);
+
+    h.voice.finish_insert("cap-dictate", &action, true).unwrap();
+    assert_eq!(h.voice.insertion_preview("cap-dictate").unwrap().0, "Keep these words");
+    h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    h.voice.finish_insert("cap-dictate", &action, false).unwrap();
+}
+
+#[test]
+fn concurrent_insert_confirmations_reserve_exactly_one_write() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "Only once");
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Only once")).unwrap();
+    let start = std::sync::Barrier::new(2);
+    let voice = &h.voice;
+    let results = std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            start.wait();
+            voice.begin_insert("cap-dictate", &grant)
+        });
+        let second = scope.spawn(|| {
+            start.wait();
+            voice.begin_insert("cap-dictate", &grant)
+        });
+        [first.join().unwrap(), second.join().unwrap()]
+    });
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter_map(|result| result.as_ref().err()).copied().collect::<Vec<_>>(), vec![ErrorCode::Expired]);
+    assert!(h.events.try_recv().is_err());
+    h.voice.finish_insert("cap-dictate", &grant.action_id, false).unwrap();
+    assert!(h.voice.0.proposal.lock().unwrap().is_none());
+}
+
+#[test]
+fn a_refusal_after_expiry_cannot_revive_the_preview_or_grant() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "Too late");
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Too late")).unwrap();
+    let (action, _, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    // Advance the stored deadline directly: std::time::Instant is not the
+    // paused Tokio clock, and this regression must not sleep for two minutes.
+    {
+        let mut phase = h.voice.0.phase.lock().unwrap();
+        let Phase::Inserting { permit, .. } = &mut *phase else { panic!("no pending insertion") };
+        permit.expires = Instant::now() - Duration::from_millis(1);
+    }
+    assert_eq!(h.voice.finish_insert("cap-dictate", &action, true), Err(ErrorCode::Expired));
+    assert!(permit.cancelled.load(Ordering::SeqCst));
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-dictate");
+    assert!(h.voice.0.proposal.lock().unwrap().is_none());
+    assert_eq!(h.voice.insertion_preview("cap-dictate"), Err(ErrorCode::Expired));
+    assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(h.voice.finish_insert("cap-dictate", &action, true), Err(ErrorCode::Cancelled));
+}
+
+#[test]
+fn cancellation_interruption_and_shutdown_retire_the_pending_write_without_restoring_it() {
+    for reason in ["cancel", "cancel-before-probe", "interrupt", "shutdown"] {
+        let h = harness(speaking(0));
+        spoken(&h, "cap-dictate", "Discard me");
+        let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("Discard me")).unwrap();
+        let (action, _, permit) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+        match reason {
+            "cancel" => h.voice.cancel("cap-dictate"),
+            "cancel-before-probe" => h.voice.cancel_preview(),
+            "interrupt" => h.voice.interrupt("screen locked"),
+            "shutdown" => h.voice.shutdown(),
+            _ => unreachable!(),
+        }
+        assert!(permit.cancelled.load(Ordering::SeqCst), "{reason}");
+        assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-dictate");
+        assert!(h.voice.0.proposal.lock().unwrap().is_none());
+        for refused in [false, true] {
+            assert_eq!(h.voice.finish_insert("cap-dictate", &action, refused), Err(ErrorCode::Cancelled), "{reason}");
+        }
+        assert_eq!(h.voice.begin_insert("cap-dictate", &grant).unwrap_err(), ErrorCode::Expired, "{reason}");
+        assert_eq!(h.voice.use_transcript("cap-dictate"), Err(ErrorCode::Expired), "{reason}");
+        assert!(h.events.try_recv().is_err(), "a late completion emits no stale event: {reason}");
+    }
+}
+
+#[test]
+fn cancelling_before_a_probe_retires_a_preview_but_leaves_listening_and_processing_alone() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-preview", "Old words");
+    h.voice.propose("cap-preview", ActionKind::InsertText, insertion("Old words")).unwrap();
+    h.voice.cancel_preview();
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, "cap-preview");
+    assert!(h.voice.0.proposal.lock().unwrap().is_none());
+    assert_eq!(h.voice.insertion_preview("cap-preview"), Err(ErrorCode::Expired));
+
+    // These phases are seeded directly: no microphone or transcriber runs.
+    for signal_value in [RUN, STOP] {
+        let signal = Arc::new(AtomicU8::new(signal_value));
+        *h.voice.0.phase.lock().unwrap() = Phase::Listening { id: "cap-listening".into(), signal: signal.clone() };
+        h.voice.cancel_preview();
+        assert_eq!(signal.load(Ordering::SeqCst), signal_value);
+        assert!(matches!(&*h.voice.0.phase.lock().unwrap(), Phase::Listening { id, .. } if id == "cap-listening"));
+    }
+    let abort = Arc::new(AtomicBool::new(false));
+    *h.voice.0.phase.lock().unwrap() = Phase::Processing { id: "cap-processing".into(), abort: abort.clone() };
+    h.voice.cancel_preview();
+    assert!(!abort.load(Ordering::SeqCst));
+    assert!(matches!(&*h.voice.0.phase.lock().unwrap(), Phase::Processing { id, .. } if id == "cap-processing"));
+    assert!(h.events.try_recv().is_err());
+}
+
+#[test]
+fn a_new_capture_cancels_the_old_write_and_a_late_refusal_cannot_replace_it() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-old", "Old words");
+    let grant = h.voice.propose("cap-old", ActionKind::InsertText, insertion("Old words")).unwrap();
+    let (action, _, permit) = h.voice.begin_insert("cap-old", &grant).unwrap();
+    let current = h.voice.toggle().unwrap();
+    assert_ne!(current, "cap-old");
+    assert_eq!(h.wait(VoiceState::Listening).capture_id, current);
+    assert!(permit.cancelled.load(Ordering::SeqCst));
+    assert!(h.voice.0.proposal.lock().unwrap().is_none());
+    for refused in [false, true] {
+        assert_eq!(h.voice.finish_insert("cap-old", &action, refused), Err(ErrorCode::Cancelled));
+    }
+    assert_eq!(h.voice.0.phase.lock().unwrap().id(), Some(current.as_str()));
+    h.voice.cancel(&current);
+    assert_eq!(h.wait(VoiceState::Idle).capture_id, current);
+
+    // A late result also cannot consume a newer proposal for another field.
+    spoken(&h, "cap-new", "New words");
+    let next = h.voice.propose("cap-new", ActionKind::InsertText, insertion("New words")).unwrap();
+    let (next_action, _, next_permit) = h.voice.begin_insert("cap-new", &next).unwrap();
+    assert_eq!(h.voice.finish_insert("cap-old", &action, true), Err(ErrorCode::Cancelled));
+    assert!(!next_permit.cancelled.load(Ordering::SeqCst));
+    h.voice.finish_insert("cap-new", &next_action, true).unwrap();
+    assert_eq!(h.voice.insertion_preview("cap-new").unwrap().0, "New words");
+}
+
+#[test]
+fn a_simulated_transcript_is_never_offered_to_another_app() {
+    let h = harness(speaking(400));
+    let id = preview(&h);
+    assert_eq!(h.voice.insertion_preview(&id), Err(ErrorCode::Unavailable));
+}
+
+#[test]
+fn an_insertion_needs_a_target_and_sane_text() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "hi");
+    for bad in [
+        serde_json::json!({ "text": "hi", "targetWindow": 0, "targetPid": 77 }),
+        serde_json::json!({ "text": "hi", "targetWindow": 4242, "targetPid": 0 }),
+        serde_json::json!({ "text": "   ", "targetWindow": 4242, "targetPid": 77 }),
+        serde_json::json!({ "text": "a\u{1b}[2J", "targetWindow": 4242, "targetPid": 77 }),
+        serde_json::json!({ "text": "hi", "targetWindow": 4242, "targetPid": 77, "submit": true }),
+    ] {
+        assert_eq!(h.voice.propose("cap-dictate", ActionKind::InsertText, bad.clone()).unwrap_err(), ErrorCode::InvalidArgs, "{bad}");
+    }
+}
+
+#[test]
+fn a_terminal_insertion_failure_can_become_an_allowed_chat_draft() {
+    let h = harness(speaking(0));
+    spoken(&h, "cap-dictate", "keep me");
+    let grant = h.voice.propose("cap-dictate", ActionKind::InsertText, insertion("keep me")).unwrap();
+    let (action, _, _) = h.voice.begin_insert("cap-dictate", &grant).unwrap();
+    h.voice.finish_insert("cap-dictate", &action, false).unwrap();
+    let draft = h.voice.fallback_draft("cap-dictate", "keep me".into()).unwrap();
+    assert_eq!(draft.text, "keep me");
+    assert!(draft.action_id.starts_with("act-"));
+    assert_eq!(h.voice.fallback_draft("cap-dictate", " ".into()).unwrap_err(), ErrorCode::InvalidArgs);
+}
+
+#[tokio::test]
+async fn copy_checks_preserve_the_preview_deadline_and_never_propose_insertion() {
+    use super::super::app::{checked_copy_preview, InsertCopyCheck};
+    use super::super::dictation::Refusal;
+    let h = harness(speaking(0));
+    spoken(&h, "cap-copy", "Words to copy");
+    let original = h.voice.insertion_preview("cap-copy").unwrap();
+    for result in [Ok(()), Err(Refusal::Protected), Err(Refusal::Busy), Ok(())] {
+        let reply = checked_copy_preview(&h.voice, "cap-copy", |expires| {
+            assert_eq!(expires, original.1);
+            std::future::ready(result)
+        }).await.unwrap();
+        assert_eq!(reply, match result {
+            Ok(()) => InsertCopyCheck::Allowed,
+            Err(reason) => InsertCopyCheck::Refused { reason },
+        });
+        assert_eq!(h.voice.insertion_preview("cap-copy").unwrap(), original);
+        assert!(h.voice.0.proposal.lock().unwrap().is_none());
+        assert!(h.events.try_recv().is_err(), "the check cannot consume or dismiss a preview");
+    }
+}
+
+#[tokio::test]
+async fn copy_rechecks_capture_ownership_and_expiry_after_the_native_read() {
+    use super::super::app::checked_copy_preview;
+    for change in ["cancel", "replace", "expire", "insert", "use"] {
+        let h = harness(speaking(0));
+        spoken(&h, "cap-copy", "Old words");
+        let result = checked_copy_preview(&h.voice, "cap-copy", |_| {
+            match change {
+                "cancel" => h.voice.cancel("cap-copy"),
+                "replace" => spoken(&h, "cap-new", "New words"),
+                "expire" => {
+                    let mut phase = h.voice.0.phase.lock().unwrap();
+                    let Phase::Preview { since, .. } = &mut *phase else { panic!("preview") };
+                    *since = Instant::now() - PREVIEW_TTL;
+                }
+                "insert" => {
+                    let grant = h.voice.propose("cap-copy", ActionKind::InsertText, insertion("Old words")).unwrap();
+                    h.voice.begin_insert("cap-copy", &grant).unwrap();
+                }
+                "use" => { h.voice.use_transcript("cap-copy").unwrap(); }
+                _ => unreachable!(),
+            }
+            std::future::ready(Ok(()))
+        }).await;
+        assert_eq!(result, Err(ErrorCode::Expired), "late evidence after {change}");
+        if change == "replace" {
+            assert_eq!(h.voice.insertion_preview("cap-new").unwrap().0, "New words");
+        }
+    }
+}
+
+#[tokio::test]
+async fn copy_checks_reject_stale_and_simulated_previews_before_reading_a_field() {
+    use super::super::app::checked_copy_preview;
+    let h = harness(speaking(0));
+    spoken(&h, "cap-current", "Current words");
+    let result = checked_copy_preview(&h.voice, "cap-old", |_| async {
+        panic!("a stale capture must never reach the target reader");
+    }).await;
+    assert_eq!(result, Err(ErrorCode::Expired));
+    if let Phase::Preview { transcript, .. } = &mut *h.voice.0.phase.lock().unwrap() {
+        transcript.simulated = true;
+    }
+    let result = checked_copy_preview(&h.voice, "cap-current", |_| async {
+        panic!("a simulated capture must never reach the target reader");
+    }).await;
+    assert_eq!(result, Err(ErrorCode::Unavailable));
 }

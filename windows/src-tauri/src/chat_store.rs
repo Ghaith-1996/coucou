@@ -6,6 +6,7 @@
 // and every size is capped. Small, disposable summaries under .summaries
 // speed up history pages; the transcript JSON remains the source of truth.
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -23,7 +24,10 @@ const SUMMARY_VERSION: u8 = 1;
 // Keep reads and read-modify-writes together. Reopening during a save must
 // wait for its new transcript, not restore an older one that can overwrite it.
 // Private *_locked helpers are only called while the caller holds this lock.
-static STORE: Mutex<()> = Mutex::new(());
+// Deleted ids cannot be reused by delayed saves, including a first save that
+// has not reached the lock yet. Pending commands cannot survive a restart, so
+// these tombstones need only live for this process (and are not summary data).
+static STORE: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -218,13 +222,33 @@ fn path(dir: &Path, id: &str) -> Option<PathBuf> {
 
 pub fn save(dir: &Path, c: &Conversation) -> Result<(), String> {
     validate(c)?;
-    let _guard = STORE.lock().map_err(|_| "conversation store unavailable")?;
+    #[cfg(test)]
+    tests::before_save_lock();
+    let deleted = STORE.lock().map_err(|_| "conversation store unavailable")?;
     let mut c = c.clone();
     let target = path(dir, &c.id).ok_or("bad conversation id")?;
+    if deleted.contains(&target) {
+        return Err(crate::i18n::t("This conversation is gone."));
+    }
     if target.try_exists().map_err(|e| e.to_string())? {
+        // Read the transcript, not cached metadata: external edits are still
+        // authoritative. Lock acquisition order is not snapshot capture order.
+        let current = load_locked(dir, &c.id)?;
+        if c.updated_at < current.updated_at { return Ok(()); }
+        if c.updated_at == current.updated_at {
+            // Date.now() can tie. Exact retries and older prefixes are harmless;
+            // only a strict append proves progress without a distinct revision.
+            // Conflicting replacements (including regeneration) need a newer
+            // timestamp instead of guessing from length or lock order.
+            if current.messages.starts_with(&c.messages) { return Ok(()); }
+            if !c.messages.starts_with(&current.messages) {
+                return Err("conversation snapshot conflicts with the saved revision".into());
+            }
+        }
         // Only rename changes an existing title. The view may have captured
         // its save before a rename completed, even after reopening the chat.
-        c.title = load_locked(dir, &c.id)?.title;
+        c.title = current.title;
+        c.created_at = current.created_at;
     }
     write_locked(dir, &c)
 }
@@ -337,13 +361,16 @@ pub fn rename(dir: &Path, id: &str, title: &str) -> Result<(), String> {
 }
 
 pub fn delete(dir: &Path, id: &str) -> Result<(), String> {
-    let _guard = STORE.lock().map_err(|_| "conversation store unavailable")?;
+    let mut deleted = STORE.lock().map_err(|_| "conversation store unavailable")?;
     let file = path(dir, id).ok_or("bad conversation id")?;
-    match std::fs::remove_file(file) {
+    match std::fs::remove_file(&file) {
         Ok(()) => {},
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
         Err(e) => return Err(e.to_string()),
     }
+    // Also fence a pending first save when there was no transcript to remove.
+    // A failed removal must not poison an existing conversation's later saves.
+    deleted.insert(file);
     let cached = summary_path(dir, id);
     let _ = std::fs::remove_file(&cached);
     let _ = std::fs::remove_file(cached.with_extension("tmp"));
@@ -375,8 +402,14 @@ mod tests {
 
     thread_local! {
         static TRANSCRIPT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static BEFORE_SAVE_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
         static AFTER_TRANSCRIPT_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
         static AFTER_TRANSCRIPT_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn before_save_lock() {
+        let callback = BEFORE_SAVE_LOCK.with(|callback| callback.borrow_mut().take());
+        if let Some(callback) = callback { callback(); }
     }
 
     pub(super) fn transcript_read() {
@@ -817,6 +850,156 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // Start a valid save, then hold it immediately before STORE acquisition.
+    // This reproduces command scheduling inversion without sleeps or relying
+    // on the mutex implementation to give either writer priority.
+    fn delayed_save(dir: &Path, c: &Conversation) -> (
+        std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Result<(), String>>,
+    ) {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let dir = dir.to_path_buf();
+        let c = c.clone();
+        let writer = std::thread::spawn(move || {
+            BEFORE_SAVE_LOCK.with(|callback| {
+                *callback.borrow_mut() = Some(Box::new(move || {
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }));
+            });
+            save(&dir, &c)
+        });
+        ready_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        (release_tx, writer)
+    }
+
+    #[test]
+    fn a_delayed_older_save_cannot_undo_newer_messages_or_a_rename() {
+        let dir = scratch("snapshot-order");
+        let initial = conv("c-0000000000000020", 10);
+        save(&dir, &initial).unwrap();
+        let mut older = initial.clone();
+        older.updated_at = 20;
+        older.messages.push(msg("user", "An older extra turn"));
+        older.messages.push(msg("assistant", "Old answer"));
+        let (release, writer) = delayed_save(&dir, &older);
+
+        // A newer regeneration may be shorter: length cannot order revisions.
+        let mut latest = initial.clone();
+        latest.updated_at = 30;
+        latest.messages[1].content = "Newest regenerated answer".into();
+        save(&dir, &latest).unwrap();
+        rename(&dir, &latest.id, "Latest explicit title").unwrap();
+        latest.title = "Latest explicit title".into();
+        let cache = std::fs::read(summary_path(&dir, &latest.id)).unwrap();
+        release.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+
+        assert_eq!(load(&dir, &latest.id).unwrap(), latest);
+        assert_eq!(std::fs::read(summary_path(&dir, &latest.id)).unwrap(), cache,
+            "ignored snapshots must not rewrite current summary metadata");
+        reset_reads();
+        assert_eq!(list(&dir, None).unwrap(), [summary(&latest)]);
+        assert_eq!(read_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn equal_timestamps_allow_only_exact_retries_and_prefix_progress() {
+        let dir = scratch("snapshot-ties");
+        let initial = conv("c-0000000000000021", 10);
+        save(&dir, &initial).unwrap();
+        rename(&dir, &initial.id, "Keep this title").unwrap();
+        let mut appended = initial.clone();
+        appended.messages.push(msg("user", "A same-millisecond turn"));
+        save(&dir, &appended).unwrap();
+        appended.title = "Keep this title".into();
+        assert_eq!(load(&dir, &initial.id).unwrap(), appended);
+        let cache = std::fs::read(summary_path(&dir, &initial.id)).unwrap();
+
+        save(&dir, &initial).unwrap(); // A delayed strict prefix cannot truncate.
+        save(&dir, &appended).unwrap(); // An exact retry is an idempotent no-op.
+        let mut conflict = appended.clone();
+        conflict.messages[1].content = "Different same-revision answer".into();
+        assert!(save(&dir, &conflict).is_err(), "equal-length rewrites are ambiguous");
+        conflict.messages.push(msg("assistant", "A longer conflicting transcript"));
+        assert!(save(&dir, &conflict).is_err(), "length alone cannot prove progress");
+        assert_eq!(load(&dir, &initial.id).unwrap(), appended);
+        assert_eq!(std::fs::read(summary_path(&dir, &initial.id)).unwrap(), cache);
+
+        conflict.updated_at += 1;
+        conflict.created_at = 999;
+        save(&dir, &conflict).unwrap();
+        conflict.created_at = initial.created_at;
+        assert_eq!(load(&dir, &initial.id).unwrap(), conflict,
+            "a distinct revision permits replacement and preserves creation time");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deletion_fences_pending_saves_even_before_the_first_transcript_exists() {
+        for first_save in [false, true] {
+            let dir = scratch(if first_save { "delete-before-first-save" } else { "delete-before-update" });
+            let mut pending = conv("c-0000000000000022", 10);
+            if !first_save { save(&dir, &pending).unwrap(); }
+            pending.updated_at = 20;
+            pending.messages.push(msg("user", "Captured before deletion"));
+            let (release, writer) = delayed_save(&dir, &pending);
+            delete(&dir, &pending.id).unwrap();
+            delete(&dir, &pending.id).unwrap(); // Idempotent deletion keeps its fence.
+            release.send(()).unwrap();
+            assert!(writer.join().unwrap().is_err(), "a pending save must not recreate a deleted id");
+            pending.updated_at = u64::MAX;
+            assert!(save(&dir, &pending).is_err(), "a newer timestamp cannot bypass deletion");
+            assert!(!path(&dir, &pending.id).unwrap().exists());
+            assert!(!summary_path(&dir, &pending.id).exists());
+            assert!(list(&dir, None).unwrap().is_empty());
+
+            // The tombstone names a directory and id, not all conversations.
+            let other_dir = dir.join("another-store");
+            save(&other_dir, &pending).unwrap();
+            assert_eq!(load(&other_dir, &pending.id).unwrap(), pending);
+            pending.id = "c-0000000000000023".into();
+            save(&dir, &pending).unwrap();
+            assert_eq!(list(&dir, None).unwrap(), [summary(&pending)]);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_failed_delete_does_not_fence_later_saves() {
+        let dir = scratch("delete-failure-fence");
+        let mut c = conv("c-0000000000000024", 10);
+        let file = path(&dir, &c.id).unwrap();
+        std::fs::create_dir_all(&file).unwrap();
+        assert!(delete(&dir, &c.id).is_err());
+        std::fs::remove_dir(&file).unwrap();
+        save(&dir, &c).unwrap();
+        c.updated_at = 20;
+        c.messages[1].content = "Saved after a failed deletion".into();
+        save(&dir, &c).unwrap();
+        assert_eq!(load(&dir, &c.id).unwrap(), c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snapshot_ordering_uses_external_transcript_revisions_instead_of_cached_summaries() {
+        let dir = scratch("snapshot-external");
+        let initial = conv("c-0000000000000025", 10);
+        save(&dir, &initial).unwrap();
+        let mut external = initial.clone();
+        external.title = "Externally edited".into();
+        external.updated_at = 30;
+        external.messages[1].content = "An external answer".into();
+        std::fs::write(path(&dir, &external.id).unwrap(), serde_json::to_vec(&external).unwrap()).unwrap();
+        let mut delayed = initial;
+        delayed.updated_at = 20;
+        save(&dir, &delayed).unwrap();
+        assert_eq!(load(&dir, &external.id).unwrap(), external);
+        assert_eq!(list(&dir, None).unwrap(), [summary(&external)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn stale_message_saves_keep_the_latest_explicit_title() {
         let dir = scratch("title");
@@ -963,8 +1146,10 @@ mod tests {
         assert!(list(&dir, None).unwrap().is_empty());
 
         delete(&dir, &saved.id).unwrap();
+        assert!(save(&dir, &latest).is_err(), "deletion fences even valid pending snapshots");
+        latest.id = "c-0000000000000007".into();
         save(&dir, &latest).unwrap();
-        assert_eq!(load(&dir, &saved.id).unwrap(), latest);
+        assert_eq!(load(&dir, &latest.id).unwrap(), latest);
         assert_eq!(list(&dir, None).unwrap()[0].count, latest.messages.len());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -5,7 +5,7 @@
   "actionKinds": [
     { "kind": "chat-draft", "available": true, "idempotent": true },
     { "kind": "pill-set", "available": true, "idempotent": true },
-    { "kind": "insert-text", "available": false, "idempotent": false },
+    { "kind": "insert-text", "available": true, "idempotent": false },
     { "kind": "launch-app", "available": true, "idempotent": false },
     { "kind": "ask-region", "available": false, "idempotent": false },
     { "kind": "switch-tab", "available": true, "idempotent": false }
@@ -61,7 +61,7 @@
     },
     {
       "name": "a reserved kind is refused in this version",
-      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-8", "kind": "insert-text", "args": { "text": "hi", "targetWindow": 1, "targetPid": 2 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-8", "kind": "ask-region", "args": { "question": "what is this?", "monitor": "DISPLAY1", "x": 0, "y": 0, "width": 10, "height": 10 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "unavailable"
     },
     {
@@ -112,6 +112,21 @@
     {
       "name": "args of the wrong type are refused",
       "action": { "v": 3, "domain": "desktop-assistant", "id": "act-9", "kind": "chat-draft", "args": { "text": 42 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
+    },
+    {
+      "name": "dictating into another app's field reaches outside Coucou: the user confirms it",
+      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-20", "kind": "insert-text", "args": { "text": "hi", "targetWindow": 1, "targetPid": 2 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "ask"
+    },
+    {
+      "name": "an insertion without a target window is refused",
+      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-21", "kind": "insert-text", "args": { "text": "hi", "targetWindow": 0, "targetPid": 2 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
+    },
+    {
+      "name": "an insertion may not ask to submit",
+      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-22", "kind": "insert-text", "args": { "text": "hi", "targetWindow": 1, "targetPid": 2, "pressEnter": true }, "intentId": "cap-1", "expiresAtMs": 1060000 },
       "decision": "deny", "error": "invalid-args"
     }
   ],

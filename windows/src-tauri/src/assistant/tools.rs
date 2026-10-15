@@ -249,18 +249,18 @@ async fn switch_tab(app: &AppHandle, args: SwitchArgs, intent: &str) -> String {
         return result("The user declined: the tab was not switched.");
     };
     #[cfg(windows)]
-    let done = tauri::async_runtime::spawn_blocking(move || super::browser::switch(a.tab_id, a.title)).await.map_err(|e| e.to_string());
+    let done = tauri::async_runtime::spawn_blocking(move || super::browser::switch(a.window, a.tab_id, a.title)).await.map_err(|e| e.to_string());
     #[cfg(not(windows))]
     let done: Result<Result<bool, String>, String> = { let _ = a; Err("only on Windows".into()) };
     let receipt = match done {
-        Ok(Ok(true)) => ActionReceipt::succeeded(&action_id, "uia:tab-selected").unwrap_or_else(|| ActionReceipt::unknown(&action_id)),
+        Ok(Ok(true)) => ActionReceipt::succeeded(&action_id, "uia:tab-selected-and-foreground").unwrap_or_else(|| ActionReceipt::unknown(&action_id)),
         Ok(Ok(false)) => ActionReceipt::unknown(&action_id),
         _ => ActionReceipt::failed(&action_id, ErrorCode::Failed),
     };
     log(format!("assistant action {action_id} {:?}", receipt.outcome()));
     match receipt.outcome() {
         Outcome::Succeeded => result(format!("Switched to the tab \"{}\".", tab.title)),
-        Outcome::Unknown => result("The tab was selected but couldn't be confirmed."),
+        Outcome::Unknown => result("The browser switch couldn't be confirmed."),
         _ => result("The tab could not be switched (it may have moved or closed)."),
     }
 }

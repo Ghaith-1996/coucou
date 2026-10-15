@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::contracts::*;
+use super::dictation::WritePermit;
 use super::policy;
 
 /// Longest capture; it stops by itself there.
@@ -120,6 +121,8 @@ enum Phase {
     Listening { id: String, signal: Arc<AtomicU8> },
     Processing { id: String, abort: Arc<AtomicBool> },
     Preview { id: String, transcript: Transcript, since: Instant },
+    /// Owns the preview while one confirmed dictation write is outstanding.
+    Inserting { id: String, transcript: Transcript, since: Instant, action_id: String, permit: WritePermit },
     Error { id: String },
 }
 
@@ -127,7 +130,8 @@ impl Phase {
     fn id(&self) -> Option<&str> {
         match self {
             Phase::Idle => None,
-            Phase::Listening { id, .. } | Phase::Processing { id, .. } | Phase::Preview { id, .. } | Phase::Error { id } => {
+            Phase::Listening { id, .. } | Phase::Processing { id, .. } | Phase::Preview { id, .. }
+            | Phase::Inserting { id, .. } | Phase::Error { id } => {
                 Some(id)
             }
         }
@@ -201,6 +205,9 @@ impl Voice {
             Phase::Processing { .. } => None,
             // Idle, or a transcript / error on screen: a fresh capture replaces it.
             _ => {
+                if let Phase::Inserting { permit, .. } = &*phase {
+                    permit.cancelled.store(true, Ordering::SeqCst);
+                }
                 *self.0.proposal.lock().unwrap() = None;
                 let id = policy::new_id("cap");
                 let signal = Arc::new(AtomicU8::new(RUN));
@@ -220,6 +227,16 @@ impl Voice {
                 Some(id)
             }
         }
+    }
+
+    /// A new capture replaces its preview. Retire it before awaiting the
+    /// field probe, which may itself be queued behind a pending UIA write.
+    pub fn cancel_preview(&self) {
+        let id = match &*self.0.phase.lock().unwrap() {
+            Phase::Preview { id, .. } | Phase::Inserting { id, .. } => Some(id.clone()),
+            _ => None,
+        };
+        if let Some(id) = id { self.cancel(&id); }
     }
 
     /// The Stop button: like a second press, for this capture only.
@@ -249,6 +266,9 @@ impl Voice {
             // The transcription stops too, instead of finishing for nothing.
             abort.store(true, Ordering::SeqCst);
         }
+        if let Phase::Inserting { permit, .. } = &*phase {
+            permit.cancelled.store(true, Ordering::SeqCst);
+        }
         *phase = Phase::Idle;
         drop(phase);
         (self.0.log)("voice: cancelled".into());
@@ -276,20 +296,23 @@ impl Voice {
         Ok(self.decided(capture_id, kind, args, "pill set")?.id)
     }
 
-    /// An action that needs the user's confirmation (`launch-app`, with the
-    /// app the card names), for this capture's transcript. The policy must
-    /// say `ask`; Rust keeps the action and returns its grant, which the
-    /// card hands back on the user's click (`confirm`). A newer proposal
-    /// replaces it. The transcript stays on the card meanwhile.
+    /// An action that needs the user's confirmation (`launch-app` with the
+    /// app the card names, `insert-text` with the field it was dictated
+    /// for), for this capture's transcript. The policy must say `ask`; Rust
+    /// keeps the action and returns its grant, which the card hands back on
+    /// the user's click (`confirm`). A newer proposal replaces it. The
+    /// transcript stays on the card meanwhile.
     pub fn propose(&self, capture_id: &str, kind: ActionKind, args: serde_json::Value) -> Result<policy::Grant, ErrorCode> {
-        if kind != ActionKind::LaunchApp {
-            return Err(ErrorCode::Unavailable);
-        }
+        let what = match kind {
+            ActionKind::LaunchApp => "launch app",
+            ActionKind::InsertText => "insert text",
+            _ => return Err(ErrorCode::Unavailable),
+        };
         let phase = self.0.phase.lock().unwrap();
-        match &*phase {
-            Phase::Preview { id, since, .. } if id == capture_id && since.elapsed() <= PREVIEW_TTL => {}
-            _ => return Err(ErrorCode::Expired),
-        }
+        let remaining = match &*phase {
+            Phase::Preview { id, since, .. } if id == capture_id => PREVIEW_TTL.checked_sub(since.elapsed()),
+            _ => None,
+        }.ok_or(ErrorCode::Expired)?;
         let now = policy::now_ms();
         let action = AssistantAction {
             v: CONTRACT_VERSION,
@@ -298,19 +321,19 @@ impl Voice {
             kind,
             args,
             intent_id: capture_id.to_string(),
-            expires_at_ms: now + PROPOSAL_TTL_MS,
+            expires_at_ms: now + (remaining.as_millis() as u64).min(PROPOSAL_TTL_MS),
         };
         let Some(grant) = policy::grant_for(&action, now) else {
             let code = policy::decide(&action, now).error.unwrap_or(ErrorCode::InvalidArgs);
             drop(phase);
-            (self.0.log)(format!("voice: launch app refused ({})", code_name(code)));
+            (self.0.log)(format!("voice: {what} refused ({})", code_name(code)));
             return Err(code);
         };
         // Publish before releasing capture ownership, so a newer capture
         // cannot be replaced by this request after its preview check.
         *self.0.proposal.lock().unwrap() = Some(Proposal { capture: capture_id.to_string(), action });
         drop(phase);
-        (self.0.log)(format!("voice: launch app {} proposed", grant.action_id));
+        (self.0.log)(format!("voice: {what} {} proposed", grant.action_id));
         Ok(grant)
     }
 
@@ -321,33 +344,103 @@ impl Voice {
     /// consume a newer proposal. Returns the action id and its checked
     /// arguments, for the caller to run.
     pub fn confirm(&self, capture_id: &str, grant: &policy::Grant) -> Result<(String, ValidArgs), ErrorCode> {
-        let proposal = {
-            let mut proposal = self.0.proposal.lock().unwrap();
-            // A delayed click from a replaced card must leave the current
-            // card's proposal intact. Check and take under the same lock.
-            if proposal.as_ref().is_some_and(|p| p.capture != capture_id) {
-                return Err(ErrorCode::GrantMismatch);
-            }
-            proposal.take()
-        };
-        let result = match proposal {
-            Some(p) if p.capture == capture_id && p.action.id == grant.action_id => {
+        let mut phase = self.0.phase.lock().unwrap();
+        let mut proposal = self.0.proposal.lock().unwrap();
+        // Keep the phase and proposal under the same ownership check. In
+        // particular, another IPC cannot consume an in-flight insertion.
+        if proposal.as_ref().is_some_and(|p| p.capture != capture_id) {
+            return Err(ErrorCode::GrantMismatch);
+        }
+        let Phase::Preview { id, since, .. } = &*phase else { return Err(ErrorCode::Expired) };
+        if id != capture_id { return Err(ErrorCode::Expired); }
+        let expired = since.elapsed() > PREVIEW_TTL;
+        let result = match proposal.take() {
+            Some(p) if p.action.id == grant.action_id && !expired => {
                 policy::check_grant(grant, &p.action, policy::now_ms()).map(|args| (p.action.id, args))
             }
-            Some(_) => Err(ErrorCode::GrantMismatch),
-            None => Err(ErrorCode::Expired),
+            Some(_) if !expired => Err(ErrorCode::GrantMismatch),
+            _ => Err(ErrorCode::Expired),
         };
-        let preview = self.take_preview(capture_id);
-        match (result, preview) {
-            (Ok(done), Ok(_)) => {
-                (self.0.log)(format!("voice: {} confirmed", done.0));
-                Ok(done)
-            }
-            (Err(code), _) | (_, Err(code)) => {
-                (self.0.log)(format!("voice: confirmation refused ({})", code_name(code)));
-                Err(code)
-            }
+        *phase = Phase::Idle;
+        drop(proposal);
+        drop(phase);
+        self.emit(VoiceEvent::new(capture_id, VoiceState::Idle));
+        match &result {
+            Ok((id, _)) => (self.0.log)(format!("voice: {id} confirmed")),
+            Err(code) => (self.0.log)(format!("voice: confirmation refused ({})", code_name(*code))),
         }
+        result
+    }
+
+    /// Reserves exactly this proposal for one write. Unlike a launch, a
+    /// definitive refusal before SetValue can return the unchanged preview.
+    pub fn begin_insert(&self, capture_id: &str, grant: &policy::Grant) -> Result<(String, InsertTextArgs, WritePermit), ErrorCode> {
+        let mut phase = self.0.phase.lock().unwrap();
+        let Phase::Preview { id, transcript, since } = &*phase else { return Err(ErrorCode::Expired) };
+        if id != capture_id || since.elapsed() >= PREVIEW_TTL { return Err(ErrorCode::Expired); }
+        if transcript.simulated { return Err(ErrorCode::Unavailable); }
+        let proposal = self.0.proposal.lock().unwrap();
+        let p = proposal.as_ref().ok_or(ErrorCode::Expired)?;
+        if p.capture != capture_id || p.action.id != grant.action_id { return Err(ErrorCode::GrantMismatch); }
+        let now = policy::now_ms();
+        let ValidArgs::InsertText(args) = policy::check_grant(grant, &p.action, now)? else {
+            return Err(ErrorCode::InvalidArgs);
+        };
+        let permit = WritePermit {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            expires: (*since + PREVIEW_TTL).min(Instant::now() + Duration::from_millis(grant.expires_at_ms.saturating_sub(now))),
+        };
+        let action_id = p.action.id.clone();
+        *phase = Phase::Inserting {
+            id: capture_id.into(), transcript: transcript.clone(), since: *since,
+            action_id: action_id.clone(), permit: permit.clone(),
+        };
+        Ok((action_id, args, permit))
+    }
+
+    /// Only a definitive pre-write refusal keeps the original transcript,
+    /// grant and expiry. Cancellation or a newer capture can never revive it.
+    pub fn finish_insert(&self, capture_id: &str, action_id: &str, refused: bool) -> Result<(), ErrorCode> {
+        let mut phase = self.0.phase.lock().unwrap();
+        let Phase::Inserting { id, transcript, since, action_id: pending, permit } = &*phase else {
+            return Err(ErrorCode::Cancelled);
+        };
+        if id != capture_id || pending != action_id { return Err(ErrorCode::Cancelled); }
+        let expired = Instant::now() >= permit.expires;
+        permit.cancelled.store(true, Ordering::SeqCst);
+        if refused && !expired {
+            *phase = Phase::Preview { id: id.clone(), transcript: transcript.clone(), since: *since };
+            return Ok(());
+        }
+        *self.0.proposal.lock().unwrap() = None;
+        *phase = Phase::Idle;
+        drop(phase);
+        self.emit(VoiceEvent::new(capture_id, VoiceState::Idle));
+        if refused && expired { Err(ErrorCode::Expired) } else { Ok(()) }
+    }
+
+    /// The words and original deadline of this capture's preview, left there.
+    /// Both are read under the same capture ownership check. Only real speech:
+    /// a simulated transcript is never offered to another app.
+    pub fn insertion_preview(&self, capture_id: &str) -> Result<(String, Instant), ErrorCode> {
+        match &*self.0.phase.lock().unwrap() {
+            Phase::Preview { id, transcript, since } if id == capture_id && since.elapsed() < PREVIEW_TTL => {
+                if transcript.simulated {
+                    Err(ErrorCode::Unavailable)
+                } else {
+                    Ok((transcript.text.clone(), *since + PREVIEW_TTL))
+                }
+            }
+            _ => Err(ErrorCode::Expired),
+        }
+    }
+
+    /// Text the user confirmed for another app that could not be put there:
+    /// it becomes a `chat-draft` instead, decided by the policy like any
+    /// other, so the words are not lost. The transcript is already used.
+    pub fn fallback_draft(&self, capture_id: &str, text: String) -> Result<ChatDraft, ErrorCode> {
+        let action = self.decided(capture_id, ActionKind::ChatDraft, serde_json::json!({ "text": text }), "chat draft")?;
+        Ok(ChatDraft { action_id: action.id, text })
     }
 
     /// Audio mode: the transcript, taken off the card, to be sent to the
@@ -449,6 +542,14 @@ impl Voice {
         let mut phase = self.0.phase.lock().unwrap();
         match &*phase {
             Phase::Listening { signal, .. } => signal.store(CANCEL, Ordering::SeqCst),
+            Phase::Inserting { id, permit, .. } => {
+                permit.cancelled.store(true, Ordering::SeqCst);
+                let id = id.clone();
+                *self.0.proposal.lock().unwrap() = None;
+                *phase = Phase::Idle;
+                drop(phase);
+                self.emit(VoiceEvent::new(&id, VoiceState::Idle));
+            }
             Phase::Processing { id, abort } => {
                 abort.store(true, Ordering::SeqCst);
                 let id = id.clone();
@@ -516,10 +617,6 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>, hands_free:
         if let Err(error) = capture.read(&mut samples) {
             break Err(error);
         }
-        if samples.len() >= max_samples || started.elapsed() >= MAX_CAPTURE {
-            samples.truncate(max_samples);
-            break Ok(true);
-        }
         if let Some(endpoint) = endpoint.as_mut() {
             let end = endpoint.feed(&samples[heard_from..]);
             heard_from = samples.len();
@@ -528,6 +625,12 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>, hands_free:
                 Some(Heard::Nothing) => break Err(VoiceError::Silence),
                 None => {}
             }
+        }
+        // Endpoint evidence takes priority even if a delayed device read
+        // delivers the capture limit's worth of background noise at once.
+        if samples.len() >= max_samples || started.elapsed() >= MAX_CAPTURE {
+            samples.truncate(max_samples);
+            break Ok(true);
         }
         if last_level.elapsed() >= LEVEL_EVERY {
             let level = (rms(&samples[level_from..]) * 8.0).min(1.0) as f64;
@@ -627,9 +730,17 @@ pub const NOTHING_FOR: Duration = Duration::from_secs(12);
 /// SPEECH_RMS.
 pub const SPEECH_OVER_NOISE: f32 = 3.0;
 pub const SPEECH_RMS: f32 = 0.012;
-/// The room is never taken for louder than this, so a bad estimate can't
-/// hide speech.
-pub const NOISE_CAP: f32 = 0.03;
+/// A stationary first second is room noise, even when it is above SPEECH_RMS.
+/// Short initial utterances remain tentative until their pause; changing speech
+/// envelopes leave calibration immediately instead of teaching speech as noise.
+pub const STARTUP_NOISE_FOR: Duration = Duration::from_secs(1);
+const STATIONARY_RATIO: f32 = 1.5;
+
+struct StartupNoise {
+    low: f32,
+    high: f32,
+    ms: u64,
+}
 
 /// End-of-speech detection for audio mode, on 50 ms windows: the room's
 /// noise is learned from the quiet windows, speech is clearly above it.
@@ -637,6 +748,7 @@ pub struct Endpoint {
     window: usize,
     pending: Vec<f32>,
     noise: Option<f32>,
+    startup: Option<StartupNoise>,
     speech_ms: u64,
     quiet_ms: u64,
     total_ms: u64,
@@ -644,7 +756,11 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn new(rate: u32) -> Self {
-        Self { window: (rate as usize / 20).max(1), pending: Vec::new(), noise: None, speech_ms: 0, quiet_ms: 0, total_ms: 0 }
+        Self {
+            window: (rate as usize / 20).max(1), pending: Vec::new(), noise: None,
+            startup: Some(StartupNoise { low: f32::INFINITY, high: 0.0, ms: 0 }),
+            speech_ms: 0, quiet_ms: 0, total_ms: 0,
+        }
     }
 
     /// Takes the samples that arrived since the last call.
@@ -655,13 +771,32 @@ impl Endpoint {
             let level = rms(&self.pending[at..at + self.window]);
             at += self.window;
             self.total_ms += 50;
-            // Before the room is known, the window itself, capped: speech at
-            // the very start still counts, a noisy room still doesn't.
-            let floor = self.noise.unwrap_or(level).min(NOISE_CAP);
+            if let Some(startup) = self.startup.as_mut() {
+                startup.low = startup.low.min(level);
+                startup.high = startup.high.max(level);
+                startup.ms += 50;
+                if startup.high > startup.low.max(SILENCE_RMS) * STATIONARY_RATIO {
+                    // Speech-like envelope changes: preserve the first frames.
+                    self.startup = None;
+                } else if startup.ms >= STARTUP_NOISE_FOR.as_millis() as u64 {
+                    // A fan/hum must not commit speech merely by being loud.
+                    self.noise = Some((startup.low + startup.high) / 2.0);
+                    self.speech_ms = 0;
+                    self.quiet_ms = 0;
+                    self.startup = None;
+                }
+            }
+            // Until calibration has evidence, initial words are tentative
+            // speech. A real, measured noise floor is not capped: loud steady
+            // noise must remain noise rather than exceed an artificial ceiling.
+            let floor = self.noise.unwrap_or(SILENCE_RMS);
             if level >= (floor * SPEECH_OVER_NOISE).max(SPEECH_RMS) {
                 self.speech_ms += 50;
                 self.quiet_ms = 0;
             } else {
+                // A quiet frame completes bootstrap without dropping preceding
+                // tentative speech, so a short first utterance is still heard.
+                self.startup = None;
                 // The room, slowly: a quiet window moves the estimate a little.
                 self.noise = Some(match self.noise {
                     None => level,
@@ -669,9 +804,14 @@ impl Endpoint {
                 });
                 self.quiet_ms += 50;
             }
-            if self.speech_ms >= MIN_SPEECH.as_millis() as u64 && self.quiet_ms >= PAUSE.as_millis() as u64 {
-                self.pending.clear();
-                return Some(Heard::Spoke);
+            if self.quiet_ms >= PAUSE.as_millis() as u64 {
+                if self.speech_ms >= MIN_SPEECH.as_millis() as u64 {
+                    self.pending.clear();
+                    return Some(Heard::Spoke);
+                }
+                // A cough or click is over. Separate noises must not add up
+                // to a turn across pauses that would have ended real speech.
+                self.speech_ms = 0;
             }
             if self.speech_ms < MIN_SPEECH.as_millis() as u64 && self.total_ms >= NOTHING_FOR.as_millis() as u64 {
                 self.pending.clear();

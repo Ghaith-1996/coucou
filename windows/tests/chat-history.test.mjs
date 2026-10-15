@@ -2054,7 +2054,11 @@ for (const alreadyListening of [false, true]) {
     const pending = Promise.withResolvers();
     t.after(async () => { pending.resolve({ text: "Finished" }); await flush(); });
     answers.chat_send = () => pending.promise;
-    await send("A typed question");
+    if (alreadyListening) {
+      answers.assistant_voice_converse = () => "A spoken question";
+      emit("assistant-voice", { v: (await import("../src/assistant/contracts.ts")).CONTRACT_VERSION, captureId: "audio-during-answer", state: "preview", transcript: "A spoken question" });
+      await flush();
+    } else await send("A typed question");
     assert.equal($(".audio-btn").disabled, !alreadyListening);
     $(".audio-btn").fire("click");
     await flush();

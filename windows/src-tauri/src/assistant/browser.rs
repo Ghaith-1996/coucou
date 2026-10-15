@@ -69,6 +69,25 @@ pub fn resolve<'a>(tabs: &'a [Tab], id: Option<&str>, position: Option<usize>, q
     found.next().is_none().then_some(first)
 }
 
+/// Resolve the exact snapshot the user confirmed, before selecting anything.
+/// Window-order ids can be reused by a different browser window after a move.
+#[cfg(any(windows, test))]
+fn confirmed_tab<'a, T>(tabs: &'a [(Tab, T)], window: u64, id: &str, title: &str) -> Result<&'a (Tab, T), String> {
+    let Some(found) = tabs.iter().find(|(tab, _)| tab.id == id) else {
+        return Err("the tab is gone".into());
+    };
+    if found.0.window != window || found.0.title != title {
+        return Err("the tabs moved".into());
+    }
+    Ok(found)
+}
+
+/// Selecting a tab in a background window does not complete a switch.
+#[cfg(any(windows, test))]
+fn switch_succeeded(selected: bool, window: u64, foreground: u64) -> bool {
+    selected && window != 0 && window == foreground
+}
+
 #[cfg(windows)]
 mod uia {
     use super::*;
@@ -81,7 +100,7 @@ mod uia {
         UIA_DocumentControlTypeId, UIA_SelectionItemPatternId, UIA_TabControlTypeId, UIA_TabItemControlTypeId,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow, GW_OWNER,
+        EnumWindows, GetForegroundWindow, GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow, GW_OWNER,
         SW_RESTORE,
     };
     use windows::core::PWSTR;
@@ -203,17 +222,12 @@ mod uia {
         with_uia(|ua| Ok(read(ua).into_iter().map(|(t, _)| t).collect()))
     }
 
-    /// Selects the tab `id` if it still has `title`, and brings its window
-    /// forward. Ok(true) when the tab reads back as selected.
-    pub fn switch(id: String, title: String) -> Result<bool, String> {
+    /// Selects the confirmed tab only while its window, id and title match.
+    /// Ok(true) requires both selection and the confirmed window in front.
+    pub fn switch(window: u64, id: String, title: String) -> Result<bool, String> {
         with_uia(move |ua| {
             let all = read(ua);
-            let Some((tab, el)) = all.iter().find(|(t, _)| t.id == id) else {
-                return Err("the tab is gone".into());
-            };
-            if tab.title != title {
-                return Err("the tabs moved".into());
-            }
+            let (tab, el) = confirmed_tab(&all, window, &id, &title)?;
             let pattern: IUIAutomationSelectionItemPattern = unsafe { el.GetCurrentPatternAs(UIA_SelectionItemPatternId) }
                 .map_err(|_| "this tab can't be selected".to_string())?;
             unsafe { pattern.Select() }.map_err(|e| e.message().to_string())?;
@@ -225,7 +239,9 @@ mod uia {
                 let _ = SetForegroundWindow(hwnd);
             }
             std::thread::sleep(std::time::Duration::from_millis(150));
-            Ok(selected(el))
+            let is_selected = selected(el);
+            let foreground = unsafe { GetForegroundWindow() }.0 as usize as u64;
+            Ok(switch_succeeded(is_selected, tab.window, foreground))
         })
     }
 }
@@ -273,6 +289,30 @@ mod tests {
         assert!(resolve(&tabs, Some("9.9"), None, None).is_none());
         assert!(resolve(&tabs, None, Some(7), None).is_none());
         assert!(resolve(&tabs, None, None, Some("  ")).is_none());
+    }
+
+    #[test]
+    fn a_confirmed_tab_cannot_move_to_a_different_window_with_the_same_title() {
+        let reordered = vec![(tab("1.1", 20, 1, "Inbox"), ()), (tab("2.1", 10, 1, "Inbox"), ())];
+        assert_eq!(confirmed_tab(&reordered, 10, "1.1", "Inbox"), Err("the tabs moved".into()));
+        assert_eq!(confirmed_tab(&reordered, 20, "1.1", "Inbox").unwrap().0.window, 20);
+    }
+
+    #[test]
+    fn a_confirmed_tab_still_requires_its_original_id_and_title() {
+        let tabs = vec![(tab("1.1", 10, 1, "Inbox"), ())];
+        assert!(confirmed_tab(&tabs, 10, "1.1", "Inbox").is_ok());
+        assert_eq!(confirmed_tab(&tabs, 10, "1.2", "Inbox"), Err("the tab is gone".into()));
+        assert_eq!(confirmed_tab(&tabs, 10, "1.1", "New title"), Err("the tabs moved".into()));
+    }
+
+    #[test]
+    fn switching_requires_the_selected_tab_and_its_window_in_front() {
+        assert!(switch_succeeded(true, 10, 10));
+        assert!(!switch_succeeded(true, 10, 20), "foreground activation was refused");
+        assert!(!switch_succeeded(true, 10, 0), "there is no foreground window");
+        assert!(!switch_succeeded(false, 10, 10), "foreground alone is not tab selection");
+        assert!(!switch_succeeded(true, 0, 0), "a missing window is not success");
     }
 
     /// Opt-in: counts the tabs of the browsers open now (titles not printed).

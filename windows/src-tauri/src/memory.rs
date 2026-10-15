@@ -190,9 +190,25 @@ fn save_to(file: &Path, memory: &Memory) -> Result<(), String> {
     let sealed = seal(&plain)?;
     let dir = file.parent().ok_or("no folder")?;
     crate::platform::ensure_private_dir(dir).map_err(|e| e.to_string())?;
+    replace_sealed(file, &sealed, |output, bytes| output.write_all(bytes), |output| output.sync_all())
+        .map_err(|e| e.to_string())
+}
+
+/// The previous store remains intact until the encrypted replacement is fully
+/// written and synced. Close its handle before rename or cleanup on Windows.
+fn replace_sealed(
+    file: &Path,
+    sealed: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+    sync: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let tmp = file.with_extension("bin.tmp");
-    std::fs::write(&tmp, sealed).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, file).map_err(|e| e.to_string())
+    let mut output = std::fs::File::create(&tmp)?;
+    let result = write(&mut output, sealed).and_then(|()| sync(&output));
+    drop(output);
+    let result = result.and_then(|()| std::fs::rename(&tmp, file));
+    if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+    result
 }
 
 /// Runs `f` on the memory, loading it first, and saves it when `f` changed it.
@@ -406,6 +422,78 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("coucou-memory-{test}-{}", crate::assistant::policy::new_id("test")));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn failed_encrypted_writes_or_syncs_preserve_the_previous_store() {
+        for fail_write in [true, false] {
+            for has_previous in [true, false] {
+                let dir = temp_dir_for("durable-save-failure");
+                let file = dir.join("memory.bin");
+                if has_previous { std::fs::write(&file, b"previous encrypted bytes").unwrap(); }
+                let steps = std::cell::RefCell::new(Vec::new());
+                let saved = replace_sealed(&file, b"new encrypted bytes", |output, bytes| {
+                    steps.borrow_mut().push("write");
+                    if fail_write {
+                        output.write_all(&bytes[..3])?;
+                        Err(std::io::Error::new(ErrorKind::Other, "injected write failure"))
+                    } else {
+                        output.write_all(bytes)
+                    }
+                }, |_| {
+                    steps.borrow_mut().push("sync");
+                    Err(std::io::Error::new(ErrorKind::Other, "injected sync failure"))
+                });
+                let expected = if fail_write { "injected write failure" } else { "injected sync failure" };
+                assert_eq!(saved.unwrap_err().to_string(), expected);
+                assert_eq!(*steps.borrow(), if fail_write { vec!["write"] } else { vec!["write", "sync"] });
+                if has_previous {
+                    assert_eq!(std::fs::read(&file).unwrap(), b"previous encrypted bytes");
+                } else {
+                    assert!(!file.exists(), "a failed first save must not publish a store");
+                }
+                assert!(!file.with_extension("bin.tmp").exists(), "partial replacement is cleaned up");
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn encrypted_bytes_are_written_and_synced_before_replacing_the_store() {
+        let dir = temp_dir_for("durable-save-order");
+        let file = dir.join("memory.bin");
+        let tmp = file.with_extension("bin.tmp");
+        std::fs::write(&file, b"previous encrypted bytes").unwrap();
+        let steps = std::cell::RefCell::new(Vec::new());
+        replace_sealed(&file, b"new encrypted bytes", |output, bytes| {
+            assert_eq!(std::fs::read(&file).unwrap(), b"previous encrypted bytes");
+            steps.borrow_mut().push("write");
+            output.write_all(bytes)
+        }, |output| {
+            assert_eq!(*steps.borrow(), ["write"]);
+            assert_eq!(std::fs::read(&tmp).unwrap(), b"new encrypted bytes");
+            assert_eq!(std::fs::read(&file).unwrap(), b"previous encrypted bytes", "rename has not happened before sync");
+            output.sync_all()?;
+            steps.borrow_mut().push("sync");
+            Ok(())
+        }).unwrap();
+        assert_eq!(*steps.borrow(), ["write", "sync"]);
+        assert_eq!(std::fs::read(&file).unwrap(), b"new encrypted bytes");
+        assert!(!tmp.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_rename_keeps_the_destination_and_cleans_the_synced_temp() {
+        let dir = temp_dir_for("durable-rename-failure");
+        let file = dir.join("memory.bin");
+        std::fs::create_dir(&file).unwrap();
+        let held = file.join("keep");
+        std::fs::write(&held, b"untouched").unwrap();
+        assert!(replace_sealed(&file, b"new encrypted bytes", |output, bytes| output.write_all(bytes), |output| output.sync_all()).is_err());
+        assert_eq!(std::fs::read(held).unwrap(), b"untouched");
+        assert!(!file.with_extension("bin.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

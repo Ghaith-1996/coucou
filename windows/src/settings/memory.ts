@@ -38,7 +38,11 @@ export function memorySection(): HTMLElement {
   let loaded = false;
   let toggling = false;
   let adding = false;
-  let editing: string | null = null;
+  type Editor = { id: string; field: HTMLInputElement; save: HTMLButtonElement; el: HTMLElement };
+  let editing: Editor | null = null;
+  // A canceled editor can still own a native write. Its replacement may be
+  // typed into, but must wait before submitting another edit.
+  let saving: Editor | null = null;
   let confirmingClear = false;
 
   const fail = (err: unknown) => {
@@ -52,34 +56,54 @@ export function memorySection(): HTMLElement {
     draw();
   };
 
-  function row(item: MemoryItem): HTMLElement {
-    if (editing === item.id) {
-      const field = h("input", { type: "text", value: item.text, maxlength: "500", style: "flex:1" }) as HTMLInputElement;
-      const commit = () => {
-        Bridge.memoryEdit(item.id, field.value).then((next) => {
-          editing = null;
+  function beginEdit(item: MemoryItem) {
+    const field = h("input", { type: "text", value: item.text, maxlength: "500", style: "flex:1" });
+    const save = h("button", { text: STRINGS.save });
+    const cancelBtn = h("button", { text: STRINGS.cancel });
+    const editor: Editor = { id: item.id, field, save, el: h("div", { class: "row memory-item" }, field, save, cancelBtn) };
+    const cancel = () => {
+      if (editing !== editor) return;
+      editing = null;
+      draw();
+    };
+    const commit = async () => {
+      if (editing !== editor || saving) return;
+      const draft = field.value;
+      saving = editor;
+      save.disabled = true;
+      try {
+        const next = await Bridge.memoryEdit(editor.id, draft);
+        if (editing === editor) {
+          if (field.value === draft) editing = null;
           note.textContent = "";
-          apply(next);
-        }, fail);
-      };
-      field.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") commit();
-        if (e.key === "Escape") {
-          editing = null;
-          draw();
         }
-      });
-      requestAnimationFrame(() => field.focus());
-      return h("div", { class: "row memory-item" },
-        field,
-        h("button", { text: STRINGS.save, onclick: commit }),
-        h("button", { text: STRINGS.cancel, onclick: () => { editing = null; draw(); } }),
-      );
-    }
+        // The saved result still updates the list after Cancel, but never
+        // replaces a newer editor's field or clears its draft/status.
+        apply(next);
+      } catch (err) {
+        if (editing === editor) fail(err);
+      } finally {
+        saving = null;
+        if (editing) editing.save.disabled = false;
+      }
+    };
+    save.addEventListener("click", commit);
+    cancelBtn.addEventListener("click", cancel);
+    field.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void commit();
+      if (e.key === "Escape") cancel();
+    });
+    editing = editor;
+    draw();
+    requestAnimationFrame(() => { if (editing === editor) field.focus(); });
+  }
+
+  function row(item: MemoryItem): HTMLElement {
+    if (editing?.id === item.id) return editing.el;
     return h("div", { class: "row memory-item" },
       h("span", { class: "memory-text", text: item.text }),
       item.source === "chat" ? h("span", { class: "memory-badge", text: STRINGS.fromChat }) : null,
-      h("button", { text: STRINGS.edit, onclick: () => { editing = item.id; draw(); } }),
+      h("button", { text: STRINGS.edit, onclick: () => beginEdit(item) }),
       h("button", { class: "danger", text: STRINGS.remove, onclick: () => Bridge.memoryDelete(item.id).then(apply, fail) }),
     );
   }
@@ -90,9 +114,19 @@ export function memorySection(): HTMLElement {
     useSwitch.disabled = !loaded || toggling;
     useSwitch.classList.toggle("on", state.enabled);
     useSwitch.setAttribute("aria-pressed", String(state.enabled));
+    if (editing && !state.items.some(item => item.id === editing?.id)) editing = null;
+    if (editing) editing.save.disabled = saving !== null;
+    // Reuse the draft field through unrelated redraws, including its focus
+    // and selection if rebuilding the surrounding list detaches it.
+    const focused = editing && editing.field === document.activeElement ? editing.field : null;
+    const selection = focused ? [focused.selectionStart, focused.selectionEnd] as const : null;
     clear(list);
     if (!state.items.length) list.append(h("div", { class: "hint", text: STRINGS.empty }));
     for (const item of state.items) list.append(row(item));
+    if (focused && selection) {
+      focused.focus();
+      focused.setSelectionRange(selection[0], selection[1]);
+    }
     clearBtn.textContent = confirmingClear ? STRINGS.confirmClear : STRINGS.clearAll;
     clearBtn.hidden = !state.items.length;
   }

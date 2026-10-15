@@ -512,3 +512,247 @@ test("completion of one add never clears text typed for the next memory", async 
   assert.equal(input.value, "Next draft");
   assert.deepEqual(sent("memory_add"), [{ text: "First fact" }]);
 });
+
+const key = (field, key) => {
+  for (const listener of field.listeners.get("keydown") ?? []) listener({ key });
+};
+const editField = section => section.find(".memory-item").flatMap(row => row.find("input"))[0];
+
+function pendingEdit(t, extra = {}) {
+  const pending = deferred();
+  const original = [item("one", "First fact"), item("two", "Second fact")];
+  let edits = 0;
+  answering(t, {
+    memory_list: state(original),
+    memory_edit: ({ id, text }) => ++edits === 1 ? pending.promise : state(original.map(row => row.id === id ? { ...row, text } : row)),
+    ...extra,
+  });
+  return { pending, original };
+}
+
+test("edit completion preserves a correction typed after Save, then saves it on an explicit retry", async t => {
+  const { pending, original } = pendingEdit(t);
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  field.value = "Submitted fact";
+  button(section, "Save").fire("click");
+  field.value = "Newer correction";
+  pending.resolve(state([{ ...original[0], text: "Submitted fact" }, original[1]]));
+  await settle();
+  assert.equal(editField(section), field, "the newer draft keeps its editor and input");
+  assert.equal(field.value, "Newer correction");
+  assert.equal(button(section, "Save").disabled, false);
+  key(field, "Enter");
+  await settle();
+  assert.deepEqual(sent("memory_edit"), [{ id: "one", text: "Submitted fact" }, { id: "one", text: "Newer correction" }]);
+  assert.equal(editField(section), undefined, "an unchanged successfully saved draft closes");
+  assert.match(section.textContent, /Newer correction/);
+});
+
+test("pending edit reserves Save and Enter while leaving the draft editable", async t => {
+  const { pending, original } = pendingEdit(t);
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  const save = button(section, "Save");
+  field.value = "  Submitted fact  ";
+  save.fire("click");
+  field.value = "Next correction";
+  save.fire("click");
+  key(field, "Enter");
+  assert.deepEqual(sent("memory_edit"), [{ id: "one", text: "  Submitted fact  " }]);
+  assert.equal(save.disabled, true);
+  assert.notEqual(field.disabled, true);
+  pending.resolve(state([{ ...original[0], text: "Submitted fact" }, original[1]]));
+  await settle();
+  assert.equal(editField(section), field);
+  assert.equal(field.value, "Next correction");
+  assert.equal(save.disabled, false);
+});
+
+test("an edit failure preserves the latest draft and releases Save for retry", async t => {
+  const { pending } = pendingEdit(t);
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  field.value = "Submitted fact";
+  button(section, "Save").fire("click");
+  field.value = "Correction after submit";
+  pending.reject(new Error("disk unavailable"));
+  await settle();
+  assert.equal(editField(section), field);
+  assert.equal(field.value, "Correction after submit");
+  assert.equal(button(section, "Save").disabled, false);
+  assert.match(section.textContent, /disk unavailable/);
+  button(section, "Save").fire("click");
+  await settle();
+  assert.equal(editField(section), undefined);
+  assert.match(section.textContent, /Correction after submit/);
+  assert.doesNotMatch(section.textContent, /disk unavailable/);
+});
+
+for (const outcome of ["success", "failure"]) {
+  for (const replacement of ["same item", "another item"]) {
+    test(`a canceled edit's late ${outcome} preserves the replacement editor for ${replacement}`, async t => {
+      const { pending, original } = pendingEdit(t, { memory_export: new Error("newer export error") });
+      const section = memorySection();
+      await settle();
+      button(section, "Edit").fire("click");
+      const oldField = editField(section);
+      const oldSave = button(section, "Save");
+      const oldCancel = button(section, "Cancel");
+      oldField.value = "Old submitted value";
+      oldSave.fire("click");
+      if (replacement === "same item") key(oldField, "Escape");
+      else oldCancel.fire("click");
+      const index = replacement === "same item" ? 0 : 1;
+      button(section.find(".memory-item")[index], "Edit").fire("click");
+      const replacementField = editField(section);
+      replacementField.value = "Replacement draft";
+      button(section, "Save").fire("click");
+      oldSave.fire("click");
+      oldCancel.fire("click");
+      key(oldField, "Escape");
+      key(oldField, "Enter");
+      assert.equal(sent("memory_edit").length, 1, "a retired editor cannot submit or overlap the pending edit");
+      assert.equal(editField(section), replacementField, "retired controls cannot cancel a replacement editor");
+      assert.equal(button(section, "Save").disabled, true);
+      button(section, "Export unencrypted JSON").fire("click");
+      await settle();
+      if (outcome === "success") pending.resolve(state([{ ...original[0], text: "Old submitted value" }, original[1]]));
+      else pending.reject(new Error("old edit failure"));
+      await settle();
+      assert.equal(editField(section), replacementField);
+      assert.equal(replacementField.value, "Replacement draft");
+      assert.equal(button(section, "Save").disabled, false);
+      assert.match(section.textContent, /newer export error/, "an old editor does not replace a newer operation's message");
+      assert.doesNotMatch(section.textContent, /old edit failure/);
+      key(replacementField, "Enter");
+      await settle();
+      assert.deepEqual(sent("memory_edit"), [
+        { id: "one", text: "Old submitted value" },
+        { id: index ? "two" : "one", text: "Replacement draft" },
+      ]);
+      assert.equal(editField(section), undefined);
+    });
+  }
+}
+
+for (const saving of [false, true]) {
+  test(`a ${saving ? "pending" : "not yet saved"} edit retains its exact draft through unrelated redraws`, async t => {
+    const { pending, original } = pendingEdit(t, { memory_set_enabled: ({ enabled }) => state(original, enabled) });
+    const section = memorySection();
+    await settle();
+    button(section, "Edit").fire("click");
+    const field = editField(section);
+    field.value = "First edit";
+    if (saving) button(section, "Save").fire("click");
+    field.value = "  Unsaved correction  ";
+    section.find(".switch")[0].fire("click");
+    assert.equal(editField(section), field, "the immediate toggle redraw reuses the active field");
+    await settle();
+    assert.equal(editField(section), field);
+    assert.equal(field.value, "  Unsaved correction  ");
+    assert.equal(button(section, "Save").disabled, saving);
+    if (saving) {
+      pending.resolve(state([{ ...original[0], text: "First edit" }, original[1]], false));
+      await settle();
+      assert.equal(editField(section), field);
+      assert.equal(field.value, "  Unsaved correction  ");
+      assert.equal(button(section, "Save").disabled, false);
+    }
+  });
+}
+
+test("cancel without replacement does not reopen an editor when its save completes", async t => {
+  const { pending, original } = pendingEdit(t);
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  field.value = "Submitted fact";
+  button(section, "Save").fire("click");
+  button(section, "Cancel").fire("click");
+  pending.resolve(state([{ ...original[0], text: "Submitted fact" }, original[1]]));
+  await settle();
+  assert.equal(editField(section), undefined);
+  assert.match(section.textContent, /Submitted fact/, "Cancel abandons editing, not a write already submitted");
+});
+
+test("an editor redraw restores the focused field and its selection", async t => {
+  const original = [item("one", "First fact")];
+  answering(t, { memory_list: state(original), memory_set_enabled: ({ enabled }) => state(original, enabled) });
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  field.value = "Unsaved draft";
+  field.selectionStart = 2;
+  field.selectionEnd = 8;
+  document.activeElement = field;
+  t.after(() => { delete document.activeElement; });
+  let focusCalls = 0;
+  const ranges = [];
+  field.focus = () => { focusCalls++; };
+  field.setSelectionRange = (start, end) => { ranges.push([start, end]); };
+  section.find(".switch")[0].fire("click");
+  await settle();
+  assert.equal(editField(section), field);
+  assert.equal(field.value, "Unsaved draft");
+  assert.ok(focusCalls > 0);
+  assert.ok(ranges.length > 0);
+  assert.ok(ranges.every(range => range[0] === 2 && range[1] === 8));
+});
+
+test("switching rows during Save gives ownership and delayed focus only to the replacement editor", async t => {
+  const frames = [];
+  t.mock.method(globalThis, "requestAnimationFrame", frame => { frames.push(frame); return frames.length; });
+  const { pending, original } = pendingEdit(t);
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const first = editField(section);
+  let firstFocus = 0;
+  first.focus = () => { firstFocus++; };
+  first.value = "Submitted fact";
+  button(section, "Save").fire("click");
+  button(section.find(".memory-item")[1], "Edit").fire("click");
+  const second = editField(section);
+  let secondFocus = 0;
+  second.focus = () => { secondFocus++; };
+  second.value = "Replacement draft";
+  frames.forEach(frame => frame());
+  assert.equal(firstFocus, 0, "the previous frame cannot reclaim focus");
+  assert.equal(secondFocus, 1);
+  assert.equal(button(section, "Save").disabled, true);
+  pending.resolve(state([{ ...original[0], text: "Submitted fact" }, original[1]]));
+  await settle();
+  assert.equal(editField(section), second);
+  assert.equal(second.value, "Replacement draft");
+  assert.equal(button(section, "Save").disabled, false);
+});
+
+test("deleting all memory retires the editor and its retained submit handlers", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  answering(t, { memory_list: state([item("one", "First fact")]), memory_clear: state([]) });
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  field.value = "Abandoned draft";
+  const save = button(section, "Save");
+  const clear = button(section, "Delete everything");
+  clear.fire("click");
+  assert.equal(editField(section), field, "confirmation alone keeps the draft");
+  clear.fire("click");
+  await settle();
+  assert.equal(editField(section), undefined);
+  save.fire("click");
+  key(field, "Enter");
+  assert.deepEqual(sent("memory_edit"), []);
+  assert.equal(section.find(".memory-item").length, 0);
+});

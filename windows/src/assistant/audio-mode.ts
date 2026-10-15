@@ -92,6 +92,10 @@ class ElementPlayer implements Player {
 
 export const AudioMode = {
   state: "off" as AudioState,
+  /** UI can be off while a cancelled native capture still owns the microphone. */
+  get busy(): boolean {
+    return this.state !== "off" || starting !== null || releasing !== null;
+  },
   /** The microphone level while listening, 0…1. */
   level: 0,
   /** Why audio mode ended by itself, shown once. */
@@ -103,6 +107,8 @@ let player: Player = new ElementPlayer();
 let captureId: string | null = null;
 /** Native events can arrive before the command reply identifies our capture. */
 let starting: { events: Map<string, VoiceEvent> } | null = null;
+/** Cancel requests return before the native microphone closes. */
+let releasing: string | null = null;
 /** Keep a spoken request reserved until its chat finally block has completed. */
 let answering: { promise: Promise<string | null>; cancel: () => void } | null = null;
 /** Bumped by every start, stop and interrupt: stale work checks it. */
@@ -128,7 +134,7 @@ export function toggleAudioMode() {
 }
 
 export async function startAudioMode() {
-  if (AudioMode.state !== "off" || !host || !askChat || State.pendingApproval || Voice.busy || answering || !canAsk()) return;
+  if (AudioMode.busy || !host || !askChat || State.pendingApproval || Voice.busy || answering || !canAsk()) return;
   turn++;
   AudioMode.note = "";
   if (!pinned) {
@@ -146,10 +152,10 @@ export function stopAudioMode(note = "") {
   turn++;
   const id = captureId;
   captureId = null;
-  starting = null;
+  // Keep a pending start reserved until its reply identifies what to cancel.
   answering?.cancel();
   replyDone = true;
-  if (id) void Bridge.voiceCancel(id);
+  if (id) cancelCapture(id);
   clearPlayback();
   AudioMode.level = 0;
   AudioMode.note = note;
@@ -183,6 +189,13 @@ export function interruptAudio() {
   }
 }
 
+/** Reserve cancellation until native idle/error confirms the microphone closed. */
+function cancelCapture(id: string, event?: VoiceEvent) {
+  if (event?.state === "idle" || event?.state === "error") return;
+  releasing = id;
+  void Bridge.voiceCancel(id);
+}
+
 async function listen(at: number) {
   if (at !== turn) return;
   if (!canAsk() || Voice.busy) {
@@ -193,11 +206,19 @@ async function listen(at: number) {
   starting = pending;
   AudioMode.level = 0;
   set("listening");
-  if (at !== turn) return;
-  const id = await Bridge.voiceHandsFree();
-  if (starting === pending) starting = null;
   if (at !== turn) {
-    if (id) void Bridge.voiceCancel(id);
+    // A synchronous subscriber stopped us before any native command was sent.
+    if (starting === pending) starting = null;
+    State.notify();
+    return;
+  }
+  const id = await Bridge.voiceHandsFree();
+  if (starting !== pending) return;
+  starting = null;
+  const event = id ? pending.events.get(id) : undefined;
+  if (at !== turn) {
+    if (id) cancelCapture(id, event);
+    State.notify();
     return;
   }
   if (!id) {
@@ -205,15 +226,21 @@ async function listen(at: number) {
     return;
   }
   captureId = id;
-  const event = pending.events.get(id);
   if (event) void onVoice(event);
 }
 
 async function onVoice(event: VoiceEvent) {
+  if (event.captureId === releasing) {
+    if (event.state === "idle" || event.state === "error") {
+      releasing = null;
+      State.notify();
+    }
+    return;
+  }
   if (starting) {
     const prior = starting.events.get(event.captureId)?.state;
     // A terminal event cannot be undone by a queued level/processing event.
-    if (prior !== "idle" && prior !== "error" && prior !== "preview") {
+    if (prior !== "idle" && (event.state === "idle" || event.state === "error" || (prior !== "error" && prior !== "preview"))) {
       starting.events.set(event.captureId, event);
     }
     return;
@@ -234,6 +261,7 @@ async function onVoice(event: VoiceEvent) {
       stopAudioMode(event.error ?? "error");
       return;
     case "idle":
+      captureId = null; // This event already acknowledges native release.
       // Cancelled from elsewhere (the screen locked, the app quitting).
       if (AudioMode.state === "listening" || AudioMode.state === "transcribing") stopAudioMode();
       return;
@@ -391,6 +419,7 @@ export function resetAudioModeForTests(testPlayer?: Player) {
   turn++;
   captureId = null;
   starting = null;
+  releasing = null;
   answering = null;
   queue.length = 0;
   speaking = null;

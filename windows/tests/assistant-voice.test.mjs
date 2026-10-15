@@ -711,6 +711,7 @@ test("a late answer about another capture's app changes nothing", async () => {
   answers.set("assistant_app_propose", new Promise((r) => { release = r; }));
   emit("assistant-voice", ev("cap-1", "preview", { transcript: "ouvre Figma" }));
   voiceCancel();
+  emit("assistant-voice", ev("cap-1", "idle")); // Native cancellation releases before restart.
   await startListening("cap-2");
   emit("assistant-voice", ev("cap-2", "preview", { transcript: "Ajoute GitHub." }));
   release({ label: "Figma", grant: GRANT });
@@ -840,6 +841,7 @@ test("a late field answer for a cancelled capture changes nothing", async () => 
   answers.set("assistant_insert_offer", new Promise((r) => { release = r; }));
   emit("assistant-voice", ev("cap-1", "preview", { transcript: "hello" }));
   voiceCancel();
+  emit("assistant-voice", ev("cap-1", "idle")); // Native cancellation releases before restart.
   await startListening("cap-2");
   answers.set("assistant_insert_offer", null);
   emit("assistant-voice", ev("cap-2", "preview", { transcript: "Ajoute GitHub." }));
@@ -893,6 +895,7 @@ test("cancelling while a retry is pending cannot revive the old capture", async 
   answers.set("assistant_insert_offer", new Promise((resolve) => { release = resolve; }));
   const retry = voiceInsert();
   voiceCancel();
+  emit("assistant-voice", ev("cap-1", "idle")); // Native cancellation releases before restart.
   await startListening("cap-2");
   release({ status: "ready", label: "Notepad", grant: GRANT });
   await retry;
@@ -1017,6 +1020,7 @@ for (const outcome of ["kept", "done", "failed"]) {
     const inserting = voiceInsert();
     await flush();
     voiceCancel();
+    emit("assistant-voice", ev("cap-1", "idle")); // Native cancellation releases before restart.
     await startListening("cap-2");
     deferred.resolve(outcome === "kept" ? { status: "kept", reason: "busy" }
       : outcome === "done" ? { status: "done", receipt: { actionId: "act-late", outcome: "unknown" } }

@@ -499,6 +499,7 @@ for (const cancel of [false, true]) {
     assert.equal(sent("assistant_voice_use").length, 0);
     if (cancel) {
       button("Cancel").fire("click");
+      emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-1", state: "idle" });
       answers.set("assistant_voice_toggle", "cap-2");
       await voiceShortcut();
     }

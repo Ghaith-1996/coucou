@@ -1987,6 +1987,17 @@ for (const phase of ["listening", "transcribing", "starting", "fetching transcri
     await flush();
     assert.equal(State.chatId, CURRENT);
     assert.equal(audio.AudioMode.state, "off", "history completion does not restart the microphone");
+    if (phase !== "fetching transcript") {
+      assert.equal($(".audio-btn").disabled, true, "history completion cannot release the old microphone");
+      $(".audio-btn").fire("click");
+      await flush();
+      assert.equal(sent("assistant_voice_hands_free").length, 1);
+      capture.resolve("old-audio");
+      await flush();
+      assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "old-audio" }]);
+      voiceEvent("idle"); // Native cancellation acknowledges microphone closure.
+      await flush();
+    }
     assert.equal($(".audio-btn").disabled, false);
     answers.assistant_voice_hands_free = () => "new-audio";
     $(".audio-btn").fire("click");

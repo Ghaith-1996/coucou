@@ -22,7 +22,7 @@ import { USC, UploadSeq } from "../upload/sequence";
 import { closePlanCard, openPlanColor, planCardOpen } from "../views/usage";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
-import { applyChatDraft } from "../views/chat";
+import { applyChatDraft, newConversation } from "../views/chat";
 import { sanitizeDeclared } from "../core/pills";
 import { sameList, type Declared } from "../assistant/pill-command";
 import { IslandStateMachine } from "./fsm";
@@ -643,11 +643,9 @@ export class Island {
    */
   private swallow(path: string) {
     const name = path.split(/[\\/]/).pop() || "file";
+    newConversation();
     State.droppedFile = { name, path };
     State.promptContext = { kind: "file", name, path };
-    State.chatHistory = [];
-    State.chatId = null;
-    void Bridge.chatReset();
 
     UploadSeq.performDrop(State.uploadDuration);
     this.uploadTens = 0;

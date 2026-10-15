@@ -850,7 +850,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     title: tl(STRINGS.audio),
     "aria-label": tl(STRINGS.audio),
     onclick: () => {
-      if (AudioMode.state === "off" && (sending || undoPending || startingVoice || Voice.busy || history.isOpening)) return;
+      if (AudioMode.state === "off" && (sending || undoPending || startingVoice || AudioMode.busy || Voice.busy || history.isOpening)) return;
       toggleAudioMode();
     },
   }, svg(ICONS.wave, 15, { stroke: 1.8 })) : null;
@@ -958,8 +958,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.classList.toggle("open", history.isOpen);
     modelBtn.disabled = sending;
     historyBtn.disabled = sending;
-    if (voice) voice.disabled = sending || startingVoice || AudioMode.state !== "off" || history.isOpening;
-    if (audioBtn) audioBtn.disabled = AudioMode.state === "off" && (sending || undoPending || startingVoice || Voice.busy || history.isOpening);
+    if (voice) voice.disabled = sending || startingVoice || AudioMode.busy || history.isOpening;
+    if (audioBtn) audioBtn.disabled = AudioMode.state === "off" && (sending || undoPending || startingVoice || AudioMode.busy || Voice.busy || history.isOpening);
     // While an answer comes, the send button is Stop.
     send.disabled = startingVoice || undoPending || history.isOpening;
     send.classList.toggle("stop", sending);
@@ -1234,7 +1234,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     void submit();
   });
   voice?.addEventListener("click", async () => {
-    if (sending || startingVoice || AudioMode.state !== "off" || history.isOpening) return;
+    if (sending || startingVoice || AudioMode.busy || history.isOpening) return;
     startingVoice = true;
     if (picker.isOpen) picker.close();
     drawModelButton();

@@ -35,6 +35,8 @@ pub const PROPOSAL_EVENT: &str = "chat-action";
 pub const CLOSED_EVENT: &str = "chat-action-closed";
 /// To the island: a read-only tool was used ("Looked at your browser tabs").
 pub const USED_EVENT: &str = "chat-tool-used";
+/// Memory's encrypted storage is implemented only for Windows (DPAPI).
+const MEMORY_SUPPORTED: bool = cfg!(windows);
 
 /// Frontend note ownership only; unrelated to the native authorization intent.
 #[derive(Clone, Serialize)]
@@ -47,7 +49,11 @@ struct ToolUsed<'a> {
 /// The tools, as one namespace (Sign in with ChatGPT accepts function tools
 /// only grouped in a namespace).
 pub fn definitions() -> Value {
-    json!([{
+    definitions_for(MEMORY_SUPPORTED)
+}
+
+fn definitions_for(memory_supported: bool) -> Value {
+    let mut definitions = json!([{
         "type": "namespace",
         "name": NAMESPACE,
         "description": "Act on the user's Windows PC. Every action is shown to the user, who confirms or declines it.",
@@ -100,11 +106,27 @@ pub fn definitions() -> Value {
                 "strict": true
             }
         ]
-    }])
+    }]);
+    if !memory_supported {
+        definitions[0]["tools"].as_array_mut().unwrap().retain(|tool| tool["name"] != "remember");
+    }
+    definitions
 }
 
 /// What the model is told about the tools, after the chat's own instructions.
-pub const INSTRUCTIONS: &str = "You can act on the user's Windows PC only through the coucou tools: list and switch browser tabs, open apps, and propose a fact for the user's memory. Every action is shown to the user, who confirms it; if they decline, say so in a few words. Never claim something happened unless the tool's result says it did. You cannot click, type, read pages or answer an agent's permission request.";
+pub const INSTRUCTIONS: &str = instructions_for(MEMORY_SUPPORTED);
+
+const fn instructions_for(memory_supported: bool) -> &'static str {
+    if memory_supported {
+        "You can act on the user's Windows PC only through the coucou tools: list and switch browser tabs, open apps, and propose a fact for the user's memory. Every action is shown to the user, who confirms it; if they decline, say so in a few words. Never claim something happened unless the tool's result says it did. You cannot click, type, read pages or answer an agent's permission request."
+    } else {
+        "You can act on the user's Windows PC only through the coucou tools: list and switch browser tabs and open apps. Every action is shown to the user, who confirms it; if they decline, say so in a few words. Never claim something happened unless the tool's result says it did. You cannot click, type, read pages or answer an agent's permission request."
+    }
+}
+
+fn require_memory(memory_supported: bool) -> Result<(), &'static str> {
+    memory_supported.then_some(()).ok_or("Memory is only available on Windows.")
+}
 
 /// One call the model made.
 #[derive(Debug, Clone, PartialEq)]
@@ -429,6 +451,11 @@ async fn open_app(app: &AppHandle, args: OpenArgs, intent: &str, request_id: Opt
 }
 
 async fn remember(app: &AppHandle, args: RememberArgs, intent: &str, request_id: Option<&str>, scope: &ActionScope) -> String {
+    // A provider can replay an old tool call even when it is no longer listed.
+    // Refuse before proposing an action that this platform cannot persist.
+    if let Err(reason) = require_memory(MEMORY_SUPPORTED) {
+        return result(reason);
+    }
     let Ok(text) = crate::memory::clean(&args.text) else {
         return result("Nothing to remember: the text was empty or too long.");
     };
@@ -713,7 +740,7 @@ mod tests {
 
     #[test]
     fn the_tools_are_one_namespace_of_strict_functions() {
-        let d = definitions();
+        let d = definitions_for(true);
         assert_eq!(d.as_array().unwrap().len(), 1);
         assert_eq!(d[0]["type"], "namespace");
         assert_eq!(d[0]["name"], NAMESPACE);
@@ -724,6 +751,37 @@ mod tests {
             assert_eq!(tool["strict"], true);
             assert_eq!(tool["parameters"]["additionalProperties"], false);
         }
+    }
+
+    #[test]
+    fn unsupported_memory_removes_only_its_tool_and_instructions() {
+        let supported = definitions_for(true);
+        let unsupported = definitions_for(false);
+        let expected: Vec<Value> = supported[0]["tools"].as_array().unwrap().iter()
+            .filter(|tool| tool["name"] != "remember").cloned().collect();
+        assert_eq!(unsupported[0]["tools"], json!(expected));
+        assert_eq!(unsupported[0]["name"], supported[0]["name"]);
+        assert_eq!(unsupported[0]["description"], supported[0]["description"]);
+        let names: Vec<&str> = unsupported[0]["tools"].as_array().unwrap().iter()
+            .map(|tool| tool["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["list_browser_tabs", "switch_browser_tab", "open_app"]);
+        assert!(instructions_for(true).contains("propose a fact for the user's memory"));
+        assert!(!instructions_for(false).contains("memory"));
+        assert!(!instructions_for(false).contains("remember"));
+        assert_eq!(definitions(), definitions_for(cfg!(windows)));
+        assert_eq!(INSTRUCTIONS, instructions_for(cfg!(windows)));
+    }
+
+    #[test]
+    fn stale_memory_calls_require_native_platform_support_before_proposal() {
+        assert_eq!(require_memory(true), Ok(()));
+        let refused = require_memory(false);
+        assert_eq!(refused, Err("Memory is only available on Windows."));
+        let mut proposed = false;
+        let result = refused.map(|_| { proposed = true; });
+        assert!(result.is_err());
+        assert!(!proposed);
+        assert_eq!(require_memory(MEMORY_SUPPORTED).is_ok(), cfg!(windows));
     }
 
     #[test]

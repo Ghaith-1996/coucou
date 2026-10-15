@@ -27,8 +27,9 @@ import {
   LANGUAGES, N_, isRtl, onLanguageChange, resolveLanguage, setLanguage, systemLanguages, t, tn,
 } from "../i18n/i18n";
 
+const IS_WINDOWS = navigator.userAgent.includes("Windows");
 /** Where secrets.rs keeps the keys on this OS. */
-const KEY_STORE = navigator.userAgent.includes("Windows")
+const KEY_STORE = IS_WINDOWS
   ? "Windows Credential Manager"
   : "Secret Service (GNOME Keyring, KWallet)";
 
@@ -1372,7 +1373,7 @@ async function render() {
     planSection(status),
     apiSection(hasKey),
     chatgptSection(),
-    memorySection(),
+    ...(IS_WINDOWS ? [memorySection()] : []),
     chatProvidersSection(chatKeys, keyChanged),
     localSection(customKey),
     activePillsSection(connected),

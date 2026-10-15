@@ -420,3 +420,95 @@ test("a failed initial memory load keeps Add guarded and preserves the error and
   assert.equal(field.value, "New fact");
   assert.match(section.textContent, /memory could not be loaded/);
 });
+
+
+test("an add preserves a newer draft and reserves only submission until it completes", async (t) => {
+  const pending = deferred();
+  let adds = 0;
+  answering(t, {
+    memory_list: state([]),
+    memory_add: ({ text }) => ++adds === 1 ? pending.promise : state([item("one", "First fact"), item("two", text)]),
+  });
+  const section = memorySection();
+  await settle();
+  const input = section.find("input")[0];
+  const addBtn = button(section, "Add");
+  input.value = "  First fact  ";
+  addBtn.fire("click");
+  input.value = "Second fact";
+  addBtn.fire("click");
+  for (const listener of input.listeners.get("keydown") ?? []) listener({ key: "Enter" });
+  assert.deepEqual(sent("memory_add"), [{ text: "First fact" }], "duplicate and next submissions wait for the active write");
+  assert.equal(input.disabled, false, "typing the next draft remains possible");
+  assert.equal(addBtn.disabled, true);
+  pending.resolve(state([item("one", "First fact")]));
+  await settle();
+  assert.equal(input.value, "Second fact", "the completed request owns only its submitted draft");
+  assert.equal(addBtn.disabled, false);
+  assert.match(section.textContent, /First fact/);
+  addBtn.fire("click");
+  await settle();
+  assert.deepEqual(sent("memory_add"), [{ text: "First fact" }, { text: "Second fact" }]);
+  assert.equal(input.value, "");
+  assert.equal(section.find(".memory-item").length, 2);
+});
+
+test("a failed pending add preserves a replacement draft and releases submission for retry", async (t) => {
+  const pending = deferred();
+  let adds = 0;
+  answering(t, {
+    memory_list: state([]),
+    memory_add: ({ text }) => ++adds === 1 ? pending.promise : state([item("one", text)]),
+  });
+  const section = memorySection();
+  await settle();
+  const input = section.find("input")[0];
+  const addBtn = button(section, "Add");
+  input.value = "First fact";
+  addBtn.fire("click");
+  input.value = "Corrected fact";
+  pending.reject(new Error("storage temporarily unavailable"));
+  await settle();
+  assert.equal(input.value, "Corrected fact");
+  assert.equal(addBtn.disabled, false);
+  assert.match(section.textContent, /storage temporarily unavailable/);
+  assert.equal(section.find(".memory-item").length, 0);
+  for (const listener of input.listeners.get("keydown") ?? []) listener({ key: "Enter" });
+  await settle();
+  assert.deepEqual(sent("memory_add"), [{ text: "First fact" }, { text: "Corrected fact" }]);
+  assert.equal(input.value, "");
+  assert.doesNotMatch(section.textContent, /storage temporarily unavailable/);
+  assert.match(section.textContent, /Corrected fact/);
+});
+
+test("an add clears its own unchanged raw draft after successful persistence", async (t) => {
+  const pending = deferred();
+  answering(t, { memory_list: state([]), memory_add: pending.promise });
+  const section = memorySection();
+  await settle();
+  const input = section.find("input")[0];
+  const addBtn = button(section, "Add");
+  input.value = "  First fact  ";
+  addBtn.fire("click");
+  pending.resolve(state([item("one", "First fact")]));
+  await settle();
+  assert.equal(input.value, "");
+  assert.equal(addBtn.disabled, false);
+  assert.deepEqual(sent("memory_add"), [{ text: "First fact" }]);
+});
+
+
+test("completion of one add never clears text typed for the next memory", async (t) => {
+  const pending = deferred();
+  answering(t, { memory_list: state([]), memory_add: pending.promise });
+  const section = memorySection();
+  await settle();
+  const input = section.find("input")[0];
+  input.value = "First fact";
+  button(section, "Add").fire("click");
+  input.value = "Next draft";
+  pending.resolve(state([item("one", "First fact")]));
+  await settle();
+  assert.equal(input.value, "Next draft");
+  assert.deepEqual(sent("memory_add"), [{ text: "First fact" }]);
+});

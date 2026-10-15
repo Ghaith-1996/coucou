@@ -37,6 +37,7 @@ export function memorySection(): HTMLElement {
   let state: MemoryState = { version: 1, enabled: true, items: [] };
   let loaded = false;
   let toggling = false;
+  let adding = false;
   let editing: string | null = null;
   let confirmingClear = false;
 
@@ -85,7 +86,7 @@ export function memorySection(): HTMLElement {
 
   function draw() {
     input.disabled = !loaded;
-    addBtn.disabled = !loaded;
+    addBtn.disabled = !loaded || adding;
     useSwitch.disabled = !loaded || toggling;
     useSwitch.classList.toggle("on", state.enabled);
     useSwitch.setAttribute("aria-pressed", String(state.enabled));
@@ -96,17 +97,26 @@ export function memorySection(): HTMLElement {
     clearBtn.hidden = !state.items.length;
   }
 
-  const add = () => {
+  const add = async () => {
     // An older initial list must not arrive after and overwrite an add result.
-    // Guard both keyboard and synthetic clicks, not only disabled controls.
-    if (!loaded) return;
-    const text = input.value.trim();
+    // Reserve submission, but leave the input available for the next draft.
+    if (!loaded || adding) return;
+    const draft = input.value;
+    const text = draft.trim();
     if (!text) return;
-    Bridge.memoryAdd(text).then((next) => {
-      input.value = "";
+    adding = true;
+    addBtn.disabled = true;
+    try {
+      const next = await Bridge.memoryAdd(text);
+      if (input.value === draft) input.value = "";
       note.textContent = "";
       apply(next);
-    }, fail);
+    } catch (err) {
+      fail(err);
+    } finally {
+      adding = false;
+      addBtn.disabled = !loaded;
+    }
   };
   addBtn.addEventListener("click", add);
   input.addEventListener("keydown", (e) => {

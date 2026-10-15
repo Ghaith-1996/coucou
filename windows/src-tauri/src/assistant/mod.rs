@@ -5,6 +5,7 @@
 pub mod app;
 pub mod apps;
 pub mod browser;
+pub mod chat_window;
 pub mod contracts;
 pub mod dictation;
 #[cfg(windows)]

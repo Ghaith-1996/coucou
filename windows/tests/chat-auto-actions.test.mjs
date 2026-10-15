@@ -56,6 +56,11 @@ test("reading the agents' sessions leaves its own note, once", () => {
   assert.deepEqual(ChatActions.auto, []);
 });
 
+test("reading a chat app's window leaves its own note", () => {
+  emit("chat-tool-used", { requestId, tool: "chat-window" });
+  assert.deepEqual(ChatActions.used, ["chat-window"]);
+});
+
 test("tab reads and automatic actions are kept apart", () => {
   emit("chat-tool-used", { requestId, tool: "browser-tabs" });
   emit("chat-tool-used", ran({ kind: "switch-tab", label: "YouTube" }));

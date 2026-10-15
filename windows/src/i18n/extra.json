@@ -5781,17 +5781,6 @@
    "ru": "Посмотрел ваши сеансы Codex и Claude Code",
    "id": "Melihat sesi Codex dan Claude Code Anda"
   },
-  "Let the chat read my Codex and Claude Code conversations": {
-   "zh-Hans": "允许聊天读取我的 Codex 和 Claude Code 对话",
-   "hi": "चैट को मेरी Codex और Claude Code बातचीत पढ़ने दें",
-   "es": "Permitir que el chat lea mis conversaciones de Codex y Claude Code",
-   "ar": "السماح للدردشة بقراءة محادثاتي في Codex وClaude Code",
-   "fr": "Laisser le chat lire mes conversations Codex et Claude Code",
-   "bn": "চ্যাটকে আমার Codex ও Claude Code কথোপকথন পড়তে দিন",
-   "pt-BR": "Deixar o chat ler minhas conversas do Codex e do Claude Code",
-   "ru": "Разрешить чату читать мои разговоры в Codex и Claude Code",
-   "id": "Izinkan chat membaca percakapan Codex dan Claude Code saya"
-  },
   "Ask \"what did Codex do today?\" and the chat reads what you and your agents said (never their tool output) from their own files on this PC, then summarizes it. What it reads is sent to the chat's model, online for ChatGPT.": {
    "zh-Hans": "问“Codex 今天做了什么？”，聊天会从这台电脑上它们自己的文件中读取你和代理说过的话（从不读取工具输出），然后进行总结。读取的内容会发送给聊天所用的模型，ChatGPT 为在线模型。",
    "hi": "पूछें \"Codex ने आज क्या किया?\" और चैट इस पीसी पर उनकी अपनी फ़ाइलों से वह पढ़ता है जो आपने और आपके एजेंटों ने कहा (उनके टूल का आउटपुट कभी नहीं), फिर उसका सारांश देता है। जो पढ़ा जाता है वह चैट के मॉडल को भेजा जाता है, ChatGPT के लिए ऑनलाइन।",
@@ -5802,6 +5791,39 @@
    "pt-BR": "Pergunte \"o que o Codex fez hoje?\" e o chat lê o que você e seus agentes disseram (nunca a saída das ferramentas) nos próprios arquivos deles neste PC e resume. O que ele lê é enviado ao modelo do chat, online no caso do ChatGPT.",
    "ru": "Спросите «что сделал Codex сегодня?», и чат прочитает, что говорили вы и ваши агенты (никогда не вывод их инструментов), из их собственных файлов на этом ПК, а затем кратко изложит. Прочитанное отправляется модели чата, для ChatGPT — в интернет.",
    "id": "Tanyakan \"apa yang dilakukan Codex hari ini?\" dan chat membaca apa yang Anda dan agen Anda katakan (tidak pernah keluaran alat mereka) dari file mereka sendiri di PC ini, lalu merangkumnya. Apa yang dibaca dikirim ke model chat, secara online untuk ChatGPT."
+  },
+  "Read the chat app's window": {
+   "zh-Hans": "读取了聊天应用的窗口",
+   "hi": "चैट ऐप की विंडो पढ़ी",
+   "es": "Leyó la ventana de la app de chat",
+   "ar": "قرأ نافذة تطبيق الدردشة",
+   "fr": "A lu la fenêtre de l’app de chat",
+   "bn": "চ্যাট অ্যাপের উইন্ডো পড়েছে",
+   "pt-BR": "Leu a janela do app de chat",
+   "ru": "Прочитал окно приложения чата",
+   "id": "Membaca jendela aplikasi chat"
+  },
+  "Let the chat read my conversations": {
+   "zh-Hans": "允许聊天读取我的对话",
+   "hi": "चैट को मेरी बातचीत पढ़ने दें",
+   "es": "Permitir que el chat lea mis conversaciones",
+   "ar": "السماح للدردشة بقراءة محادثاتي",
+   "fr": "Laisser le chat lire mes conversations",
+   "bn": "চ্যাটকে আমার কথোপকথন পড়তে দিন",
+   "pt-BR": "Deixar o chat ler minhas conversas",
+   "ru": "Разрешить чату читать мои разговоры",
+   "id": "Izinkan chat membaca percakapan saya"
+  },
+  "It can also read the conversation open in the ChatGPT or Claude app's window: only the text the app shows, never what you are typing.": {
+   "zh-Hans": "它也可以读取 ChatGPT 或 Claude 应用窗口中打开的对话：只读取应用显示的文字，从不读取你正在输入的内容。",
+   "hi": "यह ChatGPT या Claude ऐप की विंडो में खुली बातचीत भी पढ़ सकता है: केवल वह टेक्स्ट जो ऐप दिखाता है, आप जो टाइप कर रहे हैं वह कभी नहीं।",
+   "es": "También puede leer la conversación abierta en la ventana de la app ChatGPT o Claude: solo el texto que muestra la app, nunca lo que estás escribiendo.",
+   "ar": "يمكنها أيضًا قراءة المحادثة المفتوحة في نافذة تطبيق ChatGPT أو Claude: النص الذي يعرضه التطبيق فقط، وليس ما تكتبه أبدًا.",
+   "fr": "Il peut aussi lire la conversation ouverte dans la fenêtre de l’app ChatGPT ou Claude : seulement le texte que l’app affiche, jamais ce que vous êtes en train de taper.",
+   "bn": "এটি ChatGPT বা Claude অ্যাপের উইন্ডোতে খোলা কথোপকথনও পড়তে পারে: শুধু অ্যাপ যে লেখা দেখায়, আপনি যা টাইপ করছেন তা কখনো নয়।",
+   "pt-BR": "Ele também pode ler a conversa aberta na janela do app ChatGPT ou Claude: só o texto que o app mostra, nunca o que você está digitando.",
+   "ru": "Он также может прочитать разговор, открытый в окне приложения ChatGPT или Claude: только текст, который показывает приложение, и никогда то, что вы набираете.",
+   "id": "Chat juga dapat membaca percakapan yang terbuka di jendela aplikasi ChatGPT atau Claude: hanya teks yang ditampilkan aplikasi, tidak pernah yang sedang Anda ketik."
   }
  }
 }

@@ -30,7 +30,7 @@ import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
 import { Voice, voiceShortcut } from "../assistant/voice";
 import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
-import { ChatActions, answerCard, beginToolNotes, clearToolNotes } from "../assistant/chat-actions";
+import { ChatActions, answerCard, beginToolNotes, clearToolNotes, retireActionCards } from "../assistant/chat-actions";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -441,6 +441,8 @@ const chatSavedAt = new Map<string, number>();
 let chatTitle = "";
 /** New/open invalidates old saves; regeneration stays in the same conversation. */
 let chatSession = 0;
+/** Cancel the answer owned by any currently built prompt before replacing its transcript. */
+let cancelCurrentAnswer: (() => void) | null = null;
 /** Only the latest save may change the active conversation's warning. */
 let saveAttempt = 0;
 let saveFailure: { id: string; error: string } | null = null;
@@ -449,6 +451,9 @@ let reopenedChatId: string | null = null;
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
+  // Revoke grants before cancellation can notify any view subscribers.
+  clearToolNotes();
+  cancelCurrentAnswer?.();
   stopAudioMode();
   chatSession++;
   State.chatHistory = [];
@@ -457,7 +462,6 @@ export function newConversation() {
   State.promptContext = null;
   saveFailure = null;
   reopenedChatId = null;
-  clearToolNotes();
   void Bridge.chatReset();
   State.notify();
 }
@@ -1115,11 +1119,12 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     usageLimit = false;
     drawNotice();
     liveText = "";
-    const requestId = beginToolNotes();
     const messages = State.chatHistory;
     const session = chatSession;
     const isCurrent = () => State.chatHistory === messages && chatSession === session;
     answerIsCurrent = isCurrent;
+    const cancel = () => stopAnswer();
+    cancelCurrentAnswer = cancel;
     drawModelButton();
     Sound.play("send");
 
@@ -1133,18 +1138,21 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       ...(p.id === CHATGPT ? { effort: effortFor(State.settings, model) } : {}),
     };
 
-    State.chatHistory.push({ id: nextId++, role: "user", content: query });
-    State.stateOverride = "thinking";
-    State.notify();
-    onHeightChange();
-
-    const file = State.droppedFile;
-    // Stop/failure can leave visible messages without a committed native turn.
-    // Rust decides whether this candidate belongs on its first completed turn.
-    const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
     let answer: string | null = null;
-
     try {
+      const requestId = beginToolNotes();
+      // Notes and state notifications may synchronously reset the conversation.
+      if (!isCurrent() || stopRequested) return null;
+      State.chatHistory.push({ id: nextId++, role: "user", content: query });
+      State.stateOverride = "thinking";
+      State.notify();
+      onHeightChange();
+      if (!isCurrent() || stopRequested) return null;
+
+      const file = State.droppedFile;
+      // Stop/failure can leave visible messages without a committed native turn.
+      // Rust decides whether this candidate belongs on its first completed turn.
+      const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
       const reply = await Bridge.chatSend(query, context, requestId);
       if (!isCurrent()) return null;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text, ...answeredBy });
@@ -1169,11 +1177,15 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         Sound.play("error");
       }
     } finally {
+      if (cancelCurrentAnswer === cancel) {
+        cancelCurrentAnswer = null;
+        // Reset may replace the transcript, but a newer answer owns its own
+        // thinking state even if this older IPC result arrives afterwards.
+        if (State.stateOverride === "thinking") State.stateOverride = null;
+        retireActionCards();
+      }
       sending = false;
       stopRequested = false;
-      // A reset can replace the transcript while this request still owns the
-      // thinking state. Release that state, but preserve any newer override.
-      if (State.stateOverride === "thinking") State.stateOverride = null;
       live = null;
       answerIsCurrent = null;
       answerProvider = null;
@@ -1190,6 +1202,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   const stopAnswer = () => {
     if (!sending || undoPending || stopRequested) return;
     stopRequested = true;
+    retireActionCards();
     void Bridge.chatStop();
   };
   setAudioAsk((text) => audioReady() ? ask(text) : Promise.resolve(null), audioReady, stopAnswer);

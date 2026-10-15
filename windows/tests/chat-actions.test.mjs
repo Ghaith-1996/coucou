@@ -5,7 +5,7 @@
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
-import { ChatActions, answerCard, beginToolNotes, clearToolNotes, registerChatActions, resetChatActionsForTests } from "../src/assistant/chat-actions.ts";
+import { ChatActions, answerCard, beginToolNotes, clearToolNotes, registerChatActions, resetChatActionsForTests, retireActionCards } from "../src/assistant/chat-actions.ts";
 
 import { State } from "../src/core/state.ts";
 import { Bridge } from "../src/core/bridge.ts";
@@ -19,7 +19,8 @@ internals.invoke = async (cmd, args) => {
 };
 
 const GRANT = { actionId: "act-50", digest: "ef".repeat(32), expiresAtMs: 9e12 };
-const card = (id = "act-50") => ({ actionId: id, kind: "switch-tab", label: "YouTube", detail: "Chrome", grant: { ...GRANT, actionId: id } });
+let requestId;
+const card = (id = "act-50") => ({ requestId, actionId: id, kind: "switch-tab", label: "YouTube", detail: "Chrome", grant: { ...GRANT, actionId: id } });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 let registered = false;
@@ -31,6 +32,8 @@ beforeEach(() => {
   }
   calls.length = 0;
   fail = false;
+  State.chatHistory = [];
+  requestId = beginToolNotes();
 });
 
 test("Do it hands back exactly the card's grant, once", async () => {
@@ -118,3 +121,122 @@ test("chat send keeps request identity optional for callers without tool notes",
   await Bridge.chatSend("A legacy caller", null);
   assert.deepEqual(sent("chat_send").at(-1), { query: "A legacy caller", context: null });
 });
+
+test("only a well-formed card scoped to the current request is shown", () => {
+  const oldRequest = requestId;
+  requestId = beginToolNotes();
+  for (const payload of [
+    null, "act-50", {},
+    { ...card(), requestId: undefined },
+    { ...card(), requestId: null },
+    { ...card(), requestId: 5 },
+    { ...card(), requestId: oldRequest },
+    { ...card(), actionId: "" },
+    { ...card(), actionId: "  " },
+    { ...card(), actionId: 5 },
+    { ...card(), kind: "unknown" },
+    { ...card(), label: null },
+    { ...card(), detail: undefined },
+    { ...card(), grant: null },
+    { ...card(), grant: {} },
+    { ...card(), grant: { ...GRANT, actionId: "other-action" } },
+    { ...card(), grant: { ...GRANT, digest: "" } },
+    { ...card(), grant: { ...GRANT, expiresAtMs: NaN } },
+  ]) {
+    emit("chat-action", payload);
+    assert.deepEqual(ChatActions.cards, [], "unscoped, stale or malformed cards are never actionable");
+  }
+  emit("chat-action", card());
+  assert.equal(ChatActions.cards.length, 1, "a current valid card is still shown");
+});
+
+for (const withNote of [false, true]) {
+  test(`clearing notes synchronously retires pending cards ${withNote ? "with a tool note" : "before any tool note"}`, async () => {
+    const oldCard = card();
+    emit("chat-action", oldCard);
+    if (withNote) emit("chat-tool-used", { requestId, tool: "browser-tabs" });
+    clearToolNotes();
+    assert.deepEqual(ChatActions.cards, []);
+    assert.deepEqual(ChatActions.used, []);
+    emit("chat-action", oldCard);
+    assert.deepEqual(ChatActions.cards, [], "late events cannot resurrect a retired request");
+    requestId = beginToolNotes();
+    emit("chat-action", oldCard);
+    answerCard(oldCard.actionId, true);
+    await flush();
+    assert.deepEqual(ChatActions.cards, [], "a newer answer does not make the old request live again");
+    assert.deepEqual(sent("chat_action_answer"), []);
+    emit("chat-action", card("new-action"));
+    answerCard("new-action", true);
+    await flush();
+    assert.deepEqual(sent("chat_action_answer"), [{ actionId: "new-action", grant: { ...GRANT, actionId: "new-action" } }]);
+  });
+}
+
+test("a fresh answer retires existing cards even in the same transcript", async () => {
+  const oldCard = card();
+  emit("chat-action", oldCard);
+  requestId = beginToolNotes();
+  assert.deepEqual(ChatActions.cards, []);
+  emit("chat-action", oldCard);
+  answerCard(oldCard.actionId, true);
+  await flush();
+  assert.deepEqual(ChatActions.cards, []);
+  assert.deepEqual(sent("chat_action_answer"), []);
+});
+
+test("starting a request cannot revive ownership cancelled during its notification", (t) => {
+  emit("chat-action", card());
+  t.after(State.subscribe(() => clearToolNotes()));
+  requestId = beginToolNotes();
+  emit("chat-action", card("new-action"));
+  assert.deepEqual(ChatActions.cards, []);
+});
+
+test("a replaced transcript rejects late cards and invalidates an existing click", async () => {
+  emit("chat-action", card());
+  State.chatHistory = [];
+  emit("chat-action", card("late-action"));
+  assert.equal(ChatActions.cards.some((c) => c.actionId === "late-action"), false);
+  answerCard("act-50", true);
+  await flush();
+  assert.deepEqual(sent("chat_action_answer"), []);
+});
+
+test("retiring action cards keeps existing notes but rejects all late request events", async () => {
+  const oldCard = card();
+  emit("chat-action", oldCard);
+  emit("chat-tool-used", { requestId, tool: "browser-tabs" });
+  retireActionCards();
+  assert.deepEqual(ChatActions.cards, []);
+  assert.deepEqual(ChatActions.used, ["browser-tabs"]);
+  emit("chat-action", oldCard);
+  answerCard(oldCard.actionId, true);
+  await flush();
+  assert.deepEqual(ChatActions.cards, []);
+  assert.deepEqual(sent("chat_action_answer"), []);
+  requestId = beginToolNotes();
+  emit("chat-action", oldCard);
+  emit("chat-tool-used", { requestId: oldCard.requestId, tool: "browser-tabs" });
+  assert.deepEqual(ChatActions.cards, []);
+  assert.deepEqual(ChatActions.used, []);
+});
+
+for (const cancel of ["clear", "retire", "new answer", "replace transcript", "close"]) {
+  test(`a click rechecks ownership after synchronous ${cancel} during notification`, async (t) => {
+    emit("chat-action", card());
+    let cancelled = false;
+    t.after(State.subscribe(() => {
+      if (cancelled) return;
+      cancelled = true;
+      if (cancel === "clear") clearToolNotes();
+      if (cancel === "retire") retireActionCards();
+      if (cancel === "new answer") requestId = beginToolNotes();
+      if (cancel === "replace transcript") State.chatHistory = [];
+      if (cancel === "close") emit("chat-action-closed", "act-50");
+    }));
+    answerCard("act-50", true);
+    await flush();
+    assert.deepEqual(sent("chat_action_answer"), [], "a retired click cannot submit its grant after a reentrant reset");
+  });
+}

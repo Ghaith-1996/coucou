@@ -433,6 +433,8 @@ let chatCreatedAt = 0;
 let chatTitle = "";
 /** New/open invalidates old saves; regeneration stays in the same conversation. */
 let chatSession = 0;
+/** Cancel the answer owned by any currently built prompt before replacing its transcript. */
+let cancelCurrentAnswer: (() => void) | null = null;
 /** Only the latest save may change the active conversation's warning. */
 let saveAttempt = 0;
 let saveFailure: { id: string; error: string } | null = null;
@@ -441,6 +443,7 @@ let reopenedChatId: string | null = null;
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
+  cancelCurrentAnswer?.();
   stopAudioMode();
   chatSession++;
   State.chatHistory = [];
@@ -1101,6 +1104,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     const session = chatSession;
     const isCurrent = () => State.chatHistory === messages && chatSession === session;
     answerIsCurrent = isCurrent;
+    const cancel = () => stopAnswer();
+    cancelCurrentAnswer = cancel;
     drawModelButton();
     Sound.play("send");
 
@@ -1114,18 +1119,20 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       ...(p.id === CHATGPT ? { effort: effortFor(State.settings, model) } : {}),
     };
 
-    State.chatHistory.push({ id: nextId++, role: "user", content: query });
-    State.stateOverride = "thinking";
-    State.notify();
-    onHeightChange();
-
-    const file = State.droppedFile;
-    // Stop/failure can leave visible messages without a committed native turn.
-    // Rust decides whether this candidate belongs on its first completed turn.
-    const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
     let answer: string | null = null;
-
     try {
+      // Notes and state notifications may synchronously reset the conversation.
+      if (!isCurrent() || stopRequested) return null;
+      State.chatHistory.push({ id: nextId++, role: "user", content: query });
+      State.stateOverride = "thinking";
+      State.notify();
+      onHeightChange();
+      if (!isCurrent() || stopRequested) return null;
+
+      const file = State.droppedFile;
+      // Stop/failure can leave visible messages without a committed native turn.
+      // Rust decides whether this candidate belongs on its first completed turn.
+      const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
       const reply = await Bridge.chatSend(query, context);
       if (!isCurrent()) return null;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text, ...answeredBy });
@@ -1150,11 +1157,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         Sound.play("error");
       }
     } finally {
+      if (cancelCurrentAnswer === cancel) {
+        cancelCurrentAnswer = null;
+        // Reset may replace the transcript, but a newer answer owns its own
+        // thinking state even if this older IPC result arrives afterwards.
+        if (State.stateOverride === "thinking") State.stateOverride = null;
+      }
       sending = false;
       stopRequested = false;
-      // A reset can replace the transcript while this request still owns the
-      // thinking state. Release that state, but preserve any newer override.
-      if (State.stateOverride === "thinking") State.stateOverride = null;
       live = null;
       answerIsCurrent = null;
       answerProvider = null;

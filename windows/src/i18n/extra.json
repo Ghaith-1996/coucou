@@ -5615,6 +5615,17 @@
    "pt-BR": "Arraste sobre o que for privado para cobrir de preto. Nada é enviado até você fazer a pergunta, para {model}.",
    "ru": "Проведите по личному, чтобы закрасить его чёрным. Ничего не отправляется, пока вы не зададите вопрос — модели {model}.",
    "id": "Seret di atas hal pribadi untuk menghitamkannya. Tidak ada yang dikirim sampai Anda bertanya, ke {model}."
+  },
+  "Open this page?": {
+   "zh-Hans": "打开这个网页？",
+   "hi": "यह पेज खोलें?",
+   "es": "¿Abrir esta página?",
+   "ar": "فتح هذه الصفحة؟",
+   "fr": "Ouvrir cette page ?",
+   "bn": "এই পেজটি খুলবেন?",
+   "pt-BR": "Abrir esta página?",
+   "ru": "Открыть эту страницу?",
+   "id": "Buka halaman ini?"
   }
  }
 }

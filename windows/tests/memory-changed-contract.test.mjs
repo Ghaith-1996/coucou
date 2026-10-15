@@ -9,7 +9,11 @@ const native = (path) => readFileSync(new URL(path, import.meta.url), "utf8")
   .split("#[cfg(test)]")[0].replace(/\/\/.*$/gm, "");
 const tools = native("../src-tauri/src/assistant/tools.rs");
 const memory = native("../src-tauri/src/memory.rs");
-const remember = tools.slice(tools.indexOf("async fn remember("), tools.indexOf("pub fn chat_action_answer("));
+const rememberStart = tools.indexOf("async fn remember(");
+assert.notEqual(rememberStart, -1);
+const rememberEnd = tools.indexOf("\n}", rememberStart);
+assert.notEqual(rememberEnd, -1);
+const remember = tools.slice(rememberStart, rememberEnd + 2);
 
 test("remember invalidates only Settings without transmitting memory text", () => {
   assert.equal((tools.match(/"memory-changed"/g) ?? []).length, 1);

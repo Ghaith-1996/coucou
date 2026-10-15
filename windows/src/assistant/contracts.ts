@@ -1,4 +1,4 @@
-// The desktop assistant's contracts, version 4 — the TypeScript side of
+// The desktop assistant's contracts, version 5 — the TypeScript side of
 // src-tauri/src/assistant/contracts.rs. tests/fixtures/assistant-contracts.json
 // keeps the two in step.
 //
@@ -7,13 +7,13 @@
 // approval_* commands, from a click on the agent's own card, and the
 // assistant's code never calls them (tests/assistant-contracts.test.mjs).
 
-/** Version 2 adds `pill-set` to the frozen v1 action registry; version 3 adds `switch-tab`, version 4 `memory-save`. */
-export const CONTRACT_VERSION = 4;
+/** Version 2 adds `pill-set` to the frozen v1 action registry; version 3 adds `switch-tab`, version 4 `memory-save`, version 5 `open-url`. */
+export const CONTRACT_VERSION = 5;
 
 /** The event the island listens to for voice capture. */
 export const VOICE_EVENT = "assistant-voice";
 
-export type ActionKind = "chat-draft" | "pill-set" | "insert-text" | "launch-app" | "ask-region" | "switch-tab" | "memory-save";
+export type ActionKind = "chat-draft" | "pill-set" | "insert-text" | "launch-app" | "ask-region" | "switch-tab" | "memory-save" | "open-url";
 
 /** The closed registry. `available`: implemented in this version. */
 export const ACTION_KINDS: readonly { kind: ActionKind; available: boolean; idempotent: boolean }[] = [
@@ -24,6 +24,7 @@ export const ACTION_KINDS: readonly { kind: ActionKind; available: boolean; idem
   { kind: "ask-region", available: true, idempotent: false },
   { kind: "switch-tab", available: true, idempotent: false },
   { kind: "memory-save", available: true, idempotent: true },
+  { kind: "open-url", available: true, idempotent: false },
 ];
 
 export interface AssistantAction {

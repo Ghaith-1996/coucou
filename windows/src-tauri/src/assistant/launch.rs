@@ -42,6 +42,40 @@ pub async fn open_if(action_id: String, app_id: String, scope: Option<ActionScop
     on_launch_thread(move || open_in_sta(&action_id, &app_id, scope.as_ref())).await
 }
 
+/// Hands a checked web address (policy::url_ok) to the default browser.
+/// Nothing tells which window or tab shows it, so a launch Windows accepted
+/// is `unknown`, never `succeeded`.
+pub async fn open_url(action_id: String, url: String) -> Result<ActionReceipt, ErrorCode> {
+    open_url_if(action_id, url, None).await
+}
+
+/// Hold the native chat scope across the actual shell call on its STA worker,
+/// just as for app launches, never a boolean snapshot before the effect.
+pub async fn open_url_if(action_id: String, url: String, scope: Option<ActionScope>) -> Result<ActionReceipt, ErrorCode> {
+    on_launch_thread(move || {
+        let file = HSTRING::from(url.as_str());
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
+            lpVerb: w!("open"),
+            lpFile: PCWSTR(file.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+        };
+        let mut execute = || unsafe { ShellExecuteExW(&mut info) };
+        let executed = match scope {
+            Some(scope) => scope.run_if_active(execute),
+            None => Some(execute()),
+        };
+        match executed {
+            None => ActionReceipt::failed(&action_id, ErrorCode::Expired),
+            Some(Err(_)) => ActionReceipt::failed(&action_id, ErrorCode::Failed),
+            Some(Ok(())) => ActionReceipt::unknown(&action_id),
+        }
+    })
+    .await
+}
+
 async fn on_launch_thread(launch: impl FnOnce() -> ActionReceipt + Send + 'static) -> Result<ActionReceipt, ErrorCode> {
     let (send, recv) = tokio::sync::oneshot::channel();
     // Shell extensions may require STA. A reused async/blocking worker could
@@ -81,7 +115,13 @@ impl Drop for Sta {
 }
 
 fn open_in_sta(action_id: &str, app_id: &str, scope: Option<&ActionScope>) -> ActionReceipt {
-    let file = HSTRING::from(format!(r"shell:AppsFolder\{app_id}"));
+    // A Start menu shortcut AppsFolder doesn't list (apps.rs) opens as the
+    // shortcut itself, the way a click on it in Start does.
+    let file = if super::apps::is_start_shortcut(app_id) {
+        HSTRING::from(app_id)
+    } else {
+        HSTRING::from(format!(r"shell:AppsFolder\{app_id}"))
+    };
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
@@ -280,6 +320,15 @@ mod tests {
         }).await;
         assert_eq!(result, Err(ErrorCode::Failed));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_retired_url_launch_returns_before_touching_the_shell() {
+        let id = "act-retired-url".to_string();
+        let scope = ActionScope::new();
+        crate::assistant::tools::ChatActions::default().retire(&scope);
+        let receipt = open_url_if(id.clone(), "https://example.com/".into(), Some(scope)).await.unwrap();
+        assert_eq!(receipt, ActionReceipt::failed(&id, ErrorCode::Expired));
     }
 
     #[test]

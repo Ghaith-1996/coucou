@@ -17,8 +17,9 @@ use serde_json::Value;
 
 /// Bumped when the closed action registry or an available shape changes.
 /// Version 2 adds the `pill-set` kind and its arguments to the frozen v1
-/// registry; version 3 adds `switch-tab`, version 4 `memory-save`.
-pub const CONTRACT_VERSION: u32 = 4;
+/// registry; version 3 adds `switch-tab`, version 4 `memory-save`, version 5
+/// `open-url`.
+pub const CONTRACT_VERSION: u32 = 5;
 
 /// The event the island listens to for voice capture.
 pub const VOICE_EVENT: &str = "assistant-voice";
@@ -56,9 +57,12 @@ pub enum ActionKind {
     /// Add one item to the user's memory (memory.rs), as the chat proposed
     /// and the user confirmed.
     MemorySave,
+    /// Open a web page in the user's default browser, as the chat proposed
+    /// and the user confirmed.
+    OpenUrl,
 }
 
-pub const ACTION_KINDS: [ActionKind; 7] = [
+pub const ACTION_KINDS: [ActionKind; 8] = [
     ActionKind::ChatDraft,
     ActionKind::PillSet,
     ActionKind::InsertText,
@@ -66,6 +70,7 @@ pub const ACTION_KINDS: [ActionKind; 7] = [
     ActionKind::AskRegion,
     ActionKind::SwitchTab,
     ActionKind::MemorySave,
+    ActionKind::OpenUrl,
 ];
 
 impl ActionKind {
@@ -81,6 +86,7 @@ impl ActionKind {
                 | ActionKind::AskRegion
                 | ActionKind::SwitchTab
                 | ActionKind::MemorySave
+                | ActionKind::OpenUrl
         )
     }
 
@@ -158,6 +164,13 @@ pub struct MemorySaveArgs {
     pub text: String,
 }
 
+/// An http(s) address with no user name or password in it (policy::url_ok).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenUrlArgs {
+    pub url: String,
+}
+
 /// A region in physical pixels of one monitor, relative to its top-left
 /// corner. The question is typed in the chat afterwards, not part of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +194,7 @@ pub enum ValidArgs {
     AskRegion(AskRegionArgs),
     SwitchTab(SwitchTabArgs),
     MemorySave(MemorySaveArgs),
+    OpenUrl(OpenUrlArgs),
 }
 
 // ── Decisions and receipts ───────────────────────────────────────────────────

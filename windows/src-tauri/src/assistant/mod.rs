@@ -237,6 +237,37 @@ mod tests {
     }
 
     #[test]
+    fn only_plain_web_addresses_can_be_opened() {
+        for ok in [
+            "https://www.google.com/search?q=lofi+beats",
+            "https://www.youtube.com/results?search_query=a%20b",
+            "http://localhost:8080/x#top",
+            "https://[::1]/",
+        ] {
+            assert!(super::policy::url_ok(ok), "{ok}");
+        }
+        for bad in [
+            "file:///C:/Windows/System32/calc.exe",
+            "javascript:alert(1)",
+            "ms-settings:privacy",
+            "shell:AppsFolder\\x",
+            "HTTPS://Example.com",
+            "https://",
+            "https:///path",
+            "https://google.com@evil.example",
+            "https://user:pass@site.example",
+            "https://-bad.example",
+            "https://a.example/two words",
+            "https://a.example/\"quoted\"",
+            "https://a.example/\u{7f}",
+            "https://a.example/é",
+        ] {
+            assert!(!super::policy::url_ok(bad), "{bad}");
+        }
+        assert!(!super::policy::url_ok(&format!("https://a.example/{}", "x".repeat(super::policy::MAX_URL_CHARS))));
+    }
+
+    #[test]
     fn ids_are_fresh() {
         let a = new_id("act");
         assert!(a.starts_with("act-") && a.len() == 4 + 16);

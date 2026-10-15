@@ -61,3 +61,11 @@ test("remember carries native turn ownership through approval and the storage lo
   assert.match(tools, /ActionKind::MemorySave,[^\n]+intent, request_id, scope\)\.await/);
   assert.match(tools, /let saved = scope\.run_if_active\(\|\| \{\s*crate::memory::with\(\|m\| m\.add/);
 });
+
+test("web approval and the actual URL launch worker retain native turn ownership", () => {
+  const launch = native("assistant/launch.rs");
+  assert.match(tools, /"open_web" => open_web\(app,[^\n]+intent, request_id, scope\)\.await/);
+  assert.match(tools, /ActionKind::OpenUrl,[^\n]+intent, request_id, scope\)\.await/);
+  assert.match(tools, /open_url_if\(action_id\.clone\(\), a\.url, Some\(scope\)\)/);
+  assert.match(launch, /pub async fn open_url_if\([^\n]*scope: Option<ActionScope>[^\n]*\{\s*on_launch_thread\(move \|\| \{[\s\S]*let mut execute = \|\| unsafe \{ ShellExecuteExW\(&mut info\) \};\s*let executed = match scope \{\s*Some\(scope\) => scope\.run_if_active\(execute\),\s*None => Some\(execute\(\)\),\s*\};/);
+});

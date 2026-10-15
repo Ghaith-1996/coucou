@@ -168,6 +168,8 @@ struct Session {
     id: String,
     monitors: Vec<Monitor>,
     started: Instant,
+    /// One overlay owns the in-flight screen copy; later releases cannot race it.
+    capturing: bool,
     /// Once the user let go: the action Rust keeps and the picture.
     picked: Option<(AssistantAction, Image)>,
 }
@@ -193,21 +195,36 @@ impl Regions {
     /// A new pick over these monitors; any previous one is dropped.
     pub fn start(&self, monitors: Vec<Monitor>) -> String {
         let id = policy::new_id("reg");
-        *self.0.lock().unwrap() = Some(Session { id: id.clone(), monitors, started: Instant::now(), picked: None });
+        *self.0.lock().unwrap() = Some(Session { id: id.clone(), monitors, started: Instant::now(), capturing: false, picked: None });
         id
     }
 
     /// The session still waiting for a pick, if any.
     pub fn waiting(&self) -> Option<String> {
         let guard = self.0.lock().unwrap();
-        guard.as_ref().filter(|s| s.picked.is_none() && s.started.elapsed() < SESSION_TTL).map(|s| s.id.clone())
+        guard.as_ref().filter(|s| !s.capturing && s.picked.is_none() && s.started.elapsed() < SESSION_TTL).map(|s| s.id.clone())
     }
 
     /// The monitor an overlay is on, for a session still waiting for a pick.
     pub fn monitor(&self, session_id: &str, index: usize) -> Option<Monitor> {
         let guard = self.0.lock().unwrap();
-        let s = guard.as_ref().filter(|s| s.id == session_id && s.picked.is_none() && s.started.elapsed() < SESSION_TTL)?;
+        let s = guard.as_ref().filter(|s| s.id == session_id && !s.capturing && s.picked.is_none() && s.started.elapsed() < SESSION_TTL)?;
         s.monitors.get(index).cloned()
+    }
+
+    /// Still this session, including a capture or preview which no longer has overlays.
+    pub fn owns(&self, session_id: &str) -> bool {
+        self.0.lock().unwrap().as_ref().is_some_and(|s| s.id == session_id)
+    }
+
+    /// Reserve the one screen copy before closing overlays or yielding to GDI.
+    /// A second overlay release cannot cancel the first successful preview.
+    pub fn claim_pick(&self, session_id: &str, index: usize) -> Option<Monitor> {
+        let mut guard = self.0.lock().unwrap();
+        let s = guard.as_mut().filter(|s| s.id == session_id && !s.capturing && s.picked.is_none() && s.started.elapsed() < SESSION_TTL)?;
+        let monitor = s.monitors.get(index)?.clone();
+        s.capturing = true;
+        Some(monitor)
     }
 
     /// The picture of `region` on `monitor`, captured: Rust keeps the

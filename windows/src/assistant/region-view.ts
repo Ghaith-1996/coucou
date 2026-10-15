@@ -7,7 +7,7 @@ import { btn, card, stack, type ViewHost } from "../views/views";
 import { State } from "../core/state";
 import { providerDef, activeModel } from "../core/providers";
 import { t, tl } from "../i18n/i18n";
-import { Region, addMask, regionAsk, regionCancel, removeMask } from "./region";
+import { Region, addMask, onRegionReset, regionAsk, regionCancel, removeMask } from "./region";
 
 /** The model the chat will send it to, as the picker names it. */
 function destination(): string {
@@ -45,6 +45,14 @@ export function buildRegion(): ViewHost {
   }
 
   let start: { x: number; y: number } | null = null;
+  onRegionReset(() => {
+    shownImage = "";
+    shownMasks = "";
+    img.removeAttribute("src");
+    masks.replaceChildren();
+    start = null;
+    draft.hidden = true;
+  });
   frame.addEventListener("pointerdown", (e) => {
     if (Region.status !== "preview" || e.button !== 0) return;
     if ((e.target as HTMLElement).classList.contains("region-mask")) return;
@@ -89,7 +97,8 @@ export function buildRegion(): ViewHost {
       const p = Region.preview;
       if ((p?.image ?? "") !== shownImage) {
         shownImage = p?.image ?? "";
-        img.src = shownImage;
+        if (shownImage) img.setAttribute("src", shownImage);
+        else img.removeAttribute("src");
       }
       const key = JSON.stringify(Region.masks);
       if (key !== shownMasks && p) {
@@ -115,6 +124,7 @@ export function buildRegion(): ViewHost {
         { model: destination() },
       );
       (ask as HTMLButtonElement).disabled = Region.status !== "preview";
+      (cancel as HTMLButtonElement).disabled = Region.status === "attaching";
     },
   };
 }

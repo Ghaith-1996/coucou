@@ -4,14 +4,14 @@
 // shows it with where it will go. The user may black out parts of it. "Ask
 // about it" hands the grant and the masks back; Rust saves the masked PNG
 // into the inbox and the chat opens with it attached, to be sent with the
-// first question. Cancel drops it. Nothing is captured before the user lets
+// first question. Cancel before confirmation drops it. Nothing is captured before the user lets
 // go of a rectangle, and nothing leaves the PC before they press Send.
 
 import { Bridge, onEvent } from "../core/bridge";
 import type { IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import type { RegionPreview, RegionRect } from "./contracts";
+import type { RegionEnded, RegionPreview, RegionRect } from "./contracts";
 
 /** What the region card needs from the island. */
 export interface RegionHost {
@@ -31,6 +31,15 @@ let pinnedByRegion = false;
 let userPinned = false;
 /** The card was seen on screen for the current picture. */
 let shown = false;
+/** Invalidate pending native starts when this flow is canceled or replaced. */
+let generation = 0;
+let startup: { previews: Map<string, RegionPreview>; endings: Map<string, RegionEnded> } | null = null;
+const resetListeners = new Set<() => void>();
+
+/** Permanent views must release pictures even when the island stops syncing them. */
+export function onRegionReset(clear: () => void) {
+  resetListeners.add(clear);
+}
 
 export const Region = {
   /** "picking" while the overlays are up, "preview" while the card shows. */
@@ -43,15 +52,31 @@ export const Region = {
 
 /** The chat's button: the overlays come up on every monitor. */
 export async function startRegion() {
-  if (Region.status !== "idle" && Region.status !== "preview") return;
+  if (State.pendingApproval || (Region.status !== "idle" && Region.status !== "preview")) return;
   if (Region.session) void Bridge.regionCancel(Region.session);
-  reset();
+  end();
+  const own = generation;
+  const pending = { previews: new Map<string, RegionPreview>(), endings: new Map<string, RegionEnded>() };
+  startup = pending;
   Region.status = "starting";
+  State.notify();
   try {
-    Region.session = await Bridge.regionStart();
-    if (Region.status === "starting") Region.status = "picking";
+    const session = await Bridge.regionStart();
+    if (generation !== own) {
+      void Bridge.regionCancel(session);
+      return;
+    }
+    startup = null;
+    Region.session = session;
+    Region.status = "picking";
+    for (const id of pending.previews.keys()) if (id !== session) void Bridge.regionCancel(id);
+    const ending = pending.endings.get(session);
+    const preview = pending.previews.get(session);
+    if (ending) ended(ending);
+    else if (preview) accept(preview);
   } catch {
-    reset();
+    if (generation !== own) return;
+    end();
     Sound.play("error");
   }
   State.notify();
@@ -92,23 +117,30 @@ export async function regionAsk() {
   } catch {
     if (Region.preview !== p) return;
     end();
-    host.collapse();
+    if (State.view === "region" && !State.pendingApproval) host.collapse();
     Sound.play("error");
   }
 }
 
-/** Cancel or Escape on the card: the picture is dropped. */
+/** Cancel or Escape before confirmation: the picture is dropped. */
 export function regionCancel() {
+  // Confirmation commits the write. Do not pretend to cancel it while Rust
+  // owns the pixels: its successful file must still reach the chat.
+  if (Region.status === "attaching") return;
   const session = Region.session;
   if (session) void Bridge.regionCancel(session);
-  const shown = Region.status === "preview" || Region.status === "attaching";
+  const shown = Region.status === "preview";
   end();
-  if (shown && State.view === "region") host?.collapse();
+  if (shown && State.view === "region" && !State.pendingApproval) host?.collapse();
 }
 
 function accept(preview: RegionPreview) {
+  if (startup && Region.status === "starting") {
+    startup.previews.set(preview.sessionId, preview);
+    return;
+  }
   // Only the pick this page started.
-  if (preview.sessionId !== Region.session || (Region.status !== "picking" && Region.status !== "starting")) {
+  if (State.pendingApproval || preview.sessionId !== Region.session || (Region.status !== "picking" && Region.status !== "starting")) {
     void Bridge.regionCancel(preview.sessionId);
     return;
   }
@@ -120,24 +152,37 @@ function accept(preview: RegionPreview) {
     pinnedByRegion = true;
     host?.setPinned(true);
   }
+  if (Region.preview !== preview) return;
   Sound.play("finish");
   host?.alert("region");
   host?.takeKeyboard();
   State.notify();
 }
 
-function ended(how: string) {
-  if (Region.status !== "picking" && Region.status !== "starting") return;
+function ended(event: RegionEnded) {
+  if (startup && Region.status === "starting") {
+    startup.endings.set(event.sessionId, event);
+    return;
+  }
+  if (event.sessionId !== Region.session || (Region.status !== "picking" && Region.status !== "starting")) return;
   end();
-  if (how === "failed") Sound.play("error");
+  if (event.reason === "failed") Sound.play("error");
 }
 
 function reset() {
+  generation++;
+  if (startup) {
+    for (const id of startup.previews.keys()) void Bridge.regionCancel(id);
+    startup.previews.clear();
+    startup.endings.clear();
+  }
+  startup = null;
   shown = false;
   Region.status = "idle";
   Region.session = null;
   Region.preview = null;
   Region.masks = [];
+  for (const clear of resetListeners) clear();
 }
 
 function end() {
@@ -152,11 +197,12 @@ function end() {
 /** An agent's card taking the island, or the card going away, drops an
  *  unconfirmed picture: it is only kept while the user is looking at it. */
 function guard() {
-  if (Region.status !== "preview") return;
+  if (Region.status === "idle" || Region.status === "attaching") return;
   if (State.pendingApproval) {
     regionCancel();
     return;
   }
+  if (Region.status !== "preview") return;
   const onScreen = State.view === "region" && State.mode === "expanded";
   if (onScreen) shown = true;
   else if (shown) regionCancel();
@@ -165,7 +211,7 @@ function guard() {
 export function registerRegion(islandHost: RegionHost) {
   host = islandHost;
   void onEvent<RegionPreview>("region-preview", accept);
-  void onEvent<string>("region-ended", ended);
+  void onEvent<RegionEnded>("region-ended", ended);
   State.subscribe(guard);
 }
 

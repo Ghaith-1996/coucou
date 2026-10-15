@@ -103,6 +103,12 @@ export interface RegionRect {
   height: number;
 }
 
+/** Session-scoped terminal event; an old overlay cannot end a newer pick. */
+export interface RegionEnded {
+  sessionId: string;
+  reason: "cancelled" | "failed";
+}
+
 /** `region-preview`: the picked region, to confirm before it goes to the chat. */
 export interface RegionPreview {
   sessionId: string;

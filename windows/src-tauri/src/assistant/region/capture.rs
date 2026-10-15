@@ -1,5 +1,5 @@
 // One rectangle of the screen, copied once with GDI. Coucou's own windows
-// (the island, the desktop Mochi) are excluded from it for the moment of the
+// (the island, Settings, the desktop Mochi) are excluded from it for the moment of the
 // copy (SetWindowDisplayAffinity), then shown to captures again.
 
 use windows::Win32::Foundation::HWND;

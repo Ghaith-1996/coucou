@@ -188,7 +188,7 @@ test("a refused attach attaches nothing", async () => {
 test("the overlays ending without a picture end the pick", async () => {
   answers.set("region_start", "reg-1");
   await startRegion();
-  emit("region-ended", "cancelled");
+  emit("region-ended", { sessionId: "reg-1", reason: "cancelled" });
   await flush();
   assert.equal(Region.status, "idle");
   assert.equal(Region.session, null);
@@ -198,4 +198,128 @@ test("a refused start leaves nothing behind", async () => {
   answers.set("region_start", new Error("unavailable"));
   await startRegion();
   assert.equal(Region.status, "idle");
+});
+
+
+function deferredAnswer(t, command, fallback = null) {
+  const deferred = Promise.withResolvers();
+  answers.set(command, deferred.promise);
+  t.after(async () => { deferred.resolve(fallback); await flush(); });
+  return deferred;
+}
+
+test("an approval interrupts an active pick before a picture exists", async () => {
+  answers.set("region_start", "reg-1");
+  await startRegion();
+  State.pendingApproval = { tool: "Bash" };
+  State.view = "approval";
+  State.isPinned = true;
+  State.notify();
+  assert.equal(Region.status, "idle");
+  assert.deepEqual(sent("region_cancel"), [{ sessionId: "reg-1" }]);
+  assert.equal(State.view, "approval");
+  assert.equal(State.isPinned, true);
+});
+
+test("approval during startup cancels the eventual native session without reclaiming the island", async (t) => {
+  const native = deferredAnswer(t, "region_start", "reg-old");
+  const starting = startRegion();
+  State.pendingApproval = { tool: "Bash" };
+  State.view = "approval";
+  State.isPinned = true;
+  State.notify();
+  native.resolve("reg-old");
+  await starting;
+  assert.equal(Region.status, "idle");
+  assert.equal(Region.session, null);
+  assert.deepEqual(sent("region_cancel"), [{ sessionId: "reg-old" }]);
+  assert.equal(State.view, "approval");
+  assert.equal(State.isPinned, true);
+});
+
+test("an existing approval prevents native startup", async () => {
+  State.pendingApproval = { tool: "Bash" };
+  await startRegion();
+  assert.equal(Region.status, "idle");
+  assert.equal(sent("region_start").length, 0);
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`a canceled start's late ${outcome} cannot replace a newer pick`, async (t) => {
+    const native = deferredAnswer(t, "region_start", "reg-old");
+    const oldStart = startRegion();
+    await flush();
+    regionCancel();
+    answers.set("region_start", "reg-new");
+    await startRegion();
+    if (outcome === "success") native.resolve("reg-old");
+    else native.reject(new Error("start failed"));
+    await oldStart;
+    assert.equal(Region.status, "picking");
+    assert.equal(Region.session, "reg-new");
+    emit("region-ended", { sessionId: "reg-old", reason: "cancelled" });
+    await flush();
+    assert.equal(Region.session, "reg-new", "late native cancellation is session-scoped");
+  });
+}
+
+test("a preview arriving before startup resolves is accepted only for that returned session", async (t) => {
+  const native = deferredAnswer(t, "region_start", "reg-1");
+  const starting = startRegion();
+  emit("region-preview", preview());
+  native.resolve("reg-1");
+  await starting;
+  assert.equal(Region.status, "preview");
+  assert.deepEqual(host.alerts, ["region"]);
+  assert.equal(sent("region_cancel").length, 0);
+});
+
+test("an overlay closed before startup resolves cannot leave the frontend picking forever", async (t) => {
+  const native = deferredAnswer(t, "region_start", "reg-1");
+  const starting = startRegion();
+  emit("region-ended", { sessionId: "reg-1", reason: "cancelled" });
+  native.resolve("reg-1");
+  await starting;
+  assert.equal(Region.status, "idle");
+  assert.equal(Region.session, null);
+});
+
+test("cancel after confirmation cannot discard a successful attachment", async (t) => {
+  await picked();
+  const result = { file: { name: "Screen region.png", path: "C:/inbox/region.png" } };
+  const native = deferredAnswer(t, "region_attach", result);
+  const attaching = regionAsk();
+  regionCancel();
+  assert.equal(Region.status, "attaching");
+  assert.equal(sent("region_cancel").length, 0);
+  native.resolve(result);
+  await attaching;
+  assert.deepEqual(host.files, [result.file]);
+  assert.equal(Region.status, "idle");
+});
+
+test("an attachment error cannot fold a newer permission card", async (t) => {
+  await picked();
+  const native = deferredAnswer(t, "region_attach");
+  const attaching = regionAsk();
+  State.pendingApproval = { tool: "Bash" };
+  State.view = "approval";
+  State.isPinned = true;
+  State.notify();
+  native.reject(new Error("could not store image"));
+  await attaching;
+  assert.equal(Region.status, "idle");
+  assert.equal(State.view, "approval");
+  assert.equal(State.mode, "expanded");
+  assert.equal(State.isPinned, true);
+});
+
+test("approval notification before navigation does not fold the island", async () => {
+  await picked();
+  State.pendingApproval = { tool: "Bash" };
+  State.isPinned = true;
+  State.notify();
+  assert.equal(Region.status, "idle");
+  assert.equal(State.mode, "expanded");
+  assert.equal(State.isPinned, true);
 });

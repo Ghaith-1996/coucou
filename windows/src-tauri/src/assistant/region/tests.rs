@@ -172,3 +172,40 @@ fn a_real_rectangle_of_the_screen_is_copied() {
     assert!(image.rgba.chunks_exact(4).all(|p| p[3] == 255));
     println!("first pixel {:?}", &image.rgba[..4]);
 }
+
+#[test]
+fn only_one_overlay_can_claim_a_capture() {
+    let regions = Regions::default();
+    let id = regions.start(vec![monitor(), monitor()]);
+    let m = regions.claim_pick(&id, 0).unwrap();
+    assert!(regions.owns(&id));
+    assert!(regions.waiting().is_none());
+    assert!(regions.monitor(&id, 1).is_none());
+    assert!(regions.claim_pick(&id, 1).is_none(), "the second overlay cannot start another capture");
+    let preview = regions.picked(&id, &m, rect(0, 0, 30, 40), solid(30, 40, [0; 4])).unwrap();
+    assert!(regions.claim_pick(&id, 0).is_none());
+    assert!(regions.confirm(&id, &preview.grant).is_ok(), "the first picture keeps its grant");
+}
+
+#[test]
+fn invalid_or_stale_claims_do_not_reserve_the_current_pick() {
+    let regions = Regions::default();
+    let old = regions.start(vec![monitor()]);
+    let new = regions.start(vec![monitor()]);
+    assert!(!regions.owns(&old));
+    assert!(regions.claim_pick(&old, 0).is_none());
+    assert!(regions.claim_pick(&new, 9).is_none());
+    assert_eq!(regions.waiting().as_deref(), Some(new.as_str()));
+    assert!(regions.claim_pick(&new, 0).is_some());
+}
+
+#[test]
+fn a_canceled_capture_cannot_publish_over_its_replacement() {
+    let regions = Regions::default();
+    let old = regions.start(vec![monitor()]);
+    let m = regions.claim_pick(&old, 0).unwrap();
+    assert!(regions.cancel(&old));
+    let new = regions.start(vec![monitor()]);
+    assert_eq!(regions.picked(&old, &m, rect(0, 0, 30, 40), solid(30, 40, [0; 4])).unwrap_err(), ErrorCode::Expired);
+    assert_eq!(regions.waiting().as_deref(), Some(new.as_str()));
+}

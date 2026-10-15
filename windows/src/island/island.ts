@@ -557,7 +557,10 @@ export class Island {
     State.promptContext = { kind: "file", name: file.name, path: file.path };
     State.chatHistory = [];
     void Bridge.chatReset();
-    this.setView("prompt");
+    // Confirmation may finish after an agent requests permission. Keep its
+    // priority card visible; the unsent image waits in the chat context.
+    if (!State.pendingApproval) this.setView("prompt");
+    else State.notify();
   }
 
   /** The assistant's chat draft: the chat opens with `text` in its field,

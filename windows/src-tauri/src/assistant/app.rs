@@ -128,9 +128,15 @@ pub fn assistant_app_propose(voice: State<Voice>, capture_id: String, name: Stri
 
 /// The user confirmed the app on the card: Rust checks the grant against the
 /// action it kept, finds the app again by its id and opens it, then reports
-/// what came of it (and logs it, without the app's name).
+/// what came of it (and logs it, without the app's name). `auto`: no click,
+/// the card opened it because "Do it without asking" is on; Rust checks the
+/// switch itself, before and at the moment the app starts.
 #[tauri::command]
-pub async fn assistant_app_launch(voice: State<'_, Voice>, capture_id: String, grant: Grant) -> Result<ActionReceipt, ErrorCode> {
+pub async fn assistant_app_launch(voice: State<'_, Voice>, capture_id: String, grant: Grant, auto: Option<bool>) -> Result<ActionReceipt, ErrorCode> {
+    let auto = auto.unwrap_or(false);
+    if auto && !super::tools::auto_run_on() {
+        return Err(ErrorCode::Unavailable);
+    }
     let (action_id, args) = voice.confirm(&capture_id, &grant)?;
     let ValidArgs::LaunchApp(args) = args else { return Err(ErrorCode::InvalidArgs) };
     #[cfg(windows)]
@@ -139,6 +145,10 @@ pub async fn assistant_app_launch(voice: State<'_, Voice>, capture_id: String, g
         match found {
             // Gone since it was offered (uninstalled, renamed).
             None => ActionReceipt::failed(&action_id, ErrorCode::Unavailable),
+            Some(app) if auto => {
+                let gate = super::tools::ActionScope::new().gated(super::tools::auto_run_on);
+                super::launch::open_if(action_id, app.target, Some(gate)).await?
+            }
             Some(app) => super::launch::open(action_id, app.target).await?,
         }
     };

@@ -317,10 +317,12 @@ async function findApp(id: string, name: string) {
     Voice.app = { name, status: "missing" };
   }
   State.notify();
+  // "Do it without asking": no click. Rust checks the switch again itself.
+  if (Voice.app.status === "ready" && State.settings.assistantAutoRun) void voiceOpen(true);
 }
 
-/** The user's click on "Open <app>": Rust checks the grant and opens it. */
-export async function voiceOpen() {
+/** The user's click on "Open <app>" (or `auto`, see findApp): Rust checks the grant and opens it. */
+export async function voiceOpen(auto = false) {
   const current = Voice.event;
   const app = Voice.app;
   if (current?.state !== "preview" || Voice.copying || Voice.using || app?.status !== "ready" || !host) return;
@@ -328,7 +330,7 @@ export async function voiceOpen() {
   State.notify();
   const requestGeneration = generation;
   try {
-    const receipt = await Bridge.appLaunch(current.captureId, app.grant);
+    const receipt = await Bridge.appLaunch(current.captureId, app.grant, auto);
     if (requestGeneration !== generation) return;
     end();
     // `unknown`: it may still be opening, or not at all. Never tried again.

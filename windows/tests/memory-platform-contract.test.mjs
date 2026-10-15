@@ -24,7 +24,7 @@ test("one native Windows capability controls memory advertising and execution", 
 test("stale or direct remember calls are refused before validating text or publishing a proposal", () => {
   assert.match(tools, /async fn remember\([^\n]*\{\s*if let Err\(reason\) = require_memory\(MEMORY_SUPPORTED\) \{\s*return result\(reason\);\s*\}\s*let Ok\(text\) = crate::memory::clean/);
   assert.match(tools, /fn require_memory\(memory_supported: bool\) -> Result<\(\), &'static str> \{\s*memory_supported\.then_some\(\(\)\)\.ok_or\("Memory is only available on Windows\."\)\s*\}/);
-  assert.match(tools, /"remember" => remember\(app,[^\n]*intent, request_id, scope\)\.await/);
+  assert.match(tools, /"remember" => remember\(app,[^\n]*intent, request_id, scope, remember_asked\)\.await/);
 });
 
 test("Settings constructs Memory only on Windows and keeps the same key-store platform check", () => {

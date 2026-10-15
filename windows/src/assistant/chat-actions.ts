@@ -1,7 +1,9 @@
 // The chat's action cards: when ChatGPT wants to do something on the PC
 // (assistant/tools.rs), Rust shows what exactly, and waits. "Do it" hands
-// Rust's grant back; "No" says no. Nothing runs without the click, and a
-// card goes away when Rust stops waiting (answered, two minutes, Stop).
+// Rust's grant back; "No" says no. A card goes away when Rust stops waiting
+// (answered, two minutes, Stop). With "Do it without asking" on, Rust runs
+// some actions without a card and only reports what came of them: those
+// are notes here, never buttons.
 
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
@@ -22,16 +24,38 @@ export interface ActionCard {
   answered?: boolean;
 }
 
+/** An action Rust ran without a card, and what came of it. */
+export interface AutoNote {
+  kind: ActionKind;
+  /** The app's name, the tab's title, the page's site or the memory's text. */
+  label: string;
+  outcome: "succeeded" | "failed" | "cancelled" | "unknown";
+}
+
 export const ChatActions = {
   cards: [] as ActionCard[],
   /** Read-only tools used during the current answer ("browser-tabs"). */
   used: [] as string[],
+  /** Actions that ran without a card during the current answer. */
+  auto: [] as AutoNote[],
 };
 
 /** Correlation only: this never grants permission for an action. */
 interface ToolUsed {
   requestId: string | null;
   tool: string;
+  kind?: unknown;
+  label?: unknown;
+  outcome?: unknown;
+}
+
+const OUTCOMES: readonly AutoNote["outcome"][] = ["succeeded", "failed", "cancelled", "unknown"];
+
+function autoNote(event: ToolUsed): AutoNote | null {
+  const { kind, label, outcome } = event;
+  if (!ACTION_KINDS.some((entry) => entry.kind === kind) || typeof label !== "string"
+    || !OUTCOMES.includes(outcome as AutoNote["outcome"])) return null;
+  return { kind: kind as ActionKind, label, outcome: outcome as AutoNote["outcome"] };
 }
 
 let toolNotesFor: { requestId: string; messages: typeof State.chatHistory } | null = null;
@@ -62,10 +86,14 @@ function isActionCard(raw: unknown): raw is ActionCard {
 
 /** Change ownership before notifying: a synchronous reset must stay retired. */
 function replaceRequest(next: typeof toolNotesFor, forgetNotes: boolean) {
-  const changed = ChatActions.cards.length > 0 || (forgetNotes && ChatActions.used.length > 0);
+  const changed = ChatActions.cards.length > 0
+    || (forgetNotes && (ChatActions.used.length > 0 || ChatActions.auto.length > 0));
   toolNotesFor = next;
   ChatActions.cards = [];
-  if (forgetNotes) ChatActions.used = [];
+  if (forgetNotes) {
+    ChatActions.used = [];
+    ChatActions.auto = [];
+  }
   if (changed) State.notify();
 }
 
@@ -117,8 +145,16 @@ export function registerChatActions() {
   });
   void onEvent<string>("chat-action-closed", close);
   void onEvent<ToolUsed>("chat-tool-used", (event) => {
-    if (!ownsRequest(event?.requestId) || event.tool !== "browser-tabs") return;
-    if (!ChatActions.used.includes(event.tool)) ChatActions.used.push(event.tool);
+    if (!ownsRequest(event?.requestId)) return;
+    if (event.tool === "auto-action") {
+      const note = autoNote(event);
+      if (!note) return;
+      ChatActions.auto.push(note);
+    } else if (event.tool === "browser-tabs") {
+      if (!ChatActions.used.includes(event.tool)) ChatActions.used.push(event.tool);
+    } else {
+      return;
+    }
     State.notify();
   });
 }
@@ -128,4 +164,5 @@ export function resetChatActionsForTests() {
   toolNotesFor = null;
   ChatActions.cards = [];
   ChatActions.used = [];
+  ChatActions.auto = [];
 }

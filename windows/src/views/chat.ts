@@ -31,7 +31,7 @@ import { HOST_OS } from "../core/pills";
 import { Voice, voiceShortcut } from "../assistant/voice";
 import { captureReleasePending, captureReleaseFailed, retryCaptureRelease } from "../assistant/capture-release";
 import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
-import { ChatActions, answerCard, beginToolNotes, clearToolNotes, retireActionCards } from "../assistant/chat-actions";
+import { ChatActions, answerCard, beginToolNotes, clearToolNotes, retireActionCards, type AutoNote } from "../assistant/chat-actions";
 import { Region, startRegion } from "../assistant/region";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
@@ -58,6 +58,15 @@ const STRINGS = {
   doIt: N_("Do it"),
   no: N_("No"),
   lookedAtTabs: N_("Looked at your browser tabs"),
+  autoOpened: N_("Opened {label}"),
+  autoStarted: N_("Started {label}"),
+  autoNotOpened: N_("Couldn't open {label}"),
+  autoSwitched: N_("Switched to {label}"),
+  autoSwitchUnsure: N_("Couldn't confirm the switch to {label}"),
+  autoNotSwitched: N_("Couldn't switch to {label}"),
+  autoSentPage: N_("Sent {label} to your browser"),
+  autoRemembered: N_("Remembered: {label}"),
+  autoNotRemembered: N_("Couldn't remember: {label}"),
   audioError: N_("Audio mode ended. Check your microphone and speech model in Settings, then try again."),
   audioSpeechError: N_("Could not read the answer aloud. Audio mode ended. Please try again."),
   audioModel: N_("Download a speech model in Settings to use audio mode."),
@@ -122,6 +131,22 @@ function refreshChatGpt(then?: () => void) {
 }
 
 /** How an answer is signed: "GPT-6.1 Sol · Max", "claude-opus-5". */
+/** What an action that ran without a card came to. A page handed to the
+ *  browser is never "opened": Windows can't say whether it loaded. */
+export function autoNoteText(note: AutoNote): string {
+  const failed = note.outcome === "failed" || note.outcome === "cancelled";
+  switch (note.kind) {
+    case "switch-tab":
+      return failed ? STRINGS.autoNotSwitched : note.outcome === "succeeded" ? STRINGS.autoSwitched : STRINGS.autoSwitchUnsure;
+    case "open-url":
+      return failed ? STRINGS.autoNotOpened : STRINGS.autoSentPage;
+    case "memory-save":
+      return failed ? STRINGS.autoNotRemembered : STRINGS.autoRemembered;
+    default:
+      return failed ? STRINGS.autoNotOpened : note.outcome === "succeeded" ? STRINGS.autoOpened : STRINGS.autoStarted;
+  }
+}
+
 function signature(m: ChatMessage): string {
   if (!m.model) return "";
   const name = catalog?.find((c) => c.id === m.model)?.label ?? modelLabel(m.model);
@@ -1326,12 +1351,15 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   refreshChatGpt();
 
   function drawCards() {
-    const key = JSON.stringify([ChatActions.cards.map((c) => [c.actionId, c.answered]), ChatActions.used]);
+    const key = JSON.stringify([ChatActions.cards.map((c) => [c.actionId, c.answered]), ChatActions.used, ChatActions.auto]);
     if (key === shownCards) return;
     shownCards = key;
     clear(actionSlot);
     for (const used of ChatActions.used) {
       if (used === "browser-tabs") actionSlot.append(h("div", { class: "tool-note", text: t(STRINGS.lookedAtTabs) }));
+    }
+    for (const note of ChatActions.auto) {
+      actionSlot.append(h("div", { class: "tool-note", text: t(autoNoteText(note), { label: note.label }) }));
     }
     for (const card of ChatActions.cards) {
       const question = card.kind === "switch-tab" ? STRINGS.switchTab

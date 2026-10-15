@@ -9,7 +9,7 @@ import { t } from "../i18n/i18n";
 
 const STRINGS = {
   get title() { return t("Memory"); },
-  get hint() { return t("What the chat knows about you, in every conversation. Kept on this PC, encrypted for your Windows account. The chat can propose an item; nothing is saved until you confirm it."); },
+  get hint() { return t("What the chat knows about you, in every conversation. Kept on this PC, encrypted for your Windows account. The chat can propose an item; you confirm it on a card, unless you asked it to remember and Do it without asking is on."); },
   get sent() { return t("When it is on, it goes with every question to the model you chat with, local or online."); },
   get use() { return t("Use memory in the chat"); },
   get placeholder() { return t("Something the chat should remember…"); },

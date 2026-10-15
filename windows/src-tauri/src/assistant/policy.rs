@@ -17,7 +17,6 @@ pub const MAX_ACTIVE_PILLS: usize = 4;
 
 /// Longest text a draft or an insertion may carry.
 pub const MAX_TEXT_CHARS: usize = 4000;
-pub const MAX_QUESTION_CHARS: usize = 1000;
 /// How far ahead an action may expire. Anything later is refused: an action
 /// is for now, not for whenever.
 pub const MAX_LIFETIME_MS: u64 = 5 * 60 * 1000;
@@ -94,9 +93,11 @@ pub fn validate(kind: ActionKind, args: &serde_json::Value) -> Option<ValidArgs>
         ActionKind::AskRegion => {
             let a: AskRegionArgs = serde_json::from_value(args).ok()?;
             let size_ok = |n: u32| (1..=16_384).contains(&n);
-            (text_ok(&a.question, MAX_QUESTION_CHARS)
-                && !a.monitor.is_empty()
+            (!a.monitor.trim().is_empty()
                 && a.monitor.len() <= 128
+                && a.monitor.chars().all(|c| !c.is_control())
+                && a.x >= 0
+                && a.y >= 0
                 && size_ok(a.width)
                 && size_ok(a.height))
             .then_some(ValidArgs::AskRegion(a))?

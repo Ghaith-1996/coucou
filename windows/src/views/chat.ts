@@ -29,6 +29,7 @@ import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
 import { voiceShortcut } from "../assistant/voice";
+import { Region, startRegion } from "../assistant/region";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -38,6 +39,7 @@ const STRINGS = {
   send: N_("Send"),
   stop: N_("Stop"),
   voice: N_("Start voice capture"),
+  region: N_("Ask about a screen region"),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
@@ -830,7 +832,13 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     title: tl(STRINGS.voice),
     "aria-label": tl(STRINGS.voice),
   }, svg(ICONS.mic, 15, { stroke: 1.8 })) : null;
-  const bar = h("div", { class: "chat-bar" }, input, voice, send);
+  const region = HOST_OS === "windows" ? h("button", {
+    type: "button",
+    class: "region-btn",
+    title: tl(STRINGS.region),
+    "aria-label": tl(STRINGS.region),
+  }, svg(ICONS.region, 15, { stroke: 1.8 })) : null;
+  const bar = h("div", { class: "chat-bar" }, input, region, voice, send);
 
   const modelDot = h("i", { class: "model-dot" });
   const modelName = h("span", { class: "model-name" });
@@ -887,6 +895,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   let usageLimit = false;
   let effortKey = "";
 
+  function composerReserved(): boolean {
+    return startingVoice || Region.status !== "idle";
+  }
+
   function onChatGpt(): boolean {
     return providerDef(State.settings.chatProvider).id === CHATGPT;
   }
@@ -924,9 +936,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.classList.toggle("open", history.isOpen);
     modelBtn.disabled = sending;
     historyBtn.disabled = sending;
-    if (voice) voice.disabled = sending || startingVoice || history.isOpening;
+    if (voice) voice.disabled = sending || composerReserved() || history.isOpening;
+    if (region) region.disabled = sending || composerReserved() || history.isOpening;
     // While an answer comes, the send button is Stop.
-    send.disabled = startingVoice || undoPending || history.isOpening;
+    send.disabled = composerReserved() || undoPending || history.isOpening;
     send.classList.toggle("stop", sending);
     const label = t(sending ? STRINGS.stop : STRINGS.send);
     send.title = label;
@@ -1131,14 +1144,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   async function submit() {
     const query = input.value.trim();
-    if (!query || sending || startingVoice || history.isOpening) return;
+    if (!query || sending || composerReserved() || history.isOpening) return;
     input.value = "";
     await ask(query);
   }
 
   /** The last answer again, with the model and effort picked now. */
   async function regenerate() {
-    if (sending || startingVoice || history.isOpening) return;
+    if (sending || composerReserved() || history.isOpening) return;
     const messages = State.chatHistory;
     const answer = messages[messages.length - 1];
     const question = messages[messages.length - 2];
@@ -1185,8 +1198,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     }
     void submit();
   });
+  region?.addEventListener("click", () => {
+    if (sending || composerReserved() || history.isOpening) return;
+    if (picker.isOpen) picker.close();
+    if (history.isOpen) history.close();
+    void startRegion();
+  });
   voice?.addEventListener("click", async () => {
-    if (sending || startingVoice || history.isOpening) return;
+    if (sending || composerReserved() || history.isOpening) return;
     startingVoice = true;
     if (picker.isOpen) picker.close();
     drawModelButton();

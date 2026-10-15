@@ -4263,6 +4263,171 @@
    "ru": "В меню «Пуск» нет приложения «{name}».",
    "id": "Tidak ada aplikasi bernama “{name}” di menu Start."
   },
+  "Insert into {name}": {
+   "zh-Hans": "插入到 {name}",
+   "hi": "{name} में डालें",
+   "es": "Insertar en {name}",
+   "ar": "إدراج في {name}",
+   "fr": "Insérer dans {name}",
+   "bn": "{name}-এ বসান",
+   "pt-BR": "Inserir em {name}",
+   "ru": "Вставить в {name}",
+   "id": "Sisipkan ke {name}"
+  },
+  "You switched windows, so nothing was typed. Go back to the field, then Insert again.": {
+   "zh-Hans": "你切换了窗口，所以没有输入任何内容。回到该输入框，然后再次点击插入。",
+   "hi": "आपने विंडो बदल दी, इसलिए कुछ भी टाइप नहीं हुआ। फ़ील्ड पर वापस जाएँ, फिर दोबारा डालें दबाएँ।",
+   "es": "Cambiaste de ventana, así que no se escribió nada. Vuelve al campo y pulsa Insertar otra vez.",
+   "ar": "لقد بدّلت النافذة، لذلك لم تُكتب أي كلمة. ارجع إلى الحقل ثم اضغط إدراج مرة أخرى.",
+   "fr": "Vous avez changé de fenêtre, rien n'a donc été tapé. Revenez au champ, puis Insérer à nouveau.",
+   "bn": "আপনি উইন্ডো বদলেছেন, তাই কিছুই লেখা হয়নি। ঘরে ফিরে গিয়ে আবার বসান চাপুন।",
+   "pt-BR": "Você trocou de janela, então nada foi digitado. Volte ao campo e toque em Inserir de novo.",
+   "ru": "Вы переключились на другое окно, поэтому ничего не было введено. Вернитесь в поле и снова нажмите «Вставить».",
+   "id": "Anda berpindah jendela, jadi tidak ada yang diketik. Kembali ke kolom itu, lalu Sisipkan lagi."
+  },
+  "That field is gone. Nothing was typed.": {
+   "zh-Hans": "该输入框已不存在。没有输入任何内容。",
+   "hi": "वह फ़ील्ड अब नहीं है। कुछ भी टाइप नहीं हुआ।",
+   "es": "Ese campo ya no está. No se escribió nada.",
+   "ar": "لم يعد ذلك الحقل موجودًا. لم تُكتب أي كلمة.",
+   "fr": "Ce champ n'existe plus. Rien n'a été tapé.",
+   "bn": "সেই ঘরটি আর নেই। কিছুই লেখা হয়নি।",
+   "pt-BR": "Esse campo não existe mais. Nada foi digitado.",
+   "ru": "Этого поля больше нет. Ничего не было введено.",
+   "id": "Kolom itu sudah tidak ada. Tidak ada yang diketik."
+  },
+  "That's a password field: Coucou never types there.": {
+   "zh-Hans": "这是密码框：Coucou 从不在那里输入。",
+   "hi": "यह पासवर्ड फ़ील्ड है: Coucou वहाँ कभी टाइप नहीं करता।",
+   "es": "Es un campo de contraseña: Coucou nunca escribe ahí.",
+   "ar": "هذا حقل كلمة مرور: لا يكتب Coucou فيه أبدًا.",
+   "fr": "C'est un champ de mot de passe : Coucou n'y tape jamais.",
+   "bn": "এটি পাসওয়ার্ডের ঘর: Coucou সেখানে কখনো লেখে না।",
+   "pt-BR": "É um campo de senha: o Coucou nunca digita ali.",
+   "ru": "Это поле пароля: Coucou никогда туда не вводит.",
+   "id": "Itu kolom kata sandi: Coucou tidak pernah mengetik di sana."
+  },
+  "That field is read-only.": {
+   "zh-Hans": "该输入框为只读。",
+   "hi": "वह फ़ील्ड केवल पढ़ने के लिए है।",
+   "es": "Ese campo es de solo lectura.",
+   "ar": "ذلك الحقل للقراءة فقط.",
+   "fr": "Ce champ est en lecture seule.",
+   "bn": "সেই ঘরটি শুধু পড়ার জন্য।",
+   "pt-BR": "Esse campo é somente leitura.",
+   "ru": "Это поле только для чтения.",
+   "id": "Kolom itu hanya-baca."
+  },
+  "This field doesn't take dictated text. Use it in chat.": {
+   "zh-Hans": "此输入框不接受听写文本。请在聊天中使用。",
+   "hi": "यह फ़ील्ड बोला गया टेक्स्ट नहीं लेता। इसे चैट में इस्तेमाल करें।",
+   "es": "Este campo no acepta texto dictado. Úsalo en el chat.",
+   "ar": "هذا الحقل لا يقبل النص المُملى. استخدمه في الدردشة.",
+   "fr": "Ce champ n'accepte pas le texte dicté. Utilisez-le dans le chat.",
+   "bn": "এই ঘরে বলা লেখা বসানো যায় না। চ্যাটে ব্যবহার করুন।",
+   "pt-BR": "Este campo não aceita texto ditado. Use-o no chat.",
+   "ru": "Это поле не принимает надиктованный текст. Используйте в чате.",
+   "id": "Kolom ini tidak menerima teks dikte. Gunakan di obrolan."
+  },
+  "The field changed. Nothing was typed. Check it, then Insert again.": {
+   "zh-Hans": "输入框的内容已更改。没有输入任何内容。请检查后再次插入。",
+   "hi": "फ़ील्ड बदल गई है। कुछ भी टाइप नहीं हुआ। उसे जाँचें, फिर दोबारा डालें।",
+   "es": "El campo cambió. No se escribió nada. Revísalo y vuelve a pulsar Insertar.",
+   "ar": "تغيّر الحقل. لم تُكتب أي كلمة. تحقّق منه ثم اضغط إدراج مرة أخرى.",
+   "fr": "Le champ a changé. Rien n'a été tapé. Vérifiez-le, puis cliquez à nouveau sur Insérer.",
+   "bn": "ঘরটি বদলে গেছে। কিছুই লেখা হয়নি। দেখে নিয়ে আবার বসান চাপুন।",
+   "pt-BR": "O campo mudou. Nada foi digitado. Confira e toque em Inserir novamente.",
+   "ru": "Поле изменилось. Ничего не было введено. Проверьте его и снова нажмите «Вставить».",
+   "id": "Kolom berubah. Tidak ada yang diketik. Periksa, lalu Sisipkan lagi."
+  },
+  "Couldn’t copy the text. Try again.": {
+   "zh-Hans": "无法复制文本。请重试。",
+   "hi": "टेक्स्ट कॉपी नहीं हो सका। फिर से कोशिश करें।",
+   "es": "No se pudo copiar el texto. Inténtalo de nuevo.",
+   "ar": "تعذّر نسخ النص. حاول مرة أخرى.",
+   "fr": "Impossible de copier le texte. Réessayez.",
+   "bn": "লেখাটি কপি করা যায়নি। আবার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível copiar o texto. Tente novamente.",
+   "ru": "Не удалось скопировать текст. Попробуйте ещё раз.",
+   "id": "Teks tidak dapat disalin. Coba lagi."
+  },
+  "The app didn't answer. Nothing was typed.": {
+   "zh-Hans": "该应用没有响应。没有输入任何内容。",
+   "hi": "ऐप ने जवाब नहीं दिया। कुछ भी टाइप नहीं हुआ।",
+   "es": "La app no respondió. No se escribió nada.",
+   "ar": "لم يستجب التطبيق. لم تُكتب أي كلمة.",
+   "fr": "L'app n'a pas répondu. Rien n'a été tapé.",
+   "bn": "অ্যাপটি সাড়া দেয়নি। কিছুই লেখা হয়নি।",
+   "pt-BR": "O app não respondeu. Nada foi digitado.",
+   "ru": "Приложение не ответило. Ничего не было введено.",
+   "id": "Aplikasi tidak menjawab. Tidak ada yang diketik."
+  },
+  "Ask about a screen region": {
+   "zh-Hans": "询问屏幕上的某个区域",
+   "hi": "स्क्रीन के किसी हिस्से के बारे में पूछें",
+   "es": "Preguntar sobre una zona de la pantalla",
+   "ar": "اسأل عن منطقة من الشاشة",
+   "fr": "Poser une question sur une zone de l'écran",
+   "bn": "স্ক্রিনের একটি অংশ নিয়ে জিজ্ঞেস করুন",
+   "pt-BR": "Perguntar sobre uma área da tela",
+   "ru": "Спросить об области экрана",
+   "id": "Tanyakan tentang area layar"
+  },
+  "Drag around what you want to ask about. Esc to cancel.": {
+   "zh-Hans": "拖动框选你想询问的内容。按 Esc 取消。",
+   "hi": "जिसके बारे में पूछना है उसके चारों ओर खींचें। रद्द करने के लिए Esc दबाएँ।",
+   "es": "Arrastra alrededor de lo que quieres preguntar. Esc para cancelar.",
+   "ar": "اسحب حول ما تريد السؤال عنه. اضغط Esc للإلغاء.",
+   "fr": "Faites glisser autour de ce qui vous intéresse. Échap pour annuler.",
+   "bn": "যা নিয়ে জিজ্ঞেস করতে চান তার চারপাশে টেনে আনুন। বাতিল করতে Esc চাপুন।",
+   "pt-BR": "Arraste em volta do que você quer perguntar. Esc para cancelar.",
+   "ru": "Обведите то, о чём хотите спросить. Esc — отмена.",
+   "id": "Seret di sekitar yang ingin ditanyakan. Esc untuk batal."
+  },
+  "Ask about this region": {
+   "zh-Hans": "询问这个区域",
+   "hi": "इस हिस्से के बारे में पूछें",
+   "es": "Preguntar sobre esta zona",
+   "ar": "اسأل عن هذه المنطقة",
+   "fr": "Poser une question sur cette zone",
+   "bn": "এই অংশ নিয়ে জিজ্ঞেস করুন",
+   "pt-BR": "Perguntar sobre esta área",
+   "ru": "Спросить об этой области",
+   "id": "Tanyakan tentang area ini"
+  },
+  "Ask about it": {
+   "zh-Hans": "询问",
+   "hi": "इसके बारे में पूछें",
+   "es": "Preguntar",
+   "ar": "اسأل عنها",
+   "fr": "Poser la question",
+   "bn": "জিজ্ঞেস করুন",
+   "pt-BR": "Perguntar",
+   "ru": "Спросить",
+   "id": "Tanyakan"
+  },
+  "Remove this black box": {
+   "zh-Hans": "移除这个黑框",
+   "hi": "यह काला बॉक्स हटाएँ",
+   "es": "Quitar este recuadro negro",
+   "ar": "إزالة هذا المربع الأسود",
+   "fr": "Retirer ce cache noir",
+   "bn": "এই কালো বাক্সটি সরান",
+   "pt-BR": "Remover esta tarja preta",
+   "ru": "Убрать этот чёрный прямоугольник",
+   "id": "Hapus kotak hitam ini"
+  },
+  "Drag over anything private to black it out. Nothing is sent until you ask your question, to {model}.": {
+   "zh-Hans": "拖过任何隐私内容即可涂黑。在你提出问题之前不会发送任何内容，发送对象为 {model}。",
+   "hi": "किसी भी निजी चीज़ पर खींचकर उसे काला करें। जब तक आप सवाल नहीं पूछते, कुछ नहीं भेजा जाता; फिर यह {model} को जाता है।",
+   "es": "Arrastra sobre lo privado para taparlo en negro. No se envía nada hasta que hagas tu pregunta, a {model}.",
+   "ar": "اسحب فوق أي شيء خاص لتغطيته بالأسود. لا يُرسل شيء حتى تطرح سؤالك، إلى {model}.",
+   "fr": "Faites glisser sur ce qui est privé pour le masquer en noir. Rien n'est envoyé avant votre question, à {model}.",
+   "bn": "ব্যক্তিগত যেকোনো কিছুর ওপর টেনে কালো করে দিন। প্রশ্ন না করা পর্যন্ত কিছুই পাঠানো হয় না; তারপর যায় {model}-এ।",
+   "pt-BR": "Arraste sobre o que for privado para cobrir de preto. Nada é enviado até você fazer a pergunta, para {model}.",
+   "ru": "Проведите по личному, чтобы закрасить его чёрным. Ничего не отправляется, пока вы не зададите вопрос — модели {model}.",
+   "id": "Seret di atas hal pribadi untuk menghitamkannya. Tidak ada yang dikirim sampai Anda bertanya, ke {model}."
+  },
   "Low": {
    "zh-Hans": "低",
    "hi": "कम",
@@ -5065,105 +5230,6 @@
    "pt-BR": "Outra operação do ChatGPT está em andamento. Tente novamente.",
    "ru": "Выполняется другая операция ChatGPT. Повторите попытку.",
    "id": "Operasi ChatGPT lain sedang berlangsung. Coba lagi."
-  },
-  "Insert into {name}": {
-   "zh-Hans": "插入到 {name}",
-   "hi": "{name} में डालें",
-   "es": "Insertar en {name}",
-   "ar": "إدراج في {name}",
-   "fr": "Insérer dans {name}",
-   "bn": "{name}-এ বসান",
-   "pt-BR": "Inserir em {name}",
-   "ru": "Вставить в {name}",
-   "id": "Sisipkan ke {name}"
-  },
-  "You switched windows, so nothing was typed. Go back to the field, then Insert again.": {
-   "zh-Hans": "你切换了窗口，所以没有输入任何内容。回到该输入框，然后再次点击插入。",
-   "hi": "आपने विंडो बदल दी, इसलिए कुछ भी टाइप नहीं हुआ। फ़ील्ड पर वापस जाएँ, फिर दोबारा डालें दबाएँ।",
-   "es": "Cambiaste de ventana, así que no se escribió nada. Vuelve al campo y pulsa Insertar otra vez.",
-   "ar": "لقد بدّلت النافذة، لذلك لم تُكتب أي كلمة. ارجع إلى الحقل ثم اضغط إدراج مرة أخرى.",
-   "fr": "Vous avez changé de fenêtre, rien n'a donc été tapé. Revenez au champ, puis Insérer à nouveau.",
-   "bn": "আপনি উইন্ডো বদলেছেন, তাই কিছুই লেখা হয়নি। ঘরে ফিরে গিয়ে আবার বসান চাপুন।",
-   "pt-BR": "Você trocou de janela, então nada foi digitado. Volte ao campo e toque em Inserir de novo.",
-   "ru": "Вы переключились на другое окно, поэтому ничего не было введено. Вернитесь в поле и снова нажмите «Вставить».",
-   "id": "Anda berpindah jendela, jadi tidak ada yang diketik. Kembali ke kolom itu, lalu Sisipkan lagi."
-  },
-  "That field is gone. Nothing was typed.": {
-   "zh-Hans": "该输入框已不存在。没有输入任何内容。",
-   "hi": "वह फ़ील्ड अब नहीं है। कुछ भी टाइप नहीं हुआ।",
-   "es": "Ese campo ya no está. No se escribió nada.",
-   "ar": "لم يعد ذلك الحقل موجودًا. لم تُكتب أي كلمة.",
-   "fr": "Ce champ n'existe plus. Rien n'a été tapé.",
-   "bn": "সেই ঘরটি আর নেই। কিছুই লেখা হয়নি।",
-   "pt-BR": "Esse campo não existe mais. Nada foi digitado.",
-   "ru": "Этого поля больше нет. Ничего не было введено.",
-   "id": "Kolom itu sudah tidak ada. Tidak ada yang diketik."
-  },
-  "That's a password field: Coucou never types there.": {
-   "zh-Hans": "这是密码框：Coucou 从不在那里输入。",
-   "hi": "यह पासवर्ड फ़ील्ड है: Coucou वहाँ कभी टाइप नहीं करता।",
-   "es": "Es un campo de contraseña: Coucou nunca escribe ahí.",
-   "ar": "هذا حقل كلمة مرور: لا يكتب Coucou فيه أبدًا.",
-   "fr": "C'est un champ de mot de passe : Coucou n'y tape jamais.",
-   "bn": "এটি পাসওয়ার্ডের ঘর: Coucou সেখানে কখনো লেখে না।",
-   "pt-BR": "É um campo de senha: o Coucou nunca digita ali.",
-   "ru": "Это поле пароля: Coucou никогда туда не вводит.",
-   "id": "Itu kolom kata sandi: Coucou tidak pernah mengetik di sana."
-  },
-  "That field is read-only.": {
-   "zh-Hans": "该输入框为只读。",
-   "hi": "वह फ़ील्ड केवल पढ़ने के लिए है।",
-   "es": "Ese campo es de solo lectura.",
-   "ar": "ذلك الحقل للقراءة فقط.",
-   "fr": "Ce champ est en lecture seule.",
-   "bn": "সেই ঘরটি শুধু পড়ার জন্য।",
-   "pt-BR": "Esse campo é somente leitura.",
-   "ru": "Это поле только для чтения.",
-   "id": "Kolom itu hanya-baca."
-  },
-  "This field doesn't take dictated text. Use it in chat.": {
-   "zh-Hans": "此输入框不接受听写文本。请在聊天中使用。",
-   "hi": "यह फ़ील्ड बोला गया टेक्स्ट नहीं लेता। इसे चैट में इस्तेमाल करें।",
-   "es": "Este campo no acepta texto dictado. Úsalo en el chat.",
-   "ar": "هذا الحقل لا يقبل النص المُملى. استخدمه في الدردشة.",
-   "fr": "Ce champ n'accepte pas le texte dicté. Utilisez-le dans le chat.",
-   "bn": "এই ঘরে বলা লেখা বসানো যায় না। চ্যাটে ব্যবহার করুন।",
-   "pt-BR": "Este campo não aceita texto ditado. Use-o no chat.",
-   "ru": "Это поле не принимает надиктованный текст. Используйте в чате.",
-   "id": "Kolom ini tidak menerima teks dikte. Gunakan di obrolan."
-  },
-  "The field changed. Nothing was typed. Check it, then Insert again.": {
-   "zh-Hans": "输入框的内容已更改。没有输入任何内容。请检查后再次插入。",
-   "hi": "फ़ील्ड बदल गई है। कुछ भी टाइप नहीं हुआ। उसे जाँचें, फिर दोबारा डालें।",
-   "es": "El campo cambió. No se escribió nada. Revísalo y vuelve a pulsar Insertar.",
-   "ar": "تغيّر الحقل. لم تُكتب أي كلمة. تحقّق منه ثم اضغط إدراج مرة أخرى.",
-   "fr": "Le champ a changé. Rien n'a été tapé. Vérifiez-le, puis cliquez à nouveau sur Insérer.",
-   "bn": "ঘরটি বদলে গেছে। কিছুই লেখা হয়নি। দেখে নিয়ে আবার বসান চাপুন।",
-   "pt-BR": "O campo mudou. Nada foi digitado. Confira e toque em Inserir novamente.",
-   "ru": "Поле изменилось. Ничего не было введено. Проверьте его и снова нажмите «Вставить».",
-   "id": "Kolom berubah. Tidak ada yang diketik. Periksa, lalu Sisipkan lagi."
-  },
-  "Couldn’t copy the text. Try again.": {
-   "zh-Hans": "无法复制文本。请重试。",
-   "hi": "टेक्स्ट कॉपी नहीं हो सका। फिर से कोशिश करें।",
-   "es": "No se pudo copiar el texto. Inténtalo de nuevo.",
-   "ar": "تعذّر نسخ النص. حاول مرة أخرى.",
-   "fr": "Impossible de copier le texte. Réessayez.",
-   "bn": "লেখাটি কপি করা যায়নি। আবার চেষ্টা করুন।",
-   "pt-BR": "Não foi possível copiar o texto. Tente novamente.",
-   "ru": "Не удалось скопировать текст. Попробуйте ещё раз.",
-   "id": "Teks tidak dapat disalin. Coba lagi."
-  },
-  "The app didn't answer. Nothing was typed.": {
-   "zh-Hans": "该应用没有响应。没有输入任何内容。",
-   "hi": "ऐप ने जवाब नहीं दिया। कुछ भी टाइप नहीं हुआ।",
-   "es": "La app no respondió. No se escribió nada.",
-   "ar": "لم يستجب التطبيق. لم تُكتب أي كلمة.",
-   "fr": "L'app n'a pas répondu. Rien n'a été tapé.",
-   "bn": "অ্যাপটি সাড়া দেয়নি। কিছুই লেখা হয়নি।",
-   "pt-BR": "O app não respondeu. Nada foi digitado.",
-   "ru": "Приложение не ответило. Ничего не было введено.",
-   "id": "Aplikasi tidak menjawab. Tidak ada yang diketik."
   }
  }
 }

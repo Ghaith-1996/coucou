@@ -9,7 +9,7 @@ import type { Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
-import type { ActionReceipt, AppGrant, InsertCopyReply, InsertOfferReply, InsertTextReply } from "../assistant/contracts";
+import type { ActionReceipt, AppGrant, InsertCopyReply, InsertOfferReply, InsertTextReply, RegionRect } from "../assistant/contracts";
 import type { ChatGptDisconnectResult, ChatGptModel, ChatGptStatus } from "./chatgpt";
 import type { ChatMessage } from "./state";
 
@@ -502,6 +502,22 @@ export const Bridge = {
   /** The user confirmed "Insert into <app>": Rust checks the field again, then writes and reads back. */
   insertText: (captureId: string, grant: AppGrant) =>
     callOrThrow<InsertTextReply>("assistant_insert_text", { captureId, grant }),
+  /**
+   * "Ask about a screen region": an overlay on every monitor for the user to
+   * drag a rectangle on. The session id; the picture comes as `region-preview`.
+   */
+  regionStart: () => callOrThrow<string>("region_start"),
+  /** An overlay: its session, monitor and language. Null when stale. */
+  regionOverlayInfo: () => call<{ sessionId: string; index: number; language: string }>("region_overlay_info"),
+  /** An overlay: the rectangle the user let go of, in its monitor's physical pixels. */
+  regionPick: (sessionId: string, rect: RegionRect) => callOrThrow<void>("region_pick", { sessionId, rect }),
+  /** Escape, a right click or Cancel: the overlays close and the picture is dropped. */
+  regionCancel: (sessionId: string) => call<void>("region_cancel", { sessionId }),
+  /** "Ask about it": Rust checks the grant, blacks out the masks and saves the PNG for the chat. */
+  regionAttach: (sessionId: string, grant: AppGrant, masks: RegionRect[]) =>
+    callOrThrow<{ file: { name: string; path: string; size: number }; receipt: ActionReceipt }>(
+      "region_attach", { sessionId, grant, masks },
+    ),
   /** What came of an assistant action, for the log (never with its text). */
   actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
   /** The speech models (Settings → Voice). Only the settings window may change them. */

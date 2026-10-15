@@ -897,6 +897,7 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(assistant::region::Regions::default())
         .manage(ChatStop::default())
         .manage(shortcuts::Registry::default())
         .manage(recap::load())
@@ -1001,6 +1002,11 @@ pub fn run() {
             assistant::app::assistant_insert_offer,
             assistant::app::assistant_insert_copy_check,
             assistant::app::assistant_insert_text,
+            assistant::region::commands::region_start,
+            assistant::region::commands::region_overlay_info,
+            assistant::region::commands::region_pick,
+            assistant::region::commands::region_cancel,
+            assistant::region::commands::region_attach,
             assistant::app::voice_model_status,
             assistant::app::voice_model_download,
             assistant::app::voice_model_cancel,

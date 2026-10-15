@@ -18,7 +18,7 @@ import {
 import { h, clear } from "../views/dom";
 import { agentsSection } from "./agents";
 import { chatgptSection } from "./chatgpt";
-import { memorySection } from "./memory";
+import { memorySection, refreshMemorySection } from "./memory";
 import { phoneSection } from "./phone";
 import { voiceSection } from "./voice";
 import { colorDot } from "./colors";
@@ -37,6 +37,9 @@ let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
 
 const root = document.getElementById("settings-root")!;
+
+// One listener for the Settings window, even when language changes rebuild it.
+window.addEventListener("focus", refreshMemorySection);
 
 async function save() {
   await Bridge.saveSettings(settings);

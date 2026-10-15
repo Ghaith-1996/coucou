@@ -27,7 +27,19 @@ const STRINGS = {
   exported: (path: string) => t("Saved to {path}", { path }),
 };
 
+let activeSection: { refresh: () => void; resume: () => void; dispose: () => void } | null = null;
+// Native writes outlive a language-driven section replacement. Its new
+// initial read must wait for those writes too.
+let mutationRevision = 0;
+let pendingMutations = 0;
+
+/** The Settings window calls this on focus, including after a chat addition. */
+export function refreshMemorySection() {
+  activeSection?.refresh();
+}
+
 export function memorySection(): HTMLElement {
+  activeSection?.dispose();
   const list = h("div", { class: "memory-list" });
   const note = h("div", { class: "hint" });
   const input = h("input", { type: "text", placeholder: STRINGS.placeholder, maxlength: "500", style: "flex:1" }) as HTMLInputElement;
@@ -46,6 +58,11 @@ export function memorySection(): HTMLElement {
   let confirmingClear = false;
   let clearing = false;
   let clearTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+  let refreshing = false;
+  let refreshQueued = false;
+  let noteRevision = 0;
+  let readErrorRevision: number | null = null;
 
   function resetClear() {
     confirmingClear = false;
@@ -53,19 +70,65 @@ export function memorySection(): HTMLElement {
     clearTimer = null;
   }
 
-  const fail = (err: unknown) => {
-    note.textContent = String(err).replace(/^Error:\s*/, "");
+  const showNote = (text: string) => {
+    note.textContent = text;
+    noteRevision++;
+    readErrorRevision = null;
   };
-  const apply = (next: MemoryState | null | undefined) => {
+  const fail = (err: unknown) => showNote(String(err).replace(/^Error:\s*/, ""));
+  const apply = (next: MemoryState | null | undefined, retireEditor = false) => {
     if (next) {
       state = next;
       loaded = true;
       resetClear();
+      if (retireEditor) editing = null;
     }
     draw();
   };
 
+  // Serialize reads, not writes. A focus during a read/write queues one fresh
+  // snapshot; reads that overlap a mutation can never roll back its result.
+  async function refresh() {
+    if (disposed) return;
+    if (refreshing || pendingMutations) {
+      refreshQueued = true;
+      return;
+    }
+    refreshing = true;
+    refreshQueued = false;
+    const revision = mutationRevision;
+    const message = noteRevision;
+    try {
+      const next = await Bridge.memoryList();
+      if (disposed || revision !== mutationRevision || refreshQueued) return;
+      apply(next);
+      // A background read owns only its own prior failure message, never an
+      // Add/Edit/Delete/Export status shown while the user keeps working.
+      if (next && readErrorRevision === noteRevision) showNote("");
+    } catch (err) {
+      if (!disposed && revision === mutationRevision && !refreshQueued && message === noteRevision) {
+        fail(err);
+        readErrorRevision = noteRevision;
+      }
+    } finally {
+      refreshing = false;
+      if (!disposed && refreshQueued && !pendingMutations) void refresh();
+    }
+  }
+
+  function beginMutation() {
+    mutationRevision++;
+    pendingMutations++;
+    if (refreshing) refreshQueued = true;
+  }
+
+  function endMutation() {
+    pendingMutations--;
+    activeSection?.resume();
+  }
+
   function beginEdit(item: MemoryItem) {
+    if (disposed) return;
     const field = h("input", { type: "text", value: item.text, maxlength: "500", style: "flex:1" });
     const save = h("button", { text: STRINGS.save });
     const cancelBtn = h("button", { text: STRINGS.cancel });
@@ -76,15 +139,16 @@ export function memorySection(): HTMLElement {
       draw();
     };
     const commit = async () => {
-      if (editing !== editor || saving) return;
+      if (disposed || editing !== editor || saving) return;
       const draft = field.value;
       saving = editor;
       save.disabled = true;
+      beginMutation();
       try {
         const next = await Bridge.memoryEdit(editor.id, draft);
         if (editing === editor) {
           if (field.value === draft) editing = null;
-          note.textContent = "";
+          showNote("");
         }
         // The saved result still updates the list after Cancel, but never
         // replaces a newer editor's field or clears its draft/status.
@@ -94,6 +158,7 @@ export function memorySection(): HTMLElement {
       } finally {
         saving = null;
         if (editing) editing.save.disabled = false;
+        endMutation();
       }
     };
     save.addEventListener("click", commit);
@@ -113,7 +178,13 @@ export function memorySection(): HTMLElement {
       h("span", { class: "memory-text", text: item.text }),
       item.source === "chat" ? h("span", { class: "memory-badge", text: STRINGS.fromChat }) : null,
       h("button", { text: STRINGS.edit, onclick: () => beginEdit(item) }),
-      h("button", { class: "danger", text: STRINGS.remove, onclick: () => Bridge.memoryDelete(item.id).then(apply, fail) }),
+      h("button", { class: "danger", text: STRINGS.remove, onclick: async () => {
+        if (disposed) return;
+        beginMutation();
+        try { apply(await Bridge.memoryDelete(item.id), editing?.id === item.id); }
+        catch (err) { fail(err); }
+        finally { endMutation(); }
+      } }),
     );
   }
 
@@ -123,15 +194,17 @@ export function memorySection(): HTMLElement {
     useSwitch.disabled = !loaded || toggling;
     useSwitch.classList.toggle("on", state.enabled);
     useSwitch.setAttribute("aria-pressed", String(state.enabled));
-    if (editing && !state.items.some(item => item.id === editing?.id)) editing = null;
     if (editing) editing.save.disabled = saving !== null;
     // Reuse the draft field through unrelated redraws, including its focus
     // and selection if rebuilding the surrounding list detaches it.
     const focused = editing && editing.field === document.activeElement ? editing.field : null;
     const selection = focused ? [focused.selectionStart, focused.selectionEnd] as const : null;
     clear(list);
-    if (!state.items.length) list.append(h("div", { class: "hint", text: STRINGS.empty }));
+    if (!state.items.length && !editing) list.append(h("div", { class: "hint", text: STRINGS.empty }));
     for (const item of state.items) list.append(row(item));
+    // A refresh may reveal an external deletion. Keep the user's unsaved
+    // field available to copy/cancel rather than silently discarding it.
+    if (editing && !state.items.some(item => item.id === editing?.id)) list.append(editing.el);
     if (focused && selection) {
       focused.focus();
       focused.setSelectionRange(selection[0], selection[1]);
@@ -144,22 +217,24 @@ export function memorySection(): HTMLElement {
   const add = async () => {
     // An older initial list must not arrive after and overwrite an add result.
     // Reserve submission, but leave the input available for the next draft.
-    if (!loaded || adding) return;
+    if (disposed || !loaded || adding) return;
     const draft = input.value;
     const text = draft.trim();
     if (!text) return;
     adding = true;
     addBtn.disabled = true;
+    beginMutation();
     try {
       const next = await Bridge.memoryAdd(text);
       if (input.value === draft) input.value = "";
-      note.textContent = "";
+      showNote("");
       apply(next);
     } catch (err) {
       fail(err);
     } finally {
       adding = false;
       addBtn.disabled = !loaded;
+      endMutation();
     }
   };
   addBtn.addEventListener("click", add);
@@ -169,23 +244,25 @@ export function memorySection(): HTMLElement {
   useSwitch.addEventListener("click", async () => {
     // Neither the initial default nor an in-flight request is authoritative.
     // Guard the handler too, so synthetic/repeated clicks cannot enqueue writes.
-    if (!loaded || toggling) return;
+    if (disposed || !loaded || toggling) return;
     toggling = true;
     draw();
+    beginMutation();
     try {
       apply(await Bridge.memorySetEnabled(!state.enabled));
-      note.textContent = "";
+      showNote("");
     } catch (err) {
       fail(err);
     } finally {
       toggling = false;
       draw();
+      endMutation();
     }
   });
   // Two clicks for the current state. An in-flight deletion cannot re-arm
   // confirmation for items added later, and a changed state requires asking again.
   clearBtn.addEventListener("click", async () => {
-    if (!loaded || clearing || !state.items.length) return;
+    if (disposed || !loaded || clearing || !state.items.length) return;
     if (!confirmingClear) {
       confirmingClear = true;
       draw();
@@ -199,23 +276,34 @@ export function memorySection(): HTMLElement {
     resetClear();
     clearing = true;
     draw();
+    beginMutation();
     try {
-      apply(await Bridge.memoryClear());
-      note.textContent = "";
+      apply(await Bridge.memoryClear(), true);
+      showNote("");
     } catch (err) {
       fail(err);
     } finally {
       clearing = false;
       resetClear();
       draw();
+      endMutation();
     }
   });
   const exportBtn = h("button", {
     text: STRINGS.exportFile,
-    onclick: () => Bridge.memoryExport().then((path) => { note.textContent = STRINGS.exported(path); }, fail),
+    onclick: () => {
+      if (disposed) return;
+      noteRevision++;
+      void Bridge.memoryExport().then((path) => showNote(STRINGS.exported(path)), fail);
+    },
   });
 
-  Bridge.memoryList().then(apply, fail);
+  activeSection = {
+    refresh: () => void refresh(),
+    resume: () => { if (refreshQueued) void refresh(); },
+    dispose: () => { disposed = true; resetClear(); },
+  };
+  void refresh();
   draw();
 
   return h(

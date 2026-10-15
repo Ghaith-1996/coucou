@@ -1,8 +1,9 @@
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { installFakeDom } from "./fakedom.mjs";
 import { calls, sent, internals } from "./tauri.mjs";
-import { memorySection } from "../src/settings/memory.ts";
+import { memorySection, refreshMemorySection } from "../src/settings/memory.ts";
 import { LANGUAGE_CODES, setLanguage, t as translate } from "../src/i18n/i18n.ts";
 
 installFakeDom();
@@ -856,3 +857,347 @@ test("hidden clear controls cannot arm or delete an empty or unloaded store", as
   clearBtn.fire("click");
   assert.equal(sent("memory_clear").length, 0);
 });
+
+// Execute the production focus registration against an EventTarget. The page
+// itself boots unrelated Settings sections, which these Memory DOM tests omit.
+function settingsFocus() {
+  const source = readFileSync(new URL("../src/settings/main.ts", import.meta.url), "utf8");
+  const registrations = source.match(/window\.addEventListener\("focus", refreshMemorySection\);/g) ?? [];
+  assert.equal(registrations.length, 1, "one page-level listener, never one per Memory section");
+  assert.ok(source.indexOf(registrations[0]) < source.indexOf("async function main()"), "the listener is outside render/boot loops");
+  const target = new EventTarget();
+  new Function("window", "refreshMemorySection", registrations[0])(target, refreshMemorySection);
+  return () => target.dispatchEvent(new Event("focus"));
+}
+
+test("Settings focus reveals chat-confirmed memory and its badge without replacing either draft", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const original = item("one", "First fact");
+  let stored = state([original]);
+  answering(t, { memory_list: () => stored });
+  const focus = settingsFocus();
+  const section = memorySection();
+  await settle();
+  const input = section.find("input")[0];
+  input.value = "  Next Add draft  ";
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  field.value = "  Unsaved correction  ";
+  const clearBtn = button(section, "Delete everything");
+  clearBtn.fire("click");
+  stored = state([original, item("external", "Confirmed in chat", "chat")]);
+  focus();
+  await settle();
+  const rows = section.find(".memory-item");
+  assert.equal(rows.length, 2);
+  assert.match(rows[1].textContent, /Confirmed in chat/);
+  assert.equal(rows[1].find(".memory-badge")[0].textContent, "From the chat");
+  assert.equal(section.find("input")[0], input);
+  assert.equal(input.value, "  Next Add draft  ");
+  assert.equal(editField(section), field);
+  assert.equal(field.value, "  Unsaved correction  ");
+  assert.equal(clearBtn.textContent, "Delete everything", "a new authoritative snapshot needs a fresh confirmation");
+});
+
+test("overlapping focus refreshes are coalesced and an older snapshot is never applied", async t => {
+  const oldRead = deferred();
+  const freshRead = deferred();
+  let reads = 0;
+  answering(t, { memory_list: () => [state([item("one", "Original")]), oldRead.promise, freshRead.promise][reads++] });
+  const section = memorySection();
+  await settle();
+  refreshMemorySection();
+  refreshMemorySection();
+  refreshMemorySection();
+  assert.equal(sent("memory_list").length, 2, "only one refresh runs at a time");
+  oldRead.resolve(state([item("stale", "Stale response")]));
+  await settle();
+  assert.equal(sent("memory_list").length, 3, "multiple focus events queue just one newer read");
+  assert.match(section.textContent, /Original/);
+  assert.doesNotMatch(section.textContent, /Stale response/);
+  freshRead.resolve(state([item("fresh", "Newest chat fact", "chat")]));
+  await settle();
+  assert.match(section.textContent, /Newest chat fact/);
+  assert.doesNotMatch(section.textContent, /Original/);
+});
+
+test("a focus queued during initial loading waits for the newer snapshot before enabling mutations", async t => {
+  const initial = deferred();
+  const fresh = deferred();
+  let reads = 0;
+  answering(t, { memory_list: () => ++reads === 1 ? initial.promise : fresh.promise });
+  const section = memorySection();
+  refreshMemorySection();
+  initial.resolve(state([]));
+  await settle();
+  assert.equal(sent("memory_list").length, 2);
+  assert.equal(button(section, "Add").disabled, true);
+  fresh.resolve(state([item("chat", "Confirmed during load", "chat")]));
+  await settle();
+  assert.equal(button(section, "Add").disabled, false);
+  assert.match(section.textContent, /Confirmed during load/);
+});
+
+const mutations = [
+  { name: "Add", command: "memory_add", run(section) {
+    section.find("input")[0].value = "Locally added";
+    button(section, "Add").fire("click");
+  }, result: state([item("one", "Original"), item("local", "Locally added")]) },
+  { name: "Edit", command: "memory_edit", run(section) {
+    button(section, "Edit").fire("click");
+    editField(section).value = "Locally edited";
+    button(section, "Save").fire("click");
+  }, result: state([item("one", "Locally edited")]) },
+  { name: "Delete", command: "memory_delete", run(section) { button(section, "Delete").fire("click"); }, result: state([]) },
+  { name: "toggle", command: "memory_set_enabled", run(section) { section.find(".switch")[0].fire("click"); }, result: state([item("one", "Original")], false) },
+  { name: "clear", command: "memory_clear", run(section) {
+    const clearBtn = button(section, "Delete everything");
+    clearBtn.fire("click");
+    clearBtn.fire("click");
+  }, result: state([]) },
+];
+
+for (const mutation of mutations) {
+  test(`a late refresh cannot undo a completed ${mutation.name} and rereads after the write`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const oldRead = deferred();
+    const freshRead = deferred();
+    let reads = 0;
+    answering(t, {
+      memory_list: () => [state([item("one", "Original")]), oldRead.promise, freshRead.promise][reads++],
+      [mutation.command]: mutation.result,
+    });
+    const section = memorySection();
+    await settle();
+    refreshMemorySection();
+    mutation.run(section);
+    await settle();
+    const afterMutation = section.textContent;
+    const enabled = section.find(".switch")[0].getAttribute("aria-pressed");
+    oldRead.resolve(state([item("stale", "Stale response")]));
+    await settle();
+    assert.equal(section.textContent, afterMutation, "an older read must not replace the successful write");
+    assert.equal(section.find(".switch")[0].getAttribute("aria-pressed"), enabled);
+    assert.equal(sent("memory_list").length, 3, "invalidate and reconcile the overlapping read");
+    freshRead.resolve(state([...mutation.result.items, item("chat", "New chat fact", "chat")], mutation.result.enabled));
+    await settle();
+    assert.match(section.textContent, /New chat fact/);
+  });
+
+  test(`focus during pending ${mutation.name} defers its read until the mutation settles`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const pending = deferred();
+    let stored = state([item("one", "Original")]);
+    answering(t, { memory_list: () => stored, [mutation.command]: pending.promise });
+    const section = memorySection();
+    await settle();
+    mutation.run(section);
+    refreshMemorySection();
+    refreshMemorySection();
+    assert.equal(sent("memory_list").length, 1, "do not read an intermediate native snapshot");
+    stored = state([...mutation.result.items, item("chat", "New chat fact", "chat")], mutation.result.enabled);
+    pending.resolve(mutation.result);
+    await settle();
+    assert.equal(sent("memory_list").length, 2);
+    assert.match(section.textContent, /New chat fact/);
+  });
+}
+
+test("refresh failures and later successful reads preserve a newer local mutation error and draft", async t => {
+  const oldRead = deferred();
+  const freshRead = deferred();
+  let reads = 0;
+  answering(t, {
+    memory_list: () => [state([]), oldRead.promise, freshRead.promise][reads++],
+    memory_add: new Error("local write failed"),
+  });
+  const section = memorySection();
+  await settle();
+  refreshMemorySection();
+  const input = section.find("input")[0];
+  input.value = "Retry this draft";
+  button(section, "Add").fire("click");
+  await settle();
+  oldRead.reject(new Error("outdated read failed"));
+  await settle();
+  assert.match(section.textContent, /local write failed/);
+  assert.doesNotMatch(section.textContent, /outdated read failed/);
+  freshRead.resolve(state([item("chat", "External fact", "chat")]));
+  await settle();
+  assert.match(section.textContent, /local write failed/, "a background read does not clear a mutation error");
+  assert.equal(input.value, "Retry this draft");
+  assert.match(section.textContent, /External fact/);
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`a refresh ${outcome} cannot replace a newer export status`, async t => {
+    const refresh = deferred();
+    let reads = 0;
+    answering(t, {
+      memory_list: () => ++reads === 1 ? state([]) : refresh.promise,
+      memory_export: new Error("newer export failed"),
+    });
+    const section = memorySection();
+    await settle();
+    refreshMemorySection();
+    button(section, "Export unencrypted JSON").fire("click");
+    await settle();
+    if (outcome === "success") refresh.resolve(state([item("chat", "External fact", "chat")]));
+    else refresh.reject(new Error("older refresh failed"));
+    await settle();
+    assert.match(section.textContent, /newer export failed/);
+    assert.doesNotMatch(section.textContent, /older refresh failed/);
+  });
+}
+
+test("focus retries an initial read failure and clears only that read error after recovery", async t => {
+  let reads = 0;
+  answering(t, { memory_list: () => {
+    if (++reads === 1) throw new Error("initial read failed");
+    return state([item("chat", "Recovered fact", "chat")], false);
+  } });
+  const section = memorySection();
+  await settle();
+  const input = section.find("input")[0];
+  input.value = "Preserve initial draft";
+  assert.equal(button(section, "Add").disabled, true);
+  assert.match(section.textContent, /initial read failed/);
+  refreshMemorySection();
+  await settle();
+  assert.equal(button(section, "Add").disabled, false);
+  assert.equal(input.value, "Preserve initial draft");
+  assert.equal(section.find(".switch")[0].getAttribute("aria-pressed"), "false");
+  assert.match(section.textContent, /Recovered fact/);
+  assert.doesNotMatch(section.textContent, /initial read failed/);
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`replacement retires the old section's late read ${outcome}, queued focus and confirmation timer`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const oldRead = deferred();
+    let reads = 0;
+    answering(t, { memory_list: () => [state([item("old", "Old section")]), oldRead.promise,
+      state([item("new", "New section")]), state([item("chat", "Current chat fact", "chat")])][reads++] });
+    const focus = settingsFocus();
+    const oldSection = memorySection();
+    await settle();
+    const oldClear = button(oldSection, "Delete everything");
+    oldClear.fire("click");
+    focus();
+    focus();
+    const section = memorySection();
+    await settle();
+    section.find("input")[0].value = "Current draft";
+    const oldContent = oldSection.textContent;
+    if (outcome === "success") oldRead.resolve(state([item("late", "Retired response")]));
+    else oldRead.reject(new Error("retired read failure"));
+    await settle();
+    t.mock.timers.tick(4000);
+    assert.equal(oldSection.textContent, oldContent, "retired reads and timers do not redraw an old section");
+    assert.equal(sent("memory_list").length, 3, "the retired section does not drain queued focus work");
+    assert.match(section.textContent, /New section/);
+    focus();
+    await settle();
+    assert.equal(sent("memory_list").length, 4, "the single listener targets only the newest section");
+    assert.equal(section.find("input")[0].value, "Current draft");
+    assert.match(section.textContent, /Current chat fact/);
+  });
+}
+
+test("a replacement section waits for the retired section's submitted write before its initial read", async t => {
+  const pending = deferred();
+  let stored = state([item("one", "Original")]);
+  answering(t, { memory_list: () => stored, memory_add: pending.promise });
+  const oldSection = memorySection();
+  await settle();
+  oldSection.find("input")[0].value = "Submitted before redraw";
+  button(oldSection, "Add").fire("click");
+  const section = memorySection();
+  await settle();
+  assert.equal(sent("memory_list").length, 1, "a section redraw still shares the window's pending native writes");
+  assert.equal(button(section, "Add").disabled, true);
+  section.find("input")[0].value = "Replacement draft";
+  stored = state([item("one", "Original"), item("added", "Submitted before redraw")]);
+  pending.resolve(stored);
+  await settle();
+  assert.equal(sent("memory_list").length, 2);
+  assert.match(section.textContent, /Submitted before redraw/);
+  assert.equal(section.find("input")[0].value, "Replacement draft");
+  assert.equal(button(section, "Add").disabled, false);
+});
+
+test("refresh preserves an unsaved editor even when its item was removed externally", async t => {
+  let stored = state([item("one", "Original")]);
+  answering(t, { memory_list: () => stored, memory_edit: new Error("This memory is gone.") });
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  field.value = "Do not discard my correction";
+  stored = state([]);
+  refreshMemorySection();
+  await settle();
+  assert.equal(editField(section), field);
+  assert.equal(field.value, "Do not discard my correction");
+  button(section, "Save").fire("click");
+  await settle();
+  assert.match(section.textContent, /This memory is gone/);
+  assert.equal(editField(section), field);
+  assert.equal(field.value, "Do not discard my correction");
+  button(section, "Cancel").fire("click");
+  assert.equal(editField(section), undefined);
+  assert.match(section.textContent, /Nothing yet/);
+});
+
+for (const mutation of mutations.filter(({ name }) => ["Add", "toggle", "Delete"].includes(name))) {
+  test(`an externally removed editor keeps its draft through a later unrelated ${mutation.name}`, async t => {
+    const original = item("one", "Original");
+    const other = item("other", "Other fact");
+    let stored = state([original, other]);
+    answering(t, { memory_list: () => stored, [mutation.command]: ({ text, enabled }) => {
+      if (mutation.name === "Add") return state([other, item("added", text)]);
+      if (mutation.name === "toggle") return state([other], enabled);
+      return state([]);
+    } });
+    const section = memorySection();
+    await settle();
+    button(section, "Edit").fire("click");
+    const field = editField(section);
+    field.value = "Retained orphan draft";
+    stored = state([other]);
+    refreshMemorySection();
+    await settle();
+    assert.equal(editField(section), field);
+    mutation.run(section);
+    await settle();
+    assert.equal(editField(section), field);
+    assert.equal(field.value, "Retained orphan draft");
+  });
+}
+
+for (const deletion of ["matching Delete", "Delete everything"]) {
+  test(`an explicit ${deletion} still retires an externally removed editor`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const original = item("one", "Original");
+    const other = item("other", "Other fact");
+    let stored = state([original, other]);
+    answering(t, { memory_list: () => stored, memory_delete: state([other]), memory_clear: state([]) });
+    const section = memorySection();
+    await settle();
+    const oldDelete = button(section, "Delete");
+    button(section, "Edit").fire("click");
+    const field = editField(section);
+    field.value = "Explicitly abandoned draft";
+    stored = state([other]);
+    refreshMemorySection();
+    await settle();
+    if (deletion === "matching Delete") oldDelete.fire("click");
+    else {
+      const clearBtn = button(section, "Delete everything");
+      clearBtn.fire("click");
+      clearBtn.fire("click");
+    }
+    await settle();
+    assert.equal(editField(section), undefined);
+  });
+}

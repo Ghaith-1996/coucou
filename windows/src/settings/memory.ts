@@ -20,7 +20,8 @@ const STRINGS = {
   get remove() { return t("Delete"); },
   get fromChat() { return t("From the chat"); },
   get empty() { return t("Nothing yet."); },
-  get exportFile() { return t("Export"); },
+  get exportFile() { return t("Export unencrypted JSON"); },
+  get exportHint() { return t("Export saves an unencrypted JSON file in Downloads. Anyone with access to that file can read your memories."); },
   get clearAll() { return t("Delete everything"); },
   get confirmClear() { return t("Really delete everything?"); },
   exported: (path: string) => t("Saved to {path}", { path }),
@@ -151,6 +152,7 @@ export function memorySection(): HTMLElement {
     h("div", { class: "row" }, h("label", { text: STRINGS.use }), useSwitch),
     h("div", { class: "row" }, input, h("button", { text: STRINGS.add, onclick: add })),
     list,
+    h("div", { class: "hint", text: STRINGS.exportHint }),
     h("div", { class: "row", style: "gap:8px" }, exportBtn, clearBtn),
     note,
   );

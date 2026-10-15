@@ -5264,16 +5264,27 @@
    "ru": "Пока ничего.",
    "id": "Belum ada."
   },
-  "Export": {
-   "zh-Hans": "导出",
-   "hi": "निर्यात करें",
-   "es": "Exportar",
-   "ar": "تصدير",
-   "fr": "Exporter",
-   "bn": "রপ্তানি",
-   "pt-BR": "Exportar",
-   "ru": "Экспорт",
-   "id": "Ekspor"
+  "Export unencrypted JSON": {
+   "zh-Hans": "导出未加密的 JSON",
+   "hi": "बिना एन्क्रिप्शन वाला JSON निर्यात करें",
+   "es": "Exportar JSON sin cifrar",
+   "ar": "تصدير JSON غير مشفّر",
+   "fr": "Exporter en JSON non chiffré",
+   "bn": "এনক্রিপশন ছাড়া JSON রপ্তানি করুন",
+   "pt-BR": "Exportar JSON sem criptografia",
+   "ru": "Экспортировать незашифрованный JSON",
+   "id": "Ekspor JSON tanpa enkripsi"
+  },
+  "Export saves an unencrypted JSON file in Downloads. Anyone with access to that file can read your memories.": {
+   "zh-Hans": "导出会在“下载”文件夹中保存未加密的 JSON 文件。任何有权访问该文件的人都可以读取你的记忆内容。",
+   "hi": "निर्यात करने पर डाउनलोड फ़ोल्डर में बिना एन्क्रिप्शन वाली JSON फ़ाइल सहेजी जाती है। जिस किसी के पास उस फ़ाइल की पहुँच है, वह आपकी यादें पढ़ सकता है।",
+   "es": "La exportación guarda un archivo JSON sin cifrar en Descargas. Cualquiera que tenga acceso a ese archivo puede leer tus recuerdos.",
+   "ar": "يحفظ التصدير ملف JSON غير مشفّر في مجلد التنزيلات. يمكن لأي شخص لديه حق الوصول إلى هذا الملف قراءة ذكرياتك.",
+   "fr": "L’export enregistre un fichier JSON non chiffré dans Téléchargements. Toute personne ayant accès à ce fichier peut lire vos souvenirs.",
+   "bn": "রপ্তানি করলে ডাউনলোড ফোল্ডারে এনক্রিপশন ছাড়া একটি JSON ফাইল সংরক্ষিত হয়। ওই ফাইলে প্রবেশাধিকার আছে এমন যে কেউ আপনার স্মৃতিগুলি পড়তে পারে।",
+   "pt-BR": "A exportação salva um arquivo JSON sem criptografia em Downloads. Qualquer pessoa com acesso a esse arquivo pode ler suas memórias.",
+   "ru": "При экспорте незашифрованный файл JSON сохраняется в папке «Загрузки». Любой, у кого есть доступ к этому файлу, сможет прочитать ваши воспоминания.",
+   "id": "Ekspor menyimpan file JSON tanpa enkripsi di folder Unduhan. Siapa pun yang memiliki akses ke file itu dapat membaca memori Anda."
   },
   "Delete everything": {
    "zh-Hans": "全部删除",

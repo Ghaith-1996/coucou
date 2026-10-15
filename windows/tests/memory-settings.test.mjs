@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { installFakeDom } from "./fakedom.mjs";
 import { calls, sent, internals } from "./tauri.mjs";
 import { memorySection } from "../src/settings/memory.ts";
+import { LANGUAGE_CODES, setLanguage, t as translate } from "../src/i18n/i18n.ts";
 
 installFakeDom();
 
@@ -171,7 +172,7 @@ test("export says where the file went", async (t) => {
   });
   const section = memorySection();
   await settle();
-  button(section, "Export").fire("click");
+  button(section, "Export unencrypted JSON").fire("click");
   await settle();
   assert.match(section.textContent, /Saved to C:\\Users\\me\\Downloads\\coucou-memory\.json/);
 });
@@ -233,10 +234,12 @@ test("a memory read failure is visible and a failed export never claims a backup
   const section = memorySection();
   await settle();
   assert.match(section.textContent, /memory.bin could not be read/);
-  button(section, "Export").fire("click");
+  button(section, "Export unencrypted JSON").fire("click");
   await settle();
   assert.match(section.textContent, /sharing violation/);
   assert.doesNotMatch(section.textContent, /Saved to/);
+  assert.match(section.textContent, /Export saves an unencrypted JSON file in Downloads/);
+  assert.match(section.textContent, /Anyone with access to that file can read your memories/);
 });
 
 const deferred = () => {
@@ -322,4 +325,47 @@ test("an initial read failure never enables a switch based on guessed state", as
   assert.deepEqual(sent("memory_set_enabled"), []);
   assert.equal(toggle.disabled, true);
   assert.match(section.textContent, /unreadable memory/);
+});
+
+
+test("export discloses the unencrypted file and destination before any click or native reply", async (t) => {
+  const initial = deferred();
+  answering(t, { memory_list: initial.promise, memory_export: "Downloads/memory.json" });
+  const section = memorySection();
+  const label = "Export unencrypted JSON";
+  const warning = "Export saves an unencrypted JSON file in Downloads. Anyone with access to that file can read your memories.";
+  assert.ok(button(section, label), "the export action itself names the unencrypted format");
+  assert.match(section.textContent, /Export saves an unencrypted JSON file in Downloads/);
+  assert.match(section.textContent, /Anyone with access to that file can read your memories/);
+  assert.ok(section.textContent.indexOf(warning) < section.textContent.indexOf(label), "the warning appears before the action");
+  assert.deepEqual(sent("memory_export"), [], "rendering a disclosure never creates a file");
+  initial.resolve(state([]));
+  await settle();
+  button(section, label).fire("click");
+  await settle();
+  assert.equal(sent("memory_export").length, 1, "an explicit export click still works");
+  assert.match(section.textContent, /Saved to Downloads\/memory.json/);
+  assert.ok(section.textContent.includes(warning), "the disclosure remains after exporting");
+});
+
+test("the plaintext export label and warning are visible in every supported language", async (t) => {
+  answering(t, { memory_list: state([]) });
+  const label = "Export unencrypted JSON";
+  const warning = "Export saves an unencrypted JSON file in Downloads. Anyone with access to that file can read your memories.";
+  try {
+    for (const lang of LANGUAGE_CODES) {
+      setLanguage(lang);
+      const section = memorySection();
+      assert.ok(button(section, translate(label)), `${lang}: export label`);
+      assert.ok(section.textContent.includes(translate(warning)), `${lang}: visible warning`);
+      if (lang !== "en") {
+        assert.notEqual(translate(label), label, `${lang}: translated label`);
+        assert.notEqual(translate(warning), warning, `${lang}: translated warning`);
+      }
+    }
+    assert.deepEqual(sent("memory_export"), []);
+    await settle();
+  } finally {
+    setLanguage("en");
+  }
 });

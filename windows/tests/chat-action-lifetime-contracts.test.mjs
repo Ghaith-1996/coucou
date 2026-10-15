@@ -19,7 +19,7 @@ test("native proposals carry request ownership independently of the grant", () =
 test("native reset retires action authority before resetting model history", () => {
   assert.match(wiring, /let closed = actions\.retire\(&turn\.scope\);\s*let _ = turn\.stop\.send\(\(\)\)/);
   assert.match(wiring, /let closed = Self::cancel_active\(&mut active, actions\);\s*after\(\)/);
-  assert.match(wiring, /fn chat_reset\([^\n]+\{\s*assistant::tools::close_cards\(&app, stop\.cancel_with\(&actions, \|\| chat\.reset\(\)\)\)/);
+  assert.match(wiring, /fn chat_reset\([^\n]+\{\s*assistant::tools::close_cards\(&app, stop\.cancel_with\(&actions, \|\| \{\s*speech\.clear\(\);\s*chat\.reset\(\);\s*\}\)\)/);
   assert.match(wiring, /tokio::select! \{\s*biased;\s*_ = cancelled => None,\s*reply = reply => Some\(reply\)/);
 });
 

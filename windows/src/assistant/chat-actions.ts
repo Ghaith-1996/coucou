@@ -70,9 +70,9 @@ function replaceRequest(next: typeof toolNotesFor, forgetNotes: boolean) {
 }
 
 /** A fresh answer owns its notes, even when an older IPC event arrives late. */
-export function beginToolNotes(): string {
+export function beginToolNotes(spokenRequestId?: string): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
-  const requestId = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const requestId = spokenRequestId ?? [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   replaceRequest({ requestId, messages: State.chatHistory }, true);
   return requestId;
 }

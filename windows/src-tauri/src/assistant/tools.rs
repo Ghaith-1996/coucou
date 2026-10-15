@@ -560,6 +560,23 @@ mod tests {
     }
 
     #[test]
+    fn late_settings_work_cannot_bind_speech_after_stop_or_replacement() {
+        let actions = ChatActions::default();
+        let stop = crate::ChatStop::default();
+        let (old, _, _) = stop.begin(&actions);
+        let mut binds = 0;
+        stop.cancel_with(&actions, || {});
+        assert!(stop.with_current(&old, || { binds += 1; }).is_none());
+        let (fresh, _, _) = stop.begin(&actions);
+        assert!(stop.with_current(&old, || { binds += 1; }).is_none());
+        assert!(stop.with_current(&fresh, || { binds += 1; }).is_some());
+        assert_eq!(binds, 1);
+        stop.cancel_with(&actions, || {});
+        assert!(stop.with_current(&fresh, || { binds += 1; }).is_none());
+        assert_eq!(binds, 1);
+    }
+
+    #[test]
     fn finishing_the_old_turn_cannot_retire_a_replacement_turn() {
         let actions = ChatActions::default();
         let stop = crate::ChatStop::default();

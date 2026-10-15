@@ -563,18 +563,25 @@ async fn chat_send(
     chat: State<'_, Chat>,
     stop: State<'_, ChatStop>,
     actions: State<'_, ChatActions>,
+    speech: State<'_, assistant::speech::Turns>,
     query: String,
     context: Option<ChatContext>,
     request_id: Option<String>,
 ) -> Result<ChatReply, String> {
     // Register cancellation before any settings or account lookup can delay us.
-    let (scope, rx, closed) = stop.begin(&actions);
+    let (scope, rx, closed) = stop.begin_with(&actions, || speech.clear());
     let _turn = ChatTurnGuard { app: &app, stop: &stop, actions: &actions, scope: scope.clone() };
     assistant::tools::close_cards(&app, closed);
     let settings = shared.settings.lock().unwrap().clone();
+    let Some(speech_turn) = stop.with_current(&scope, || speech.begin(request_id.as_deref(), &settings)) else {
+        return Err(i18n::t("Stopped."));
+    };
     let account_before = (settings.chat_provider == chatgpt::PROVIDER).then(chatgpt::status);
     let result = until_chat_cancelled(rx, chat::send(&app, &chat, &settings, query, context, request_id, &scope))
         .await.unwrap_or_else(|| Err(i18n::t("Stopped.")));
+    if result.is_err() {
+        speech.failed(speech_turn.as_ref());
+    }
     emit_chatgpt_status_change(&app, account_before);
     result
 }
@@ -607,12 +614,24 @@ impl ChatStop {
     }
 
     fn begin(&self, actions: &ChatActions) -> (ActionScope, tokio::sync::oneshot::Receiver<()>, Vec<String>) {
+        self.begin_with(actions, || {})
+    }
+
+    fn begin_with(&self, actions: &ChatActions, after_cancel: impl FnOnce()) -> (ActionScope, tokio::sync::oneshot::Receiver<()>, Vec<String>) {
         let mut active = self.0.lock().unwrap();
         let closed = Self::cancel_active(&mut active, actions);
+        after_cancel();
         let scope = ActionScope::new();
         let (send, recv) = tokio::sync::oneshot::channel();
         *active = Some(ActiveChat { scope: scope.clone(), stop: send });
         (scope, recv, closed)
+    }
+
+    /// Settings/account work may finish after Stop or replacement. Bind speech
+    /// only while this native turn still owns the cancellation slot.
+    fn with_current<T>(&self, scope: &ActionScope, action: impl FnOnce() -> T) -> Option<T> {
+        let active = self.0.lock().unwrap();
+        active.as_ref().filter(|turn| turn.scope.same_turn(scope)).map(|_| action())
     }
 
     fn cancel_with(&self, actions: &ChatActions, after: impl FnOnce()) -> Vec<String> {
@@ -661,8 +680,9 @@ fn chat_history_save(conversation: chat_store::Conversation) -> Result<(), Strin
 
 /// Reopens a conversation: its messages for the island, its turns for the model.
 #[tauri::command]
-fn chat_history_open(chat: State<Chat>, id: String) -> Result<chat_store::Conversation, String> {
+fn chat_history_open(chat: State<Chat>, speech: State<assistant::speech::Turns>, id: String) -> Result<chat_store::Conversation, String> {
     let conversation = chat_store::load(&chat_store::dir(), &id)?;
+    speech.clear();
     chat.restore(&chat_store::context_turns(&conversation));
     Ok(conversation)
 }
@@ -679,13 +699,14 @@ fn chat_history_delete(id: String) -> Result<(), String> {
 
 /// Regenerate: the last turn leaves the model's history before it is asked again.
 #[tauri::command]
-fn chat_undo_last(chat: State<Chat>) -> bool {
+fn chat_undo_last(chat: State<Chat>, speech: State<assistant::speech::Turns>) -> bool {
+    speech.clear();
     chat.undo_last()
 }
 
 #[tauri::command]
-fn chat_stop(app: AppHandle, stop: State<ChatStop>, actions: State<ChatActions>) {
-    assistant::tools::close_cards(&app, stop.cancel_with(&actions, || {}));
+fn chat_stop(app: AppHandle, stop: State<ChatStop>, actions: State<ChatActions>, speech: State<assistant::speech::Turns>) {
+    assistant::tools::close_cards(&app, stop.cancel_with(&actions, || speech.clear()));
 }
 
 // ── ChatGPT (chatgpt.rs): the island and Settings see a status, never a token ─
@@ -773,8 +794,11 @@ fn local_set_key(url: String, key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn chat_reset(app: AppHandle, chat: State<Chat>, stop: State<ChatStop>, actions: State<ChatActions>) {
-    assistant::tools::close_cards(&app, stop.cancel_with(&actions, || chat.reset()));
+fn chat_reset(app: AppHandle, chat: State<Chat>, stop: State<ChatStop>, actions: State<ChatActions>, speech: State<assistant::speech::Turns>) {
+    assistant::tools::close_cards(&app, stop.cancel_with(&actions, || {
+        speech.clear();
+        chat.reset();
+    }));
 }
 
 /// Copies a dropped file into the inbox and reports its name back.
@@ -962,7 +986,9 @@ pub fn run() {
         .manage(Pending::default())
         .manage(Chat::default())
         .manage(assistant::tools::ChatActions::default())
+        .manage(assistant::region::Regions::default())
         .manage(ChatStop::default())
+        .manage(assistant::speech::Turns::default())
         .manage(shortcuts::Registry::default())
         .manage(recap::load())
         .invoke_handler(tauri::generate_handler![
@@ -1060,6 +1086,7 @@ pub fn run() {
             assistant::app::assistant_voice_converse,
             assistant::speech::speech_say,
             assistant::tools::chat_action_answer,
+            assistant::speech::speech_end,
             assistant::app::assistant_voice_stop,
             assistant::app::assistant_voice_cancel,
             assistant::app::assistant_voice_use,
@@ -1070,6 +1097,11 @@ pub fn run() {
             assistant::app::assistant_insert_offer,
             assistant::app::assistant_insert_copy_check,
             assistant::app::assistant_insert_text,
+            assistant::region::commands::region_start,
+            assistant::region::commands::region_overlay_info,
+            assistant::region::commands::region_pick,
+            assistant::region::commands::region_cancel,
+            assistant::region::commands::region_attach,
             assistant::app::voice_model_status,
             assistant::app::voice_model_download,
             assistant::app::voice_model_cancel,

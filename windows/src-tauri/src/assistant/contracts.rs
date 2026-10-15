@@ -47,7 +47,8 @@ pub enum ActionKind {
     /// Start an app from the Start menu's own list (apps.rs), after the user
     /// confirmed exactly that app.
     LaunchApp,
-    /// Ask about a screen region the user picked. Reserved for P2.
+    /// Attach a screen region the user picked to Coucou's chat, as an image
+    /// for the next question (region.rs), after the user saw it and confirmed.
     AskRegion,
     /// Bring one of the user's browser tabs to the front (browser.rs), as
     /// the chat proposed and the user confirmed.
@@ -67,7 +68,10 @@ impl ActionKind {
     /// Implemented in this version. A reserved kind is always refused, and its
     /// arguments may still change before it becomes available.
     pub fn available(self) -> bool {
-        matches!(self, ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::SwitchTab)
+        matches!(
+            self,
+            ActionKind::ChatDraft | ActionKind::PillSet | ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::AskRegion | ActionKind::SwitchTab
+        )
     }
 
     /// Running it twice leaves the same result as running it once. Only
@@ -137,11 +141,11 @@ pub struct SwitchTabArgs {
     pub title: String,
 }
 
-/// Reserved (P2). A region in physical pixels of one monitor.
+/// A region in physical pixels of one monitor, relative to its top-left
+/// corner. The question is typed in the chat afterwards, not part of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AskRegionArgs {
-    pub question: String,
     pub monitor: String,
     pub x: i32,
     pub y: i32,

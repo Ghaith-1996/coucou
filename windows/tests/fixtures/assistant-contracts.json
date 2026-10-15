@@ -7,7 +7,7 @@
     { "kind": "pill-set", "available": true, "idempotent": true },
     { "kind": "insert-text", "available": true, "idempotent": false },
     { "kind": "launch-app", "available": true, "idempotent": false },
-    { "kind": "ask-region", "available": false, "idempotent": false },
+    { "kind": "ask-region", "available": true, "idempotent": false },
     { "kind": "switch-tab", "available": true, "idempotent": false }
   ],
   "voiceStates": ["idle", "listening", "processing", "preview", "speaking", "error"],
@@ -60,9 +60,19 @@
       "decision": "deny", "error": "invalid-args"
     },
     {
-      "name": "a reserved kind is refused in this version",
-      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-8", "kind": "ask-region", "args": { "question": "what is this?", "monitor": "DISPLAY1", "x": 0, "y": 0, "width": 10, "height": 10 }, "intentId": "cap-1", "expiresAtMs": 1060000 },
-      "decision": "deny", "error": "unavailable"
+      "name": "attaching a screen region the user picked: the user sees it and confirms it",
+      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-8", "kind": "ask-region", "args": { "monitor": "DISPLAY1", "x": 0, "y": 0, "width": 640, "height": 480 }, "intentId": "reg-1", "expiresAtMs": 1060000 },
+      "decision": "ask"
+    },
+    {
+      "name": "a region may not carry a question or anything else",
+      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-23", "kind": "ask-region", "args": { "question": "hi", "monitor": "DISPLAY1", "x": 0, "y": 0, "width": 640, "height": 480 }, "intentId": "reg-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
+    },
+    {
+      "name": "an empty or off-screen region is refused",
+      "action": { "v": 3, "domain": "desktop-assistant", "id": "act-24", "kind": "ask-region", "args": { "monitor": "DISPLAY1", "x": -5, "y": 0, "width": 0, "height": 480 }, "intentId": "reg-1", "expiresAtMs": 1060000 },
+      "decision": "deny", "error": "invalid-args"
     },
     {
       "name": "switching the user's browser tab reaches outside Coucou: the user confirms it",

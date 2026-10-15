@@ -1317,7 +1317,8 @@ pub fn as_model_infos(models: &[CatalogModel]) -> Vec<ModelInfo> {
 // Audio mode asks for OpenAI's voice once in a while: when the account may
 // use it, replies are read by it, on the plan like everything else here;
 // when it may not, the first refusal is remembered for that session and Windows'
-// own voices read instead. Never an API key, never another billing.
+// own voices read instead. Network failures briefly defer remote speech too, so
+// every sentence doesn't wait for an unreachable endpoint. Never another billing.
 
 const SPEECH: &str = "https://api.openai.com/v1/audio/speech";
 /// OpenAI's speech model and voice.
@@ -1325,16 +1326,56 @@ pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
 pub const SPEECH_VOICE: &str = "marin";
 const SPEECH_STYLE: &str = "Speak naturally and warmly, like a friendly assistant in a relaxed conversation. Match the language of the text.";
 
-/// A refusal belongs to the account session that issued it. Reconnecting or
-/// switching accounts may allow speech and must not inherit an old refusal.
-static SPEECH_REFUSED: std::sync::Mutex<Option<RequestAccount>> = std::sync::Mutex::new(None);
+/// Speech is optional: prefer the native voice over a long network stall.
+const SPEECH_TIMEOUT: Duration = Duration::from_secs(5);
+const SPEECH_RETRY_DELAY: Duration = Duration::from_secs(60);
 
-fn check_speech_session(request: &RequestAccount, current_generation: u64, refused: Option<&RequestAccount>) -> Result<(), String> {
+/// A failure belongs to one account session. Transport failures expire;
+/// endpoint refusals last until reconnect. Neither follows an account switch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SpeechFailure {
+    account: RequestAccount,
+    retry_after: Option<Instant>,
+}
+
+static SPEECH_REFUSED: std::sync::Mutex<Option<SpeechFailure>> = std::sync::Mutex::new(None);
+
+fn check_speech_session(
+    request: &RequestAccount,
+    current_generation: u64,
+    refused: Option<&SpeechFailure>,
+    now: Instant,
+) -> Result<(), String> {
     check_session_generation(request, current_generation)?;
-    if refused == Some(request) {
-        return Err("refused earlier".into());
+    if refused.is_some_and(|failure| failure.account == *request
+        && failure.retry_after.is_none_or(|until| now < until)) {
+        return Err("speech temporarily unavailable or refused earlier".into());
     }
     Ok(())
+}
+
+/// Both sending the request and reading its body can fail. Keep the same
+/// cooldown for either failure, without replacing a concurrent HTTP refusal.
+/// Called with REFRESHING held, so a late failure cannot affect a new session.
+fn speech_transport_result<T, E>(
+    request: &RequestAccount,
+    current_generation: u64,
+    result: Result<T, E>,
+    refused: &mut Option<SpeechFailure>,
+    now: Instant,
+) -> Result<T, String> {
+    check_session_generation(request, current_generation)?;
+    result.map_err(|_| {
+        if !refused.as_ref().is_some_and(|failure| failure.account == *request && failure.retry_after.is_none()) {
+            *refused = Some(SpeechFailure { account: request.clone(), retry_after: Some(now + SPEECH_RETRY_DELAY) });
+        }
+        t("ChatGPT can't be reached.")
+    })
+}
+
+async fn speech_transport<T, E>(request: &RequestAccount, result: Result<T, E>) -> Result<T, String> {
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    speech_transport_result(request, session_generation(), result, &mut SPEECH_REFUSED.lock().unwrap(), Instant::now())
 }
 
 pub fn speech_body(text: &str) -> Value {
@@ -1348,29 +1389,29 @@ pub fn speech_body(text: &str) -> Value {
 }
 
 /// True when OpenAI's voice may be tried: signed in with plan usage and not
-/// refused earlier in this account session.
+/// refused earlier in this account session or cooling down after a failure.
 pub async fn speech_available() -> bool {
     let Ok(account) = plan_ready().await else { return false };
-    check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref()).is_ok()
+    check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref(), Instant::now()).is_ok()
 }
 
 /// `text` read by OpenAI's voice, as MP3 bytes. Err when it can't be
 /// (refused, offline, signed out): the caller reads it another way.
 pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
     let account = plan_ready().await?;
-    check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref())?;
+    check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref(), Instant::now())?;
     let body = speech_body(text);
     let mut token = access_token(false, &account).await?;
     for attempt in 0..2 {
-        check_session_generation(&account, session_generation())?;
-        let reply = http(Duration::from_secs(30))?
+        // A parallel chunk may have failed while this request got its token.
+        check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref(), Instant::now())?;
+        let sent = http(SPEECH_TIMEOUT)?
             .post(SPEECH)
             .bearer_auth(&token)
             .json(&body)
             .send()
-            .await
-            .map_err(|_| t("ChatGPT can't be reached."))?;
-        check_session_generation(&account, session_generation())?;
+            .await;
+        let reply = speech_transport(&account, sent).await?;
         let status = reply.status().as_u16();
         // Speech is optional on this sign-in. An endpoint-specific refusal
         // falls back to Windows; it must not expire an otherwise valid chat.
@@ -1379,20 +1420,22 @@ pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
             continue;
         }
         if !reply.status().is_success() {
-            let body: Value = reply.json().await.unwrap_or(Value::Null);
+            // Even an error response can stall or lose its body. Remember
+            // that transport failure before interpreting the HTTP status.
+            let body: Value = speech_transport(&account, reply.json().await).await.unwrap_or(Value::Null);
             let _serial = REFRESHING.get_or_init(Default::default).lock().await;
             check_session_generation(&account, session_generation())?;
             let code = body.pointer("/error/code").and_then(Value::as_str).unwrap_or("");
             // A refusal of this kind of request, not a passing failure.
             if matches!(status, 400 | 401 | 403 | 404) {
-                *SPEECH_REFUSED.lock().unwrap() = Some(account.clone());
+                *SPEECH_REFUSED.lock().unwrap() = Some(SpeechFailure { account: account.clone(), retry_after: None });
                 crate::log::line(format!("chatgpt: speech not available on this sign-in (HTTP {status} {code})"));
             } else {
                 crate::log::line(format!("chatgpt: speech HTTP {status} {code}"));
             }
             return Err(error_message(status, &body).text);
         }
-        let bytes = reply.bytes().await.map_err(|_| t("ChatGPT can't be reached."))?;
+        let bytes = speech_transport(&account, reply.bytes().await).await?;
         let _serial = REFRESHING.get_or_init(Default::default).lock().await;
         check_session_generation(&account, session_generation())?;
         if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {

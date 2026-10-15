@@ -1367,7 +1367,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .voice-btn,
-.audio-btn {
+.audio-btn,
+.region-btn {
   width: 28px;
   height: 28px;
   flex: 0 0 28px;
@@ -1382,23 +1383,27 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .voice-btn:hover:not(:disabled),
-.audio-btn:hover:not(:disabled) {
+.audio-btn:hover:not(:disabled),
+.region-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.1);
 }
 
 .voice-btn:active:not(:disabled),
-.audio-btn:active:not(:disabled) {
+.audio-btn:active:not(:disabled),
+.region-btn:active:not(:disabled) {
   transform: scale(0.94);
 }
 
 .voice-btn:focus-visible,
-.audio-btn:focus-visible {
+.audio-btn:focus-visible,
+.region-btn:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
 
 .voice-btn:disabled,
-.audio-btn:disabled {
+.audio-btn:disabled,
+.region-btn:disabled {
   opacity: 0.35;
 }
 
@@ -3001,4 +3006,56 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
     animation: none !important;
     transition: none;
   }
+}
+
+/* ── Ask about a screen region (src/assistant/region-view.ts) ───────────── */
+
+.view.region .stack {
+  gap: 8px;
+}
+
+.region-frame {
+  position: relative;
+  align-self: center;
+  max-width: 100%;
+  line-height: 0;
+  cursor: crosshair;
+  border-radius: 8px;
+  overflow: hidden;
+  outline: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.region-img {
+  display: block;
+  max-width: 100%;
+  max-height: 150px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.region-masks {
+  position: absolute;
+  inset: 0;
+}
+
+.region-mask {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  background: #000;
+  cursor: pointer;
+}
+
+.region-mask:hover {
+  outline: 1.5px solid #f4505e;
+}
+
+.region-mask.draft {
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.75);
+  outline: 1px dashed rgba(255, 255, 255, 0.7);
+}
+
+.region-sub {
+  white-space: normal;
 }

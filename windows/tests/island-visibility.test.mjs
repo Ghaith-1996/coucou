@@ -148,3 +148,21 @@ test("skipping the greeting still restores Mochi's desktop lifecycle", async () 
     internals.invoke = invoke;
   }
 });
+
+
+test("a confirmed region completes into chat context without displacing an agent approval", () => {
+  const host = island();
+  const navigation = [];
+  host.setView = (view) => { navigation.push(view); State.view = view; };
+  State.pendingApproval = { requestId: "r1" };
+  State.isPinned = true;
+  State.mode = "expanded";
+  State.view = "approval";
+  host.chatWithFile({ name: "region.png", path: "C:/inbox/region.png" });
+  assert.deepEqual(navigation, []);
+  assert.equal(State.view, "approval");
+  assert.equal(State.isPinned, true);
+  assert.deepEqual(State.promptContext, { kind: "file", name: "region.png", path: "C:/inbox/region.png" });
+  assert.deepEqual(sent("chat_reset"), [{}]);
+  assert.deepEqual(sent("chat_send"), []);
+});

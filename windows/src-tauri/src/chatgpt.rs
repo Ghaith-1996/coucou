@@ -1397,20 +1397,25 @@ pub async fn speech_available() -> bool {
 
 /// `text` read by OpenAI's voice, as MP3 bytes. Err when it can't be
 /// (refused, offline, signed out): the caller reads it another way.
-pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
+pub async fn speak(text: &str, authorize: impl Fn() -> Result<(), String> + Send + Sync) -> Result<Vec<u8>, String> {
+    authorize()?;
     let account = plan_ready().await?;
+    authorize()?;
     check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref(), Instant::now())?;
     let body = speech_body(text);
     let mut token = access_token(false, &account).await?;
     for attempt in 0..2 {
         // A parallel chunk may have failed while this request got its token.
         check_speech_session(&account, session_generation(), SPEECH_REFUSED.lock().unwrap().as_ref(), Instant::now())?;
-        let sent = http(SPEECH_TIMEOUT)?
+        let request = http(SPEECH_TIMEOUT)?
             .post(SPEECH)
             .bearer_auth(&token)
-            .json(&body)
-            .send()
-            .await;
+            .json(&body);
+        // Token refresh and a 401 retry can outlive the answer. Recheck its
+        // native speech scope immediately before transmitting its text.
+        authorize()?;
+        let sent = request.send().await;
+        authorize()?;
         let reply = speech_transport(&account, sent).await?;
         let status = reply.status().as_u16();
         // Speech is optional on this sign-in. An endpoint-specific refusal
@@ -1437,6 +1442,7 @@ pub async fn speak(text: &str) -> Result<Vec<u8>, String> {
         }
         let bytes = speech_transport(&account, reply.bytes().await).await?;
         let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+        authorize()?;
         check_session_generation(&account, session_generation())?;
         if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
             return Err("empty or oversized audio".into());

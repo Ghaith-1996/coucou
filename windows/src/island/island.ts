@@ -550,6 +550,18 @@ export class Island {
     State.notify();
   }
 
+  /** A screen region the user confirmed: a fresh chat with it attached, as
+   *  a dropped file would be, sent with the first question. */
+  chatWithFile(file: { name: string; path: string }) {
+    newConversation();
+    State.droppedFile = { name: file.name, path: file.path };
+    State.promptContext = { kind: "file", name: file.name, path: file.path };
+    // Confirmation may finish after an agent requests permission. Keep its
+    // priority card visible; the unsent image waits in the chat context.
+    if (!State.pendingApproval) this.setView("prompt");
+    else State.notify();
+  }
+
   /** The assistant's chat draft: the chat opens with `text` in its field,
    *  unsent. True when the field really holds it. */
   showChatDraft(text: string): boolean {

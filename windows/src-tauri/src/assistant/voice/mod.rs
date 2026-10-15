@@ -253,17 +253,19 @@ impl Voice {
 
     /// Cancel, Escape, the card going away, or an agent's card taking the
     /// island: whatever this capture was doing ends, and its audio or
-    /// transcript is dropped. Never an action.
-    pub fn cancel(&self, capture_id: &str) {
+    /// transcript is dropped. Never an action. True acknowledges that this
+    /// capture no longer owns the microphone; false means its capture thread
+    /// still needs to close it. Retrying a completed cancellation is safe.
+    pub fn cancel(&self, capture_id: &str) -> bool {
         let mut phase = self.0.phase.lock().unwrap();
         if phase.id() != Some(capture_id) {
-            return;
+            return true;
         }
         *self.0.proposal.lock().unwrap() = None;
         if let Phase::Listening { signal, .. } = &*phase {
             // The capture thread closes the microphone and says idle.
             signal.store(CANCEL, Ordering::SeqCst);
-            return;
+            return false;
         }
         if let Phase::Processing { abort, .. } = &*phase {
             // The transcription stops too, instead of finishing for nothing.
@@ -276,6 +278,7 @@ impl Voice {
         drop(phase);
         (self.0.log)("voice: cancelled".into());
         self.emit(VoiceEvent::new(capture_id, VoiceState::Idle));
+        true
     }
 
     /// Use: the transcript becomes a `chat-draft` action, decided by the

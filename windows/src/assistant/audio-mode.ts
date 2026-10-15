@@ -15,6 +15,7 @@
 // agent's permission card or nothing said for a while ends audio mode.
 
 import { Bridge, onEvent } from "../core/bridge";
+import { audioRelease, retryCaptureRelease } from "./capture-release";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { VOICE_EVENT, parseVoiceEvent, type VoiceEvent } from "./contracts";
@@ -31,7 +32,7 @@ export interface AudioHost {
 }
 
 /** The chat: sends `text` as the user's message; resolves with the answer, or null. */
-export type Ask = (text: string) => Promise<string | null>;
+export type Ask = (text: string, requestId: string) => Promise<string | null>;
 let askChat: Ask | null = null;
 let canAsk = () => true;
 let cancelAsk = () => {};
@@ -94,7 +95,7 @@ export const AudioMode = {
   state: "off" as AudioState,
   /** UI can be off while a cancelled native capture still owns the microphone. */
   get busy(): boolean {
-    return this.state !== "off" || starting !== null || releasing !== null;
+    return this.state !== "off" || starting !== null || audioRelease.busy;
   },
   /** The microphone level while listening, 0…1. */
   level: 0,
@@ -107,8 +108,6 @@ let player: Player = new ElementPlayer();
 let captureId: string | null = null;
 /** Native events can arrive before the command reply identifies our capture. */
 let starting: { events: Map<string, VoiceEvent> } | null = null;
-/** Cancel requests return before the native microphone closes. */
-let releasing: string | null = null;
 /** Keep a spoken request reserved until its chat finally block has completed. */
 let answering: { promise: Promise<string | null>; cancel: () => void } | null = null;
 /** Bumped by every start, stop and interrupt: stale work checks it. */
@@ -117,6 +116,8 @@ let pinned = false;
 let userPinned = false;
 /** The streamed reply of the current turn, and how much of it was queued. */
 let replyText = "";
+/** Correlation only: native binds the actual answering provider to this turn. */
+let replyRequestId: string | null = null;
 let queuedTo = 0;
 let replyDone = false;
 let speaking: Promise<void> | null = null;
@@ -134,6 +135,7 @@ export function toggleAudioMode() {
 }
 
 export async function startAudioMode() {
+  if (retryCaptureRelease(true)) return;
   if (AudioMode.busy || !host || !askChat || State.pendingApproval || Voice.busy || answering || !canAsk()) return;
   turn++;
   AudioMode.note = "";
@@ -148,7 +150,7 @@ export async function startAudioMode() {
 }
 
 export function stopAudioMode(note = "") {
-  if (AudioMode.state === "off") return;
+  if (AudioMode.state === "off") { retryCaptureRelease(true); return; }
   turn++;
   const id = captureId;
   captureId = null;
@@ -167,7 +169,14 @@ export function stopAudioMode(note = "") {
 }
 
 /** Retire playback without letting an old synthesis completion own a new turn. */
+function endSpeech() {
+  const requestId = replyRequestId;
+  replyRequestId = null;
+  if (requestId) void Bridge.speechEnd(requestId);
+}
+
 function clearPlayback() {
+  endSpeech();
   queue.length = 0;
   player.stop();
   speaking = null;
@@ -191,9 +200,7 @@ export function interruptAudio() {
 
 /** Reserve cancellation until native idle/error confirms the microphone closed. */
 function cancelCapture(id: string, event?: VoiceEvent) {
-  if (event?.state === "idle" || event?.state === "error") return;
-  releasing = id;
-  void Bridge.voiceCancel(id);
+  audioRelease.begin(id, event);
 }
 
 async function listen(at: number) {
@@ -230,13 +237,7 @@ async function listen(at: number) {
 }
 
 async function onVoice(event: VoiceEvent) {
-  if (event.captureId === releasing) {
-    if (event.state === "idle" || event.state === "error") {
-      releasing = null;
-      State.notify();
-    }
-    return;
-  }
+  if (audioRelease.accept(event)) return;
   if (starting) {
     const prior = starting.events.get(event.captureId)?.state;
     // A terminal event cannot be undone by a queued level/processing event.
@@ -268,7 +269,7 @@ async function onVoice(event: VoiceEvent) {
     case "preview": {
       captureId = null;
       if (event.simulated) {
-        void Bridge.voiceCancel(event.captureId);
+        cancelCapture(event.captureId);
         stopAudioMode("model");
         return;
       }
@@ -293,7 +294,9 @@ async function converse(at: number, text: string) {
   queuedTo = 0;
   replyDone = false;
   queue.length = 0;
-  const pending = { promise: askChat!(text), cancel: cancelAsk };
+  const requestId = crypto.randomUUID();
+  replyRequestId = requestId;
+  const pending = { promise: askChat!(text, requestId), cancel: cancelAsk };
   answering = pending;
   let answer: string | null;
   try {
@@ -319,7 +322,10 @@ async function converse(at: number, text: string) {
   replyDone = true;
   enqueue(at);
   await drained(at);
-  if (at === turn) await listen(at);
+  if (at === turn) {
+    endSpeech();
+    await listen(at);
+  }
 }
 
 /** Queues every complete chunk of the reply so far, and starts speaking. */
@@ -339,6 +345,8 @@ function enqueue(at: number) {
 }
 
 async function speak(at: number) {
+  const requestId = replyRequestId;
+  if (!requestId) return;
   // The next clip is asked for while the current one plays.
   let next: Promise<string | null> | null = null;
   const failed = () => {
@@ -348,7 +356,7 @@ async function speak(at: number) {
   };
   const fetch = async (text: string): Promise<string | null> => {
     try {
-      const clip = await Bridge.speechSay(text);
+      const clip = await Bridge.speechSay(text, requestId);
       if (!clip.audio) throw new Error("Speech synthesis returned no audio");
       return clip.audio;
     } catch {
@@ -421,11 +429,12 @@ export function resetAudioModeForTests(testPlayer?: Player) {
   turn++;
   captureId = null;
   starting = null;
-  releasing = null;
+  audioRelease.reset();
   answering = null;
   queue.length = 0;
   speaking = null;
   replyText = "";
+  replyRequestId = null;
   queuedTo = 0;
   replyDone = false;
   pinned = false;

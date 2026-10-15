@@ -561,10 +561,13 @@ async fn chat_send(
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
     stop: State<'_, ChatStop>,
+    speech: State<'_, assistant::speech::Turns>,
     query: String,
     context: Option<ChatContext>,
+    request_id: Option<String>,
 ) -> Result<ChatReply, String> {
     let settings = shared.settings.lock().unwrap().clone();
+    let speech_turn = speech.begin(request_id.as_deref(), &settings);
     let account_before = (settings.chat_provider == chatgpt::PROVIDER).then(chatgpt::status);
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     *stop.0.lock().unwrap() = Some(tx);
@@ -573,6 +576,9 @@ async fn chat_send(
         reply = chat::send(&app, &chat, &settings, query, context) => reply,
         _ = rx => Err(i18n::t("Stopped.")),
     };
+    if result.is_err() {
+        speech.failed(speech_turn.as_ref());
+    }
     emit_chatgpt_status_change(&app, account_before);
     result
 }
@@ -595,8 +601,9 @@ fn chat_history_save(conversation: chat_store::Conversation) -> Result<(), Strin
 
 /// Reopens a conversation: its messages for the island, its turns for the model.
 #[tauri::command]
-fn chat_history_open(chat: State<Chat>, id: String) -> Result<chat_store::Conversation, String> {
+fn chat_history_open(chat: State<Chat>, speech: State<assistant::speech::Turns>, id: String) -> Result<chat_store::Conversation, String> {
     let conversation = chat_store::load(&chat_store::dir(), &id)?;
+    speech.clear();
     chat.restore(&chat_store::context_turns(&conversation));
     Ok(conversation)
 }
@@ -613,12 +620,14 @@ fn chat_history_delete(id: String) -> Result<(), String> {
 
 /// Regenerate: the last turn leaves the model's history before it is asked again.
 #[tauri::command]
-fn chat_undo_last(chat: State<Chat>) -> bool {
+fn chat_undo_last(chat: State<Chat>, speech: State<assistant::speech::Turns>) -> bool {
+    speech.clear();
     chat.undo_last()
 }
 
 #[tauri::command]
-fn chat_stop(stop: State<ChatStop>) {
+fn chat_stop(stop: State<ChatStop>, speech: State<assistant::speech::Turns>) {
+    speech.clear();
     if let Some(tx) = stop.0.lock().unwrap().take() {
         let _ = tx.send(());
     }
@@ -709,7 +718,8 @@ fn local_set_key(url: String, key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn chat_reset(chat: State<Chat>) {
+fn chat_reset(chat: State<Chat>, speech: State<assistant::speech::Turns>) {
+    speech.clear();
     chat.reset();
 }
 
@@ -897,7 +907,9 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(assistant::region::Regions::default())
         .manage(ChatStop::default())
+        .manage(assistant::speech::Turns::default())
         .manage(shortcuts::Registry::default())
         .manage(recap::load())
         .invoke_handler(tauri::generate_handler![
@@ -994,6 +1006,7 @@ pub fn run() {
             assistant::app::assistant_voice_hands_free,
             assistant::app::assistant_voice_converse,
             assistant::speech::speech_say,
+            assistant::speech::speech_end,
             assistant::app::assistant_voice_stop,
             assistant::app::assistant_voice_cancel,
             assistant::app::assistant_voice_use,
@@ -1004,6 +1017,11 @@ pub fn run() {
             assistant::app::assistant_insert_offer,
             assistant::app::assistant_insert_copy_check,
             assistant::app::assistant_insert_text,
+            assistant::region::commands::region_start,
+            assistant::region::commands::region_overlay_info,
+            assistant::region::commands::region_pick,
+            assistant::region::commands::region_cancel,
+            assistant::region::commands::region_attach,
             assistant::app::voice_model_status,
             assistant::app::voice_model_download,
             assistant::app::voice_model_cancel,

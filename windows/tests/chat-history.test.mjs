@@ -2076,7 +2076,9 @@ for (const phase of ["listening", "transcribing", "starting", "fetching transcri
     assert.equal($(".audio-row").hidden, false);
     await open(CURRENT);
     assert.equal(audio.AudioMode.state, "off", "selecting a conversation ends the old spoken turn immediately");
-    assert.equal($(".audio-row").hidden, true, "the listening/transcribing indicator visibly disappears");
+    const releasing = phase === "listening" || phase === "transcribing";
+    assert.equal($(".audio-row").hidden, !releasing, "a cancelled capture retains a visible release indicator until native acknowledgement");
+    if (releasing) assert.match($(".audio-label").textContent, /Waiting for the microphone to close/);
     assert.equal($(".audio-btn").classList.contains("on"), false, "the audio toggle visibly switches off");
     assert.equal($(".audio-btn").disabled, true, "audio cannot restart while restoration is pending");
     assert.deepEqual(sent("assistant_voice_cancel"), phase === "listening" || phase === "transcribing" ? [{ captureId: "old-audio" }] : []);
@@ -2097,6 +2099,7 @@ for (const phase of ["listening", "transcribing", "starting", "fetching transcri
       assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "old-audio" }]);
       voiceEvent("idle"); // Native cancellation acknowledges microphone closure.
       await flush();
+      assert.equal($(".audio-row").hidden, true, "the release indicator disappears after microphone closure");
     }
     assert.equal($(".audio-btn").disabled, false);
     answers.assistant_voice_hands_free = () => "new-audio";

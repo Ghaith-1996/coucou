@@ -169,12 +169,17 @@ impl ActionScope {
         *self.0.lock().unwrap()
     }
 
-    /// The execution boundary, checked on the OS worker just before starting.
-    /// Cancellation and this check are serialized. Once this succeeds, an OS
-    /// operation has started and cannot be undone by stopping the chat. No
-    /// lock is held while UI Automation or the shell does potentially slow work.
-    fn try_start(&self) -> bool {
-        self.is_active()
+    /// Serialize retirement with the immediate effect on its OS worker. A
+    /// boolean check would release authority before the effect actually starts.
+    /// Preparation and later evidence polling must remain outside this closure.
+    pub(crate) fn run_if_active<T>(&self, effect: impl FnOnce() -> T) -> Option<T> {
+        let active = self.0.lock().unwrap();
+        if !*active {
+            return None;
+        }
+        let result = effect();
+        drop(active);
+        Some(result)
     }
 }
 
@@ -363,10 +368,7 @@ async fn switch_tab(app: &AppHandle, args: SwitchArgs, intent: &str, request_id:
     let done = {
         let scope = scope.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            if !scope.try_start() {
-                return Err("The chat was stopped.".to_string());
-            }
-            super::browser::switch_if(a.window, a.tab_id, a.title, move || scope.try_start())
+            super::browser::switch_if(a.window, a.tab_id, a.title, Some(scope))
         }).await.map_err(|e| e.to_string())
     };
     #[cfg(not(windows))]
@@ -410,7 +412,7 @@ async fn open_app(app: &AppHandle, args: OpenArgs, intent: &str, request_id: Opt
             return result("The app is no longer in the Start menu.");
         };
         let scope = scope.clone();
-        let receipt = super::launch::open_if(action_id.clone(), target, move || scope.try_start())
+        let receipt = super::launch::open_if(action_id.clone(), target, Some(scope))
             .await.unwrap_or_else(|_| ActionReceipt::failed(&action_id, ErrorCode::Failed));
         log(format!("assistant action {action_id} {:?}", receipt.outcome()));
         match receipt.outcome() {
@@ -435,14 +437,11 @@ async fn remember(app: &AppHandle, args: RememberArgs, intent: &str, request_id:
     else {
         return result("The user declined: nothing was remembered.");
     };
-    let saved = crate::memory::with(|m| {
-        // Check after acquiring/loading the memory store, immediately before
-        // mutation: a queued write must not survive its chat turn.
-        if !scope.try_start() {
-            return Err("The chat was stopped.".into());
-        }
-        m.add(&a.text, crate::memory::Source::Chat, crate::memory::now())
-    });
+    // Scope precedes the memory lock, and remains held through persistence or
+    // rollback. Cancellation cannot return between the mutation and its save.
+    let saved = scope.run_if_active(|| {
+        crate::memory::with(|m| m.add(&a.text, crate::memory::Source::Chat, crate::memory::now()))
+    }).unwrap_or_else(|| Err("The chat was stopped.".into()));
     let receipt = match &saved {
         Ok(item) => ActionReceipt::succeeded(&action_id, &format!("memory:{}", item.id)).unwrap_or_else(|| ActionReceipt::unknown(&action_id)),
         Err(_) => ActionReceipt::failed(&action_id, ErrorCode::Failed),
@@ -540,7 +539,7 @@ mod tests {
         let mut reset = false;
         let closed = stop.cancel_with(&actions, || {
             assert_eq!(actions.answer(&action.id, Some(grant)), Err(ErrorCode::Expired));
-            assert!(!scope.try_start());
+            assert!(!scope.run_if_active(|| ()).is_some());
             assert_eq!(recv.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed));
             assert_eq!(cancelled.try_recv(), Ok(()));
             chat.reset();
@@ -586,7 +585,7 @@ mod tests {
         assert!(actions.retire(&scope).is_empty());
         let grant = recv.await.unwrap().unwrap();
         assert!(policy::check_grant(&grant, &action, policy::now_ms()).is_ok());
-        assert!(!scope.try_start(), "a valid grant cannot revive its retired native turn");
+        assert!(!scope.run_if_active(|| ()).is_some(), "a valid grant cannot revive its retired native turn");
     }
 
     #[test]
@@ -599,12 +598,94 @@ mod tests {
         let worker = std::thread::spawn(move || {
             ready.send(()).unwrap();
             resumed.recv().unwrap();
-            worker_scope.try_start()
+            let mut effects = 0;
+            let result = worker_scope.run_if_active(|| { effects += 1; });
+            (result, effects)
         });
         queued.recv().unwrap();
         actions.retire(&scope);
         resume.send(()).unwrap();
-        assert!(!worker.join().unwrap());
+        assert_eq!(worker.join().unwrap(), (None, 0), "retirement wins before the immediate effect boundary");
+    }
+
+    #[test]
+    fn cancellation_waits_for_the_immediate_effect_but_not_later_observation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+
+        let actions = Arc::new(ChatActions::default());
+        let scope = ActionScope::new();
+        let effects = Arc::new(AtomicUsize::new(0));
+        let (inside, entered) = mpsc::channel();
+        let (complete_effect, effect_may_finish) = mpsc::channel();
+        let (observing, observation_started) = mpsc::channel();
+        let (complete_observation, observation_may_finish) = mpsc::channel();
+        let worker_scope = scope.clone();
+        let worker_effects = effects.clone();
+        let worker = std::thread::spawn(move || {
+            let result = worker_scope.run_if_active(|| {
+                // Deterministic proof that the effect executes under the lock,
+                // rather than merely after a successful boolean snapshot.
+                assert!(matches!(worker_scope.0.try_lock(), Err(std::sync::TryLockError::WouldBlock)));
+                inside.send(()).unwrap();
+                effect_may_finish.recv_timeout(Duration::from_secs(5)).unwrap();
+                worker_effects.fetch_add(1, Ordering::SeqCst);
+                "started"
+            });
+            observing.send(()).unwrap();
+            observation_may_finish.recv_timeout(Duration::from_secs(5)).unwrap();
+            result
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (retiring, retirement_started) = mpsc::channel();
+        let (retired, retirement_finished) = mpsc::channel();
+        let retiring_actions = actions.clone();
+        let retiring_scope = scope.clone();
+        let cancellation = std::thread::spawn(move || {
+            retiring.send(()).unwrap();
+            retiring_actions.retire(&retiring_scope);
+            retired.send(()).unwrap();
+        });
+        retirement_started.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(retirement_finished.try_recv(), Err(mpsc::TryRecvError::Empty));
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        complete_effect.send(()).unwrap();
+        retirement_finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        observation_started.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert!(scope.run_if_active(|| panic!("retired scope ran again")).is_none());
+        complete_observation.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), Some("started"));
+        cancellation.join().unwrap();
+    }
+
+    #[test]
+    fn an_effect_failure_releases_the_boundary_and_old_retirement_cannot_touch_a_new_scope() {
+        let actions = ChatActions::default();
+        let old = ActionScope::new();
+        assert_eq!(old.run_if_active(|| Err::<(), _>("OS refused")), Some(Err("OS refused")));
+        actions.retire(&old);
+        let fresh = ActionScope::new();
+        actions.retire(&old);
+        assert_eq!(fresh.run_if_active(|| "new effect"), Some("new effect"));
+        assert!(old.run_if_active(|| "stale effect").is_none());
+    }
+
+    #[test]
+    fn late_settings_work_cannot_bind_speech_after_stop_or_replacement() {
+        let actions = ChatActions::default();
+        let stop = crate::ChatStop::default();
+        let (old, _, _) = stop.begin(&actions);
+        let mut binds = 0;
+        stop.cancel_with(&actions, || {});
+        assert!(stop.with_current(&old, || { binds += 1; }).is_none());
+        let (fresh, _, _) = stop.begin(&actions);
+        assert!(stop.with_current(&old, || { binds += 1; }).is_none());
+        assert!(stop.with_current(&fresh, || { binds += 1; }).is_some());
+        assert_eq!(binds, 1);
+        stop.cancel_with(&actions, || {});
+        assert!(stop.with_current(&fresh, || { binds += 1; }).is_none());
+        assert_eq!(binds, 1);
     }
 
     #[test]
@@ -617,16 +698,16 @@ mod tests {
         let (fresh, mut fresh_cancelled, closed) = stop.begin(&actions);
         assert_eq!(closed, ["act-old"]);
         assert_eq!(old_cancelled.try_recv(), Ok(()));
-        assert!(!old.try_start());
+        assert!(!old.run_if_active(|| ()).is_some());
         let (fresh_send, fresh_recv) = tokio::sync::oneshot::channel();
         assert!(actions.propose(&fresh, "act-fresh", fresh_send, || {}));
         assert!(stop.finish(&actions, &old).is_empty());
-        assert!(fresh.try_start());
+        assert!(fresh.run_if_active(|| ()).is_some());
         assert_eq!(fresh_cancelled.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty));
         assert_eq!(actions.answer("act-fresh", None), Ok(()));
         assert_eq!(fresh_recv.blocking_recv().unwrap(), None);
         stop.cancel_with(&actions, || {});
-        assert!(!fresh.try_start());
+        assert!(!fresh.run_if_active(|| ()).is_some());
         assert_eq!(fresh_cancelled.try_recv(), Ok(()));
     }
 

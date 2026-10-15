@@ -512,6 +512,77 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_chat_cannot_load_mutate_or_save_memory() {
+        let dir = temp_dir_for("cancelled-chat");
+        let file = dir.join("memory.bin");
+        let scope = crate::assistant::tools::ActionScope::new();
+        let actions = crate::assistant::tools::ChatActions::default();
+        actions.retire(&scope);
+        let mut store = None;
+        let result = scope.run_if_active(|| with_store(&mut store, &file, |m| m.add("Cancelled fact", Source::Chat, 1)));
+        assert!(result.is_none());
+        assert!(store.is_none(), "a retired request cannot initialize the cache");
+        assert!(!file.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancellation_waits_until_the_memory_transaction_is_persisted_or_rolled_back() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        for fail_save in [false, true] {
+            let dir = temp_dir_for("atomic-chat-save");
+            let file = dir.join("memory.bin");
+            if fail_save { std::fs::create_dir(&file).unwrap(); }
+            let scope = crate::assistant::tools::ActionScope::new();
+            let worker_scope = scope.clone();
+            let worker_file = file.clone();
+            let (mutated, mutation) = mpsc::channel();
+            let (resume, resumed) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mut store = Some(Memory::default());
+                let result = worker_scope.run_if_active(|| with_store(&mut store, &worker_file, |m| {
+                    let item = m.add("Confirmed fact", Source::Chat, 1)?;
+                    mutated.send(()).unwrap();
+                    // Still inside the transaction, before its disk save.
+                    resumed.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(item)
+                }));
+                (result, store)
+            });
+            mutation.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (attempting, attempted) = mpsc::channel();
+            let (retired, retirement) = mpsc::channel();
+            let cancelling_scope = scope.clone();
+            let cancellation = std::thread::spawn(move || {
+                attempting.send(()).unwrap();
+                crate::assistant::tools::ChatActions::default().retire(&cancelling_scope);
+                retired.send(()).unwrap();
+            });
+            attempted.recv_timeout(Duration::from_secs(5)).unwrap();
+            let early = retirement.recv_timeout(Duration::from_millis(50));
+            // Release before asserting so a regression does not strand workers.
+            resume.send(()).unwrap();
+            assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)), "cancellation cannot return between mutation and save");
+            let (result, store) = worker.join().unwrap();
+            retirement.recv_timeout(Duration::from_secs(5)).unwrap();
+            cancellation.join().unwrap();
+            let result = result.expect("the transaction won the scope lock");
+            if fail_save {
+                assert!(result.is_err());
+                assert_eq!(store, Some(Memory::default()), "failed persistence rolls the cache back before retirement");
+                assert!(file.is_dir(), "failed save did not replace the existing path");
+            } else {
+                let item = result.unwrap();
+                assert_eq!(load_from(&file).unwrap().items, vec![item]);
+            }
+            assert!(scope.run_if_active(|| ()).is_none(), "retirement prevents another transaction");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
     fn items_are_cleaned_deduplicated_and_bounded() {
         let mut m = Memory::default();
         let a = m.add("  I write   in French\n", Source::User, 1).unwrap();

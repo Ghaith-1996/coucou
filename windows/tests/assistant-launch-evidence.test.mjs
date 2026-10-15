@@ -11,8 +11,8 @@ const app = readFileSync(new URL("../src-tauri/src/assistant/app.rs", import.met
   .replace(/\/\/.*$/gm, "");
 
 test("the shell launch uses a dedicated thread instead of a reused blocking worker", () => {
-  assert.match(source, /pub async fn open\([^\n]+\{\s*open_if\(action_id, app_id, \|\| true\)\.await/);
-  assert.match(source, /pub async fn open_if\([\s\S]*on_launch_thread\(move \|\| \{\s*if !start\(\) \{\s*return ActionReceipt::failed\(&action_id, ErrorCode::Expired\);\s*\}\s*open_in_sta\(&action_id, &app_id\)/);
+  assert.match(source, /pub async fn open\([^\n]+\{\s*open_if\(action_id, app_id, None\)\.await/);
+  assert.match(source, /pub async fn open_if\([^\n]*scope: Option<ActionScope>[^\n]*\{\s*on_launch_thread\(move \|\| open_in_sta\(&action_id, &app_id, scope\.as_ref\(\)\)\)\.await/);
   assert.match(source, /std::thread::Builder::new\(\)[\s\S]*\.spawn\(move \|\|/);
   assert.match(source, /send\.send\(with_sta\(launch\)\)/);
   assert.match(source, /recv\.await\.map_err/);

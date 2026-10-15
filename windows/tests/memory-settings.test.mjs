@@ -238,3 +238,88 @@ test("a memory read failure is visible and a failed export never claims a backup
   assert.match(section.textContent, /sharing violation/);
   assert.doesNotMatch(section.textContent, /Saved to/);
 });
+
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
+
+test("the memory switch waits for authoritative initial state instead of toggling its default", async (t) => {
+  const initial = deferred();
+  answering(t, {
+    memory_list: initial.promise,
+    memory_set_enabled: ({ enabled }) => state([], enabled),
+  });
+  const section = memorySection();
+  const toggle = section.find(".switch")[0];
+  toggle.fire("click");
+  assert.deepEqual(sent("memory_set_enabled"), []);
+  assert.equal(toggle.disabled, true);
+  initial.resolve(state([], false));
+  await settle();
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.getAttribute("aria-pressed"), "false");
+  toggle.fire("click");
+  await settle();
+  assert.deepEqual(sent("memory_set_enabled"), [{ enabled: true }]);
+});
+
+test("pending memory toggle disables duplicate clicks and the next click uses its confirmed state", async (t) => {
+  const first = deferred();
+  let toggles = 0;
+  answering(t, {
+    memory_list: state([]),
+    memory_set_enabled: ({ enabled }) => ++toggles === 1 ? first.promise : state([], enabled),
+  });
+  const section = memorySection();
+  await settle();
+  const toggle = section.find(".switch")[0];
+  toggle.fire("click");
+  toggle.fire("click");
+  assert.deepEqual(sent("memory_set_enabled"), [{ enabled: false }]);
+  assert.equal(toggle.disabled, true);
+  first.resolve(state([], false));
+  await settle();
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.getAttribute("aria-pressed"), "false");
+  toggle.fire("click");
+  await settle();
+  assert.deepEqual(sent("memory_set_enabled"), [{ enabled: false }, { enabled: true }]);
+  assert.equal(toggle.getAttribute("aria-pressed"), "true");
+});
+
+test("a failed toggle keeps confirmed state and permits an explicit retry", async (t) => {
+  const first = deferred();
+  let toggles = 0;
+  answering(t, {
+    memory_list: state([]),
+    memory_set_enabled: ({ enabled }) => ++toggles === 1 ? first.promise : state([], enabled),
+  });
+  const section = memorySection();
+  await settle();
+  const toggle = section.find(".switch")[0];
+  toggle.fire("click");
+  assert.equal(toggle.disabled, true);
+  first.reject(new Error("storage unavailable"));
+  await settle();
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.getAttribute("aria-pressed"), "true");
+  assert.match(section.textContent, /storage unavailable/);
+  toggle.fire("click");
+  await settle();
+  assert.deepEqual(sent("memory_set_enabled"), [{ enabled: false }, { enabled: false }]);
+  assert.equal(toggle.getAttribute("aria-pressed"), "false");
+  assert.doesNotMatch(section.textContent, /storage unavailable/);
+});
+
+test("an initial read failure never enables a switch based on guessed state", async (t) => {
+  answering(t, { memory_list: new Error("unreadable memory") });
+  const section = memorySection();
+  await settle();
+  const toggle = section.find(".switch")[0];
+  toggle.fire("click");
+  assert.deepEqual(sent("memory_set_enabled"), []);
+  assert.equal(toggle.disabled, true);
+  assert.match(section.textContent, /unreadable memory/);
+});

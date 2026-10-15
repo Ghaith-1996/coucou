@@ -5516,6 +5516,94 @@
    "pt-BR": "Esta memória já existe.",
    "ru": "Эта запись памяти уже существует.",
    "id": "Memori ini sudah ada."
+  },
+  "Waiting for the microphone to close…": {
+   "fr": "En attente de la fermeture du microphone…",
+   "es": "Esperando a que se cierre el micrófono…",
+   "zh-Hans": "正在等待麦克风关闭…",
+   "pt-BR": "Aguardando o microfone fechar…",
+   "ru": "Ожидание закрытия микрофона…",
+   "hi": "माइक्रोफ़ोन बंद होने की प्रतीक्षा है…",
+   "ar": "بانتظار إغلاق الميكروفون…",
+   "bn": "মাইক্রোফোন বন্ধ হওয়ার অপেক্ষা করা হচ্ছে…",
+   "id": "Menunggu mikrofon ditutup…"
+  },
+  "Could not release the microphone. Retry to reconnect.": {
+   "fr": "Impossible de libérer le microphone. Réessayez pour vous reconnecter.",
+   "es": "No se pudo liberar el micrófono. Reintenta para reconectar.",
+   "zh-Hans": "无法释放麦克风。请重试以重新连接。",
+   "pt-BR": "Não foi possível liberar o microfone. Tente novamente para reconectar.",
+   "ru": "Не удалось освободить микрофон. Повторите попытку для подключения.",
+   "hi": "माइक्रोफ़ोन रिलीज़ नहीं हो सका। दोबारा कनेक्ट करने के लिए फिर कोशिश करें।",
+   "ar": "تعذر تحرير الميكروفون. أعد المحاولة للاتصال مجددًا.",
+   "bn": "মাইক্রোফোন ছাড়া যায়নি। আবার সংযোগ করতে পুনরায় চেষ্টা করুন।",
+   "id": "Mikrofon tidak dapat dilepas. Coba lagi untuk menyambungkan kembali."
+  },
+  "Ask about a screen region": {
+   "zh-Hans": "询问屏幕上的某个区域",
+   "hi": "स्क्रीन के किसी हिस्से के बारे में पूछें",
+   "es": "Preguntar sobre una zona de la pantalla",
+   "ar": "اسأل عن منطقة من الشاشة",
+   "fr": "Poser une question sur une zone de l'écran",
+   "bn": "স্ক্রিনের একটি অংশ নিয়ে জিজ্ঞেস করুন",
+   "pt-BR": "Perguntar sobre uma área da tela",
+   "ru": "Спросить об области экрана",
+   "id": "Tanyakan tentang area layar"
+  },
+  "Drag around what you want to ask about. Esc to cancel.": {
+   "zh-Hans": "拖动框选你想询问的内容。按 Esc 取消。",
+   "hi": "जिसके बारे में पूछना है उसके चारों ओर खींचें। रद्द करने के लिए Esc दबाएँ।",
+   "es": "Arrastra alrededor de lo que quieres preguntar. Esc para cancelar.",
+   "ar": "اسحب حول ما تريد السؤال عنه. اضغط Esc للإلغاء.",
+   "fr": "Faites glisser autour de ce qui vous intéresse. Échap pour annuler.",
+   "bn": "যা নিয়ে জিজ্ঞেস করতে চান তার চারপাশে টেনে আনুন। বাতিল করতে Esc চাপুন।",
+   "pt-BR": "Arraste em volta do que você quer perguntar. Esc para cancelar.",
+   "ru": "Обведите то, о чём хотите спросить. Esc — отмена.",
+   "id": "Seret di sekitar yang ingin ditanyakan. Esc untuk batal."
+  },
+  "Ask about this region": {
+   "zh-Hans": "询问这个区域",
+   "hi": "इस हिस्से के बारे में पूछें",
+   "es": "Preguntar sobre esta zona",
+   "ar": "اسأل عن هذه المنطقة",
+   "fr": "Poser une question sur cette zone",
+   "bn": "এই অংশ নিয়ে জিজ্ঞেস করুন",
+   "pt-BR": "Perguntar sobre esta área",
+   "ru": "Спросить об этой области",
+   "id": "Tanyakan tentang area ini"
+  },
+  "Ask about it": {
+   "zh-Hans": "询问",
+   "hi": "इसके बारे में पूछें",
+   "es": "Preguntar",
+   "ar": "اسأل عنها",
+   "fr": "Poser la question",
+   "bn": "জিজ্ঞেস করুন",
+   "pt-BR": "Perguntar",
+   "ru": "Спросить",
+   "id": "Tanyakan"
+  },
+  "Remove this black box": {
+   "zh-Hans": "移除这个黑框",
+   "hi": "यह काला बॉक्स हटाएँ",
+   "es": "Quitar este recuadro negro",
+   "ar": "إزالة هذا المربع الأسود",
+   "fr": "Retirer ce cache noir",
+   "bn": "এই কালো বাক্সটি সরান",
+   "pt-BR": "Remover esta tarja preta",
+   "ru": "Убрать этот чёрный прямоугольник",
+   "id": "Hapus kotak hitam ini"
+  },
+  "Drag over anything private to black it out. Nothing is sent until you ask your question, to {model}.": {
+   "zh-Hans": "拖过任何隐私内容即可涂黑。在你提出问题之前不会发送任何内容，发送对象为 {model}。",
+   "hi": "किसी भी निजी चीज़ पर खींचकर उसे काला करें। जब तक आप सवाल नहीं पूछते, कुछ नहीं भेजा जाता; फिर यह {model} को जाता है।",
+   "es": "Arrastra sobre lo privado para taparlo en negro. No se envía nada hasta que hagas tu pregunta, a {model}.",
+   "ar": "اسحب فوق أي شيء خاص لتغطيته بالأسود. لا يُرسل شيء حتى تطرح سؤالك، إلى {model}.",
+   "fr": "Faites glisser sur ce qui est privé pour le masquer en noir. Rien n'est envoyé avant votre question, à {model}.",
+   "bn": "ব্যক্তিগত যেকোনো কিছুর ওপর টেনে কালো করে দিন। প্রশ্ন না করা পর্যন্ত কিছুই পাঠানো হয় না; তারপর যায় {model}-এ।",
+   "pt-BR": "Arraste sobre o que for privado para cobrir de preto. Nada é enviado até você fazer a pergunta, para {model}.",
+   "ru": "Проведите по личному, чтобы закрасить его чёрным. Ничего не отправляется, пока вы не зададите вопрос — модели {model}.",
+   "id": "Seret di atas hal pribadi untuk menghitamkannya. Tidak ada yang dikirim sampai Anda bertanya, ke {model}."
   }
  }
 }

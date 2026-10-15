@@ -15,6 +15,8 @@ export const internals = {
       return listeners.size;
     }
     calls.push([cmd, args]);
+    // Cancellation acceptance alone does not acknowledge microphone closure.
+    if (cmd === "assistant_voice_cancel") return false;
     return null;
   },
 };

@@ -96,6 +96,7 @@ fn switch_succeeded(selected: bool, window: u64, foreground: u64) -> bool {
 #[cfg(windows)]
 mod uia {
     use super::*;
+    use crate::assistant::tools::ActionScope;
     use windows::core::BOOL;
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
@@ -230,27 +231,31 @@ mod uia {
     /// Selects the confirmed tab only while its window, id and title match.
     /// Ok(true) requires both selection and the confirmed window in front.
     pub fn switch(window: u64, id: String, title: String) -> Result<bool, String> {
-        switch_if(window, id, title, || true)
+        switch_if(window, id, title, None)
     }
 
     /// The chat can be cancelled while this UIA worker starts or reads tabs.
-    /// Check its authority at the last boundary before the selection begins.
-    pub fn switch_if(window: u64, id: String, title: String, start: impl FnOnce() -> bool + Send + 'static) -> Result<bool, String> {
+    /// Serialize its authority with selection and foreground effects only.
+    pub fn switch_if(window: u64, id: String, title: String, scope: Option<ActionScope>) -> Result<bool, String> {
         with_uia(move |ua| {
             let all = read(ua);
             let (tab, el) = confirmed_tab(&all, window, &id, &title)?;
             let pattern: IUIAutomationSelectionItemPattern = unsafe { el.GetCurrentPatternAs(UIA_SelectionItemPatternId) }
                 .map_err(|_| "this tab can't be selected".to_string())?;
-            if !start() {
-                return Err("The chat was stopped.".into());
-            }
-            unsafe { pattern.Select() }.map_err(|e| e.message().to_string())?;
-            let hwnd = HWND(tab.window as usize as *mut _);
-            unsafe {
-                if IsIconic(hwnd).as_bool() {
-                    let _ = ShowWindow(hwnd, SW_RESTORE);
+            let select = || -> Result<(), String> {
+                unsafe { pattern.Select() }.map_err(|e| e.message().to_string())?;
+                let hwnd = HWND(tab.window as usize as *mut _);
+                unsafe {
+                    if IsIconic(hwnd).as_bool() {
+                        let _ = ShowWindow(hwnd, SW_RESTORE);
+                    }
+                    let _ = SetForegroundWindow(hwnd);
                 }
-                let _ = SetForegroundWindow(hwnd);
+                Ok(())
+            };
+            match scope {
+                Some(scope) => scope.run_if_active(select).ok_or_else(|| "The chat was stopped.".to_string())??,
+                None => select()?,
             }
             std::thread::sleep(std::time::Duration::from_millis(150));
             let is_selected = selected(el);

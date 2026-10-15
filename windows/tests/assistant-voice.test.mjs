@@ -14,8 +14,8 @@ import { Voice, registerVoice, resetVoiceForTests, voiceCancel, voiceDo, voiceIn
 const answers = new Map();
 const realInvoke = internals.invoke;
 internals.invoke = async (cmd, args) => {
-  await realInvoke(cmd, args);
-  if (!answers.has(cmd)) return null;
+  const result = await realInvoke(cmd, args);
+  if (!answers.has(cmd)) return result;
   const answer = answers.get(cmd);
   if (answer instanceof Error) throw answer;
   return answer;

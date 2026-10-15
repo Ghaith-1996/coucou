@@ -30,9 +30,11 @@ export function memorySection(): HTMLElement {
   const list = h("div", { class: "memory-list" });
   const note = h("div", { class: "hint" });
   const input = h("input", { type: "text", placeholder: STRINGS.placeholder, maxlength: "500", style: "flex:1" }) as HTMLInputElement;
-  const useSwitch = h("button", { class: "switch", "aria-label": STRINGS.use });
+  const useSwitch = h("button", { class: "switch", "aria-label": STRINGS.use }) as HTMLButtonElement;
   const clearBtn = h("button", { class: "danger", text: STRINGS.clearAll });
   let state: MemoryState = { version: 1, enabled: true, items: [] };
+  let loaded = false;
+  let toggling = false;
   let editing: string | null = null;
   let confirmingClear = false;
 
@@ -40,7 +42,10 @@ export function memorySection(): HTMLElement {
     note.textContent = String(err).replace(/^Error:\s*/, "");
   };
   const apply = (next: MemoryState | null | undefined) => {
-    if (next) state = next;
+    if (next) {
+      state = next;
+      loaded = true;
+    }
     draw();
   };
 
@@ -77,6 +82,7 @@ export function memorySection(): HTMLElement {
   }
 
   function draw() {
+    useSwitch.disabled = !loaded || toggling;
     useSwitch.classList.toggle("on", state.enabled);
     useSwitch.setAttribute("aria-pressed", String(state.enabled));
     clear(list);
@@ -98,8 +104,21 @@ export function memorySection(): HTMLElement {
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") add();
   });
-  useSwitch.addEventListener("click", () => {
-    Bridge.memorySetEnabled(!state.enabled).then(apply, fail);
+  useSwitch.addEventListener("click", async () => {
+    // Neither the initial default nor an in-flight request is authoritative.
+    // Guard the handler too, so synthetic/repeated clicks cannot enqueue writes.
+    if (!loaded || toggling) return;
+    toggling = true;
+    draw();
+    try {
+      apply(await Bridge.memorySetEnabled(!state.enabled));
+      note.textContent = "";
+    } catch (err) {
+      fail(err);
+    } finally {
+      toggling = false;
+      draw();
+    }
   });
   // Two clicks: the first asks, the second deletes (the question goes after 4 s).
   clearBtn.addEventListener("click", () => {

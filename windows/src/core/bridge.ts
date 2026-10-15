@@ -9,7 +9,7 @@ import type { Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { MoveInfo, MovePoint } from "../island/move";
-import type { ActionReceipt, AppGrant, InsertCopyReply, InsertOfferReply, InsertTextReply } from "../assistant/contracts";
+import type { ActionReceipt, AppGrant, InsertCopyReply, InsertOfferReply, InsertTextReply, RegionRect } from "../assistant/contracts";
 import type { ChatGptDisconnectResult, ChatGptModel, ChatGptStatus } from "./chatgpt";
 import type { ChatMessage } from "./state";
 
@@ -498,10 +498,16 @@ export const Bridge = {
   /** Audio mode: the transcript, as the next chat message. Throws with the refusal code. */
   voiceConverse: (captureId: string) => callOrThrow<string>("assistant_voice_converse", { captureId }),
   /** Audio mode: `text` read aloud by a Windows voice, as a WAV data URL. */
-  speechSay: (text: string) =>
-    callOrThrow<{ audio: string; language: string; matched: boolean; voice: "chatgpt" | "windows" }>("speech_say", { text }),
-  /** Ends the capture and drops its audio or transcript. Never an action. */
-  voiceCancel: (captureId: string) => call<void>("assistant_voice_cancel", { captureId }),
+  speechSay: (text: string, requestId: string) =>
+    callOrThrow<{ audio: string; language: string; matched: boolean; voice: "chatgpt" | "windows" }>("speech_say", { text, requestId }),
+  /** Retire only this audio turn; a late end never stops a newer answer. */
+  speechEnd: (requestId: string) => call<void>("speech_end", { requestId }),
+  /** True acknowledges native release; false still waits for microphone closure. Throws on IPC failure. */
+  voiceCancel: async (captureId: string): Promise<boolean> => {
+    const released = await callOrThrow<boolean>("assistant_voice_cancel", { captureId });
+    if (typeof released !== "boolean") throw new Error("Invalid native capture-release acknowledgement");
+    return released;
+  },
   /** The transcript as a chat draft Rust's policy allowed; throws with the refusal code. */
   voiceUse: (captureId: string) => callOrThrow<{ actionId: string; text: string }>("assistant_voice_use", { captureId }),
   /** A command the transcript asked for (`pill-set`), for Rust's policy; the action id when allowed. */
@@ -537,6 +543,22 @@ export const Bridge = {
   /** The user confirmed "Insert into <app>": Rust checks the field again, then writes and reads back. */
   insertText: (captureId: string, grant: AppGrant) =>
     callOrThrow<InsertTextReply>("assistant_insert_text", { captureId, grant }),
+  /**
+   * "Ask about a screen region": an overlay on every monitor for the user to
+   * drag a rectangle on. The session id; the picture comes as `region-preview`.
+   */
+  regionStart: () => callOrThrow<string>("region_start"),
+  /** An overlay: its session, monitor and language. Null when stale. */
+  regionOverlayInfo: () => call<{ sessionId: string; index: number; language: string }>("region_overlay_info"),
+  /** An overlay: the rectangle the user let go of, in its monitor's physical pixels. */
+  regionPick: (sessionId: string, rect: RegionRect) => callOrThrow<void>("region_pick", { sessionId, rect }),
+  /** Escape, a right click or Cancel: the overlays close and the picture is dropped. */
+  regionCancel: (sessionId: string) => call<void>("region_cancel", { sessionId }),
+  /** "Ask about it": Rust checks the grant, blacks out the masks and saves the PNG for the chat. */
+  regionAttach: (sessionId: string, grant: AppGrant, masks: RegionRect[]) =>
+    callOrThrow<{ file: { name: string; path: string; size: number }; receipt: ActionReceipt }>(
+      "region_attach", { sessionId, grant, masks },
+    ),
   /** What came of an assistant action, for the log (never with its text). */
   actionReceipt: (receipt: ActionReceipt) => call<void>("assistant_action_receipt", { receipt }),
   /** The speech models (Settings → Voice). Only the settings window may change them. */

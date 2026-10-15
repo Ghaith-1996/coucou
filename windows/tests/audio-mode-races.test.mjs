@@ -159,16 +159,22 @@ test("late synthesis cannot play or release the next turn's playback", async (t)
   answers.chat_send = { text: "An older answer that finishes synthesis late." };
   await startAudioMode(); await heard("old question");
   assert.equal(AudioMode.state, "thinking");
+  const oldId = sent("chat_send")[0].requestId;
   stopAudioMode(); await startAudioMode();
+  assert.deepEqual(sent("speech_end"), [{ requestId: oldId }]);
   answers.speech_say = { audio: "new clip" };
   answers.chat_send = { text: "The answer for the new spoken question." };
   await heard("new question");
+  const newId = sent("chat_send")[1].requestId;
+  assert.notEqual(newId, oldId);
   assert.equal(AudioMode.state, "speaking");
   synthesis.resolve({ audio: "old clip" }); await flush();
+  assert.deepEqual(sent("speech_end"), [{ requestId: oldId }], "late completion cannot retire the current speech binding");
   assert.deepEqual(played, ["new clip"]);
   assert.equal(sent("assistant_voice_hands_free").length, 2, "current playback still owns the turn");
   player.stop(); await flush();
   assert.equal(sent("assistant_voice_hands_free").length, 3);
+  assert.deepEqual(sent("speech_end"), [{ requestId: oldId }, { requestId: newId }]);
 });
 
 function speechEnded() {
@@ -299,4 +305,31 @@ test("synchronous cancellation while entering speaking cannot play over a restar
   assert.equal(AudioMode.state, "listening");
   assert.equal(sent("assistant_voice_hands_free").length, 2);
   assert.deepEqual(played, [], "not even one obsolete clip may start after cancellation");
+});
+
+for (const provider of ["ollama", "chatgpt"]) test(`speech stays bound to the ${provider} answer after the provider picker changes`, async () => {
+  const bound = new Map();
+  State.settings.chatProvider = provider;
+  const text = "The first sentence is long enough to speak. The second sentence also deserves its own clip. The final sentence must use the same voice provider.";
+  answers.chat_send = args => { if (args.requestId) bound.set(args.requestId, State.settings.chatProvider); return { text }; };
+  answers.speech_say = args => {
+    // Existing native routing reads mutable settings. A matching native turn
+    // snapshot must replace that route for every subsequent prefetched clip.
+    const source = args.requestId && bound.has(args.requestId) ? bound.get(args.requestId) : State.settings.chatProvider;
+    return { audio: `${source}:${args.text}` };
+  };
+  answers.speech_end = ({ requestId }) => { bound.delete(requestId); };
+  await startAudioMode(); await heard("Please read the whole answer");
+  assert.equal(played.length, 1);
+  State.settings.chatProvider = provider === "ollama" ? "chatgpt" : "ollama";
+  State.notify();
+  for (let i = 0; i < 5 && AudioMode.state === "speaking"; i++) { player.stop(); await flush(); }
+  assert.deepEqual(played.map(clip => clip.split(":")[0]), [provider, provider, provider]);
+  const requestId = sent("chat_send")[0].requestId;
+  assert.equal(typeof requestId, "string");
+  assert.ok(requestId.length > 0);
+  assert.deepEqual(sent("speech_say").map(args => args.requestId), [requestId, requestId, requestId]);
+  assert.deepEqual(sent("speech_end"), [{ requestId }], "the completed speech authorization ends after every clip drains");
+  assert.equal(bound.size, 0);
+  assert.equal(AudioMode.state, "listening");
 });

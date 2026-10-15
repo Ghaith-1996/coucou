@@ -75,8 +75,8 @@ pub fn assistant_voice_stop(voice: State<Voice>, capture_id: String) {
 }
 
 #[tauri::command]
-pub fn assistant_voice_cancel(voice: State<Voice>, capture_id: String) {
-    voice.cancel(&capture_id);
+pub fn assistant_voice_cancel(voice: State<Voice>, capture_id: String) -> bool {
+    voice.cancel(&capture_id)
 }
 
 /// Use: the transcript as a `chat-draft` action the policy allowed, or why not.

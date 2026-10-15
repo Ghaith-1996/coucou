@@ -707,9 +707,42 @@ fn a_cough_is_not_a_turn_and_silence_ends_the_capture() {
 }
 
 #[test]
-fn speech_is_measured_against_the_room() {
-    // A noisy room (0.02) is not speech; talking well above it is.
+fn moderate_speech_from_the_first_frame_ends_the_turn() {
+    for amplitude in [0.02, 0.05] {
+        let mut e = Endpoint::new(RATE);
+        assert_eq!(e.feed(&tone(600, amplitude)), None, "initial speech at {amplitude}");
+        assert_eq!(e.feed(&tone(1100, 0.002)), Some(Heard::Spoke), "speech at {amplitude} must not become the noise floor");
+    }
+}
+
+#[test]
+fn isolated_short_noises_never_accumulate_into_a_turn() {
     let mut e = Endpoint::new(RATE);
+    for _ in 0..3 {
+        assert_eq!(e.feed(&tone(150, 0.2)), None, "a short noise is not a turn");
+        assert_eq!(e.feed(&tone(1200, 0.001)), None, "a full endpoint pause discards tentative speech");
+    }
+    assert_eq!(e.feed(&tone(8000, 0.001)), Some(Heard::Nothing));
+}
+
+#[test]
+fn tentative_speech_resets_at_the_endpoint_pause_boundary() {
+    for pause in [1050, 1100] {
+        let mut e = Endpoint::new(RATE);
+        assert_eq!(e.feed(&tone(150, 0.2)), None);
+        assert_eq!(e.feed(&tone(pause, 0.001)), None);
+        assert_eq!(e.feed(&tone(150, 0.2)), None);
+        let expected = if pause < 1100 { Some(Heard::Spoke) } else { None };
+        assert_eq!(e.feed(&tone(1100, 0.001)), expected, "pause: {pause} ms");
+    }
+}
+
+#[test]
+fn speech_is_measured_against_the_room() {
+    // Establish quiet before the room grows noisier. An energy-only detector
+    // cannot distinguish initial 0.02 room noise from initial 0.02 speech.
+    let mut e = Endpoint::new(RATE);
+    assert_eq!(e.feed(&tone(1000, 0.008)), None);
     assert_eq!(e.feed(&tone(1000, 0.02)), None);
     assert_eq!(e.feed(&tone(500, 0.2)), None);
     assert_eq!(e.feed(&tone(1200, 0.02)), Some(Heard::Spoke));

@@ -21,6 +21,7 @@
 // back, Rust checks it and opens the app. Nothing opens without that click.
 
 import { Bridge, onEvent } from "../core/bridge";
+import { AudioMode } from "./audio-mode";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
@@ -86,6 +87,11 @@ export const Voice = {
   /** "Open <app>": the name said, then the app Rust found and its grant. */
   app: null as AppOffer | null,
 
+  /** Includes the native startup interval before the first event/ID. */
+  get busy(): boolean {
+    return starting !== null || this.active;
+  },
+
   get active(): boolean {
     const s = this.event?.state;
     return s === "listening" || s === "processing" || s === "preview";
@@ -113,6 +119,7 @@ export async function voiceShortcut() {
     Sound.play("error");
     return;
   }
+  if (AudioMode.state !== "off") return;
   if (starting) {
     starting.stop = true;
     return;

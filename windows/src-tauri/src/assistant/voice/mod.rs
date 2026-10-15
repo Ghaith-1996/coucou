@@ -655,9 +655,9 @@ impl Endpoint {
             let level = rms(&self.pending[at..at + self.window]);
             at += self.window;
             self.total_ms += 50;
-            // Before the room is known, the window itself, capped: speech at
-            // the very start still counts, a noisy room still doesn't.
-            let floor = self.noise.unwrap_or(level).min(NOISE_CAP);
+            // Bootstrap independently of this window: otherwise initial
+            // speech becomes its own noise floor and can never clear it.
+            let floor = self.noise.unwrap_or(SILENCE_RMS).min(NOISE_CAP);
             if level >= (floor * SPEECH_OVER_NOISE).max(SPEECH_RMS) {
                 self.speech_ms += 50;
                 self.quiet_ms = 0;
@@ -669,9 +669,14 @@ impl Endpoint {
                 });
                 self.quiet_ms += 50;
             }
-            if self.speech_ms >= MIN_SPEECH.as_millis() as u64 && self.quiet_ms >= PAUSE.as_millis() as u64 {
-                self.pending.clear();
-                return Some(Heard::Spoke);
+            if self.quiet_ms >= PAUSE.as_millis() as u64 {
+                if self.speech_ms >= MIN_SPEECH.as_millis() as u64 {
+                    self.pending.clear();
+                    return Some(Heard::Spoke);
+                }
+                // A cough or click is over. Separate noises must not add up
+                // to a turn across pauses that would have ended real speech.
+                self.speech_ms = 0;
             }
             if self.speech_ms < MIN_SPEECH.as_millis() as u64 && self.total_ms >= NOTHING_FOR.as_millis() as u64 {
                 self.pending.clear();

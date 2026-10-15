@@ -150,8 +150,16 @@ impl Chat {
 /// Mochi's instructions. Greets the user by their first name when the account
 /// has one worth using (identity.rs), and only claims web search where the
 /// provider runs it (Claude).
+/// The chat's instructions, with what the user asked it to remember
+/// (memory.rs) when memory is on.
 pub fn system_prompt(web_search: bool) -> String {
-    system_prompt_for(crate::identity::first_name(), web_search)
+    let prompt = system_prompt_for(crate::identity::first_name(), web_search);
+    match crate::memory::get().prompt_block() {
+        Some(memory) => format!("{prompt}
+
+{memory}"),
+        None => prompt,
+    }
 }
 
 fn system_prompt_for(first_name: Option<&str>, web_search: bool) -> String {

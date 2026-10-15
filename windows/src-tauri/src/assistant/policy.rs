@@ -60,6 +60,8 @@ pub fn decide(action: &AssistantAction, now_ms: u64) -> Verdict {
         ActionKind::PillSet => Decision::Allow,
         // Anything that reaches outside Coucou is confirmed first.
         ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::AskRegion | ActionKind::SwitchTab => Decision::Ask,
+        // The chat proposed it: the user sees exactly what is kept.
+        ActionKind::MemorySave => Decision::Ask,
     };
     Verdict { decision, error: None, args: Some(args) }
 }
@@ -89,6 +91,10 @@ pub fn validate(kind: ActionKind, args: &serde_json::Value) -> Option<ValidArgs>
         ActionKind::LaunchApp => {
             let a: LaunchAppArgs = serde_json::from_value(args).ok()?;
             app_id_ok(&a.app_id).then_some(ValidArgs::LaunchApp(a))?
+        }
+        ActionKind::MemorySave => {
+            let a: MemorySaveArgs = serde_json::from_value(args).ok()?;
+            (text_ok(&a.text, crate::memory::MAX_CHARS) && !a.text.contains(['\n', '\r'])).then_some(ValidArgs::MemorySave(a))?
         }
         ActionKind::SwitchTab => {
             let a: SwitchTabArgs = serde_json::from_value(args).ok()?;

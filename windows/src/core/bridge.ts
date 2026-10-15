@@ -47,6 +47,22 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T |
   }
 }
 
+/** memory.rs `Item`. */
+export interface MemoryItem {
+  id: string;
+  text: string;
+  source: "user" | "chat";
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** memory.rs `Memory`. */
+export interface MemoryState {
+  version: number;
+  enabled: boolean;
+  items: MemoryItem[];
+}
+
 // Opens restore native model history, so every caller (including file drops
 // and keyboard resets) must finish one context change before starting another.
 let chatNavigation: Promise<void> | null = null;
@@ -509,6 +525,15 @@ export const Bridge = {
   /** A chat action card: Rust's grant on "Do it", null on "No". */
   chatActionAnswer: (actionId: string, grant: AppGrant | null) =>
     callOrThrow<void>("chat_action_answer", { actionId, grant }),
+  /** Settings → Memory (memory.rs). Only the settings window may ask. */
+  memoryList: () => callOrThrow<MemoryState>("memory_list"),
+  memoryAdd: (text: string) => callOrThrow<MemoryState>("memory_add", { text }),
+  memoryEdit: (id: string, text: string) => callOrThrow<MemoryState>("memory_edit", { id, text }),
+  memoryDelete: (id: string) => callOrThrow<MemoryState>("memory_delete", { id }),
+  memoryClear: () => callOrThrow<MemoryState>("memory_clear"),
+  memorySetEnabled: (enabled: boolean) => callOrThrow<MemoryState>("memory_set_enabled", { enabled }),
+  /** A plain JSON copy in Downloads; resolves with its path. */
+  memoryExport: () => callOrThrow<string>("memory_export"),
   /**
    * Dictation: the transcript offered for the field of another app that had
    * the keyboard when the capture started. Null when there was none.

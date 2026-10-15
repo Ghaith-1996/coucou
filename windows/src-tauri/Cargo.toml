@@ -78,6 +78,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Variant",
   "Win32_Security",
   "Win32_Security_Authorization",
+  # Memory is encrypted for the Windows account (memory.rs, DPAPI).
+  "Win32_Security_Cryptography",
   # "Open terminal": the relay's process tree leads to the session's window.
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Ole",
@@ -89,9 +91,11 @@ windows = { version = "0.61", features = [
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
-  # Browser-tab tools and dictation use UI Automation; dictation resolves
-  # the app's name from its file's version information.
+  # UI Automation: the chat's browser-tab tools read and select tab strips
+  # (assistant/browser.rs); dictation writes into another app's field
+  # (assistant/dictation).
   "Win32_UI_Accessibility",
+  # Dictation: the app's name from its file's version info.
   "Win32_Storage_FileSystem",
   # "Open <app>" (assistant/launch.rs): a Start menu shortcut, as Start opens it.
   "Win32_UI_Shell",

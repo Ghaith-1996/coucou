@@ -5472,6 +5472,50 @@
    "pt-BR": "O app não respondeu. Nada foi digitado.",
    "ru": "Приложение не ответило. Ничего не было введено.",
    "id": "Aplikasi tidak menjawab. Tidak ada yang diketik."
+  },
+  "Could not read the answer aloud. Audio mode ended. Please try again.": {
+   "zh-Hans": "无法朗读回答。语音模式已结束。请重试。",
+   "hi": "उत्तर को बोलकर सुनाया नहीं जा सका। ऑडियो मोड समाप्त हो गया। कृपया फिर से कोशिश करें।",
+   "es": "No se pudo leer la respuesta en voz alta. El modo de audio ha finalizado. Inténtalo de nuevo.",
+   "ar": "تعذّرت قراءة الإجابة بصوت عالٍ. انتهى الوضع الصوتي. يُرجى المحاولة مجددًا.",
+   "fr": "Impossible de lire la réponse à voix haute. Le mode audio est terminé. Réessaie.",
+   "bn": "উত্তরটি উচ্চস্বরে পড়া যায়নি। অডিও মোড শেষ হয়েছে। আবার চেষ্টা করুন।",
+   "pt-BR": "Não foi possível ler a resposta em voz alta. O modo de áudio foi encerrado. Tente novamente.",
+   "ru": "Не удалось прочитать ответ вслух. Аудиорежим завершён. Попробуйте ещё раз.",
+   "id": "Jawaban tidak dapat dibacakan. Mode audio telah berakhir. Silakan coba lagi."
+  },
+  "Audio mode ended. Check your microphone and speech model in Settings, then try again.": {
+   "zh-Hans": "语音模式已结束。请在设置中检查麦克风和语音模型，然后重试。",
+   "hi": "ऑडियो मोड समाप्त हुआ। सेटिंग्स में माइक्रोफ़ोन और स्पीच मॉडल जाँचें, फिर दोबारा कोशिश करें।",
+   "es": "El modo de voz ha terminado. Revisa el micrófono y el modelo de voz en Ajustes y vuelve a intentarlo.",
+   "ar": "انتهى الوضع الصوتي. تحقق من الميكروفون ونموذج الكلام في الإعدادات، ثم حاول مرة أخرى.",
+   "fr": "Le mode audio est terminé. Vérifiez le microphone et le modèle vocal dans les réglages, puis réessayez.",
+   "bn": "অডিও মোড শেষ হয়েছে। সেটিংসে মাইক্রোফোন ও স্পিচ মডেল পরীক্ষা করে আবার চেষ্টা করুন।",
+   "pt-BR": "O modo de áudio terminou. Confira o microfone e o modelo de fala nas Configurações e tente novamente.",
+   "ru": "Голосовой режим завершён. Проверьте микрофон и речевую модель в настройках и повторите попытку.",
+   "id": "Mode audio berakhir. Periksa mikrofon dan model ucapan di Pengaturan, lalu coba lagi."
+  },
+  "Download a speech model in Settings to use audio mode.": {
+   "zh-Hans": "请在设置中下载语音模型以使用语音模式。",
+   "hi": "ऑडियो मोड इस्तेमाल करने के लिए सेटिंग्स में स्पीच मॉडल डाउनलोड करें।",
+   "es": "Descarga un modelo de voz en Ajustes para usar el modo de voz.",
+   "ar": "نزّل نموذج كلام من الإعدادات لاستخدام الوضع الصوتي.",
+   "fr": "Téléchargez un modèle vocal dans les réglages pour utiliser le mode audio.",
+   "bn": "অডিও মোড ব্যবহার করতে সেটিংস থেকে একটি স্পিচ মডেল ডাউনলোড করুন।",
+   "pt-BR": "Baixe um modelo de fala nas Configurações para usar o modo de áudio.",
+   "ru": "Чтобы использовать голосовой режим, скачайте речевую модель в настройках.",
+   "id": "Unduh model ucapan di Pengaturan untuk menggunakan mode audio."
+  },
+  "This memory already exists.": {
+   "zh-Hans": "这条记忆已存在。",
+   "hi": "यह मेमोरी पहले से मौजूद है।",
+   "es": "Este recuerdo ya existe.",
+   "ar": "هذه الذكرى موجودة بالفعل.",
+   "fr": "Ce souvenir existe déjà.",
+   "bn": "এই মেমোরিটি আগে থেকেই আছে।",
+   "pt-BR": "Esta memória já existe.",
+   "ru": "Эта запись памяти уже существует.",
+   "id": "Memori ini sudah ada."
   }
  }
 }

@@ -19,6 +19,7 @@ import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { VOICE_EVENT, parseVoiceEvent, type VoiceEvent } from "./contracts";
 import { nextChunk } from "./speakable";
+import { Voice } from "./voice";
 
 export type AudioState = "off" | "listening" | "transcribing" | "thinking" | "speaking";
 
@@ -32,10 +33,14 @@ export interface AudioHost {
 /** The chat: sends `text` as the user's message; resolves with the answer, or null. */
 export type Ask = (text: string) => Promise<string | null>;
 let askChat: Ask | null = null;
+let canAsk = () => true;
+let cancelAsk = () => {};
 
 /** The chat view hands audio mode its way of asking. */
-export function setAudioAsk(ask: Ask) {
+export function setAudioAsk(ask: Ask, ready = () => true, cancel = () => {}) {
   askChat = ask;
+  canAsk = ready;
+  cancelAsk = cancel;
 }
 
 /** A clip to play: a WAV data URL. Tests replace it. */
@@ -50,20 +55,29 @@ class ElementPlayer implements Player {
 
   play(audio: string): Promise<void> {
     this.stop();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const el = new Audio(audio);
       this.current = el;
-      this.finish = resolve;
-      const done = () => {
+      let settled = false;
+      const done = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
         if (this.current === el) {
           this.current = null;
           this.finish = null;
         }
-        resolve();
+        if (ok) resolve();
+        else {
+          el.pause();
+          reject(new Error("Speech playback failed"));
+        }
       };
-      el.addEventListener("ended", done);
-      el.addEventListener("error", done);
-      el.play().catch(done);
+      // Explicit stop is cancellation, not a media failure. Settling once also
+      // ignores errors delivered by a stopped element during a newer clip.
+      this.finish = () => done(true);
+      el.addEventListener("ended", () => done(true));
+      el.addEventListener("error", () => done(false));
+      el.play().catch(() => done(false));
     });
   }
 
@@ -78,6 +92,10 @@ class ElementPlayer implements Player {
 
 export const AudioMode = {
   state: "off" as AudioState,
+  /** UI can be off while a cancelled native capture still owns the microphone. */
+  get busy(): boolean {
+    return this.state !== "off" || starting !== null || releasing !== null;
+  },
   /** The microphone level while listening, 0…1. */
   level: 0,
   /** Why audio mode ended by itself, shown once. */
@@ -87,6 +105,12 @@ export const AudioMode = {
 let host: AudioHost | null = null;
 let player: Player = new ElementPlayer();
 let captureId: string | null = null;
+/** Native events can arrive before the command reply identifies our capture. */
+let starting: { events: Map<string, VoiceEvent> } | null = null;
+/** Cancel requests return before the native microphone closes. */
+let releasing: string | null = null;
+/** Keep a spoken request reserved until its chat finally block has completed. */
+let answering: { promise: Promise<string | null>; cancel: () => void } | null = null;
 /** Bumped by every start, stop and interrupt: stale work checks it. */
 let turn = 0;
 let pinned = false;
@@ -110,7 +134,7 @@ export function toggleAudioMode() {
 }
 
 export async function startAudioMode() {
-  if (AudioMode.state !== "off" || !host || !askChat || State.pendingApproval) return;
+  if (AudioMode.busy || !host || !askChat || State.pendingApproval || Voice.busy || answering || !canAsk()) return;
   turn++;
   AudioMode.note = "";
   if (!pinned) {
@@ -128,9 +152,11 @@ export function stopAudioMode(note = "") {
   turn++;
   const id = captureId;
   captureId = null;
-  if (id) void Bridge.voiceCancel(id);
-  queue.length = 0;
-  player.stop();
+  // Keep a pending start reserved until its reply identifies what to cancel.
+  answering?.cancel();
+  replyDone = true;
+  if (id) cancelCapture(id);
+  clearPlayback();
   AudioMode.level = 0;
   AudioMode.note = note;
   if (pinned) {
@@ -140,32 +166,85 @@ export function stopAudioMode(note = "") {
   set("off");
 }
 
-/** Tapping the status while Coucou speaks: it stops and listens again. */
-export function interruptAudio() {
-  if (AudioMode.state !== "speaking") return;
-  turn++;
+/** Retire playback without letting an old synthesis completion own a new turn. */
+function clearPlayback() {
   queue.length = 0;
   player.stop();
-  void listen(turn);
+  speaking = null;
+}
+
+/** Stop the streamed answer before opening the microphone for the next turn. */
+export function interruptAudio() {
+  if (AudioMode.state !== "speaking") return;
+  const at = ++turn;
+  const pending = answering;
+  replyDone = true; // Ignore deltas from the interrupted request while it settles.
+  clearPlayback();
+  if (pending) {
+    set("thinking");
+    pending.cancel();
+    void pending.promise.catch(() => null).then(() => listen(at));
+  } else {
+    void listen(at);
+  }
+}
+
+/** Reserve cancellation until native idle/error confirms the microphone closed. */
+function cancelCapture(id: string, event?: VoiceEvent) {
+  if (event?.state === "idle" || event?.state === "error") return;
+  releasing = id;
+  void Bridge.voiceCancel(id);
 }
 
 async function listen(at: number) {
   if (at !== turn) return;
-  set("listening");
-  AudioMode.level = 0;
-  const id = await Bridge.voiceHandsFree();
-  if (at !== turn) {
-    if (id) void Bridge.voiceCancel(id);
-    return;
-  }
-  if (!id) {
+  if (!canAsk() || Voice.busy) {
     stopAudioMode();
     return;
   }
+  const pending = { events: new Map<string, VoiceEvent>() };
+  starting = pending;
+  AudioMode.level = 0;
+  set("listening");
+  if (at !== turn) {
+    // A synchronous subscriber stopped us before any native command was sent.
+    if (starting === pending) starting = null;
+    State.notify();
+    return;
+  }
+  const id = await Bridge.voiceHandsFree();
+  if (starting !== pending) return;
+  starting = null;
+  const event = id ? pending.events.get(id) : undefined;
+  if (at !== turn) {
+    if (id) cancelCapture(id, event);
+    State.notify();
+    return;
+  }
+  if (!id) {
+    stopAudioMode("error");
+    return;
+  }
   captureId = id;
+  if (event) void onVoice(event);
 }
 
 async function onVoice(event: VoiceEvent) {
+  if (event.captureId === releasing) {
+    if (event.state === "idle" || event.state === "error") {
+      releasing = null;
+      State.notify();
+    }
+    return;
+  }
+  if (starting) {
+    const prior = starting.events.get(event.captureId)?.state;
+    // A terminal event cannot be undone by a queued level/processing event.
+    if (prior !== "idle" && (event.state === "idle" || event.state === "error" || (prior !== "error" && prior !== "preview"))) {
+      starting.events.set(event.captureId, event);
+    }
+    return;
+  }
   if (AudioMode.state === "off" || event.captureId !== captureId) return;
   const at = turn;
   switch (event.state) {
@@ -179,14 +258,20 @@ async function onVoice(event: VoiceEvent) {
     case "error":
       captureId = null;
       Sound.play("error");
-      stopAudioMode(event.error === "silence" ? "silence" : "error");
+      stopAudioMode(event.error ?? "error");
       return;
     case "idle":
+      captureId = null; // This event already acknowledges native release.
       // Cancelled from elsewhere (the screen locked, the app quitting).
       if (AudioMode.state === "listening" || AudioMode.state === "transcribing") stopAudioMode();
       return;
     case "preview": {
       captureId = null;
+      if (event.simulated) {
+        void Bridge.voiceCancel(event.captureId);
+        stopAudioMode("model");
+        return;
+      }
       let text: string;
       try {
         text = await Bridge.voiceConverse(event.captureId);
@@ -203,15 +288,31 @@ async function onVoice(event: VoiceEvent) {
 
 async function converse(at: number, text: string) {
   set("thinking");
+  if (at !== turn) return;
   replyText = "";
   queuedTo = 0;
   replyDone = false;
   queue.length = 0;
-  const answer = await askChat!(text);
+  const pending = { promise: askChat!(text), cancel: cancelAsk };
+  answering = pending;
+  let answer: string | null;
+  try {
+    answer = await pending.promise;
+  } catch {
+    if (at === turn) stopAudioMode("error");
+    return;
+  } finally {
+    if (answering === pending) answering = null;
+  }
   if (at !== turn) return;
   if (answer == null) {
-    // Stopped or failed: the chat says why; back to listening.
-    await listen(at);
+    // A failed later round may already have streamed speech. Retire the turn
+    // before stopping playback, so a pending synthesis (or its error) cannot
+    // cross into the next capture. The chat already explains the failure.
+    const next = ++turn;
+    replyDone = true;
+    clearPlayback();
+    await listen(next);
     return;
   }
   replyText = answer;
@@ -227,20 +328,45 @@ function enqueue(at: number) {
     queue.push(c.text);
     queuedTo = c.end;
   }
-  if (!speaking && queue.length) speaking = speak(at).finally(() => (speaking = null));
+  if (!speaking && queue.length) {
+    const task = speak(at).finally(() => {
+      if (speaking === task) speaking = null;
+    });
+    speaking = task;
+  }
 }
 
 async function speak(at: number) {
   // The next clip is asked for while the current one plays.
   let next: Promise<string | null> | null = null;
-  const fetch = (text: string) => Bridge.speechSay(text).then((c) => c.audio).catch(() => null);
-  while (at === turn && (queue.length || next)) {
-    const audio = await (next ?? fetch(queue.shift()!));
-    next = queue.length ? fetch(queue.shift()!) : null;
+  const failed = () => {
     if (at !== turn) return;
-    if (!audio) continue;
-    set("speaking");
-    await player.play(audio);
+    Sound.play("error");
+    stopAudioMode("speech");
+  };
+  const fetch = async (text: string): Promise<string | null> => {
+    try {
+      const clip = await Bridge.speechSay(text);
+      if (!clip.audio) throw new Error("Speech synthesis returned no audio");
+      return clip.audio;
+    } catch {
+      // Attach the handler when prefetch starts: it can fail before playback
+      // finishes, or after this turn is cancelled. Only this turn may end mode.
+      failed();
+      return null;
+    }
+  };
+  try {
+    while (at === turn && (queue.length || next)) {
+      const audio = await (next ?? fetch(queue.shift()!));
+      if (at !== turn || !audio) return;
+      next = queue.length ? fetch(queue.shift()!) : null;
+      set("speaking");
+      if (at !== turn) return; // A state subscriber may synchronously stop us.
+      await player.play(audio);
+    }
+  } catch {
+    failed();
   }
 }
 
@@ -277,14 +403,14 @@ export function registerAudioMode(island: AudioHost) {
   });
   void onEvent<string>("chat-delta", onDelta);
   State.subscribe(guard);
-  // Escape anywhere on the island ends it (the chat field handles its own).
+  // Capture runs before the focused chat field stops keydown propagation.
   if (typeof window.addEventListener === "function") {
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && AudioMode.state !== "off") {
         e.preventDefault();
         stopAudioMode();
       }
-    });
+    }, true);
   }
 }
 
@@ -292,6 +418,9 @@ export function registerAudioMode(island: AudioHost) {
 export function resetAudioModeForTests(testPlayer?: Player) {
   turn++;
   captureId = null;
+  starting = null;
+  releasing = null;
+  answering = null;
   queue.length = 0;
   speaking = null;
   replyText = "";

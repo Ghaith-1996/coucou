@@ -88,7 +88,13 @@ impl Memory {
 
     pub fn edit(&mut self, id: &str, text: &str, now: u64) -> Result<(), String> {
         let text = clean(text)?;
-        let item = self.items.iter_mut().find(|i| i.id == id).ok_or_else(|| crate::i18n::t("This memory is gone."))?;
+        let index = self.items.iter().position(|i| i.id == id).ok_or_else(|| crate::i18n::t("This memory is gone."))?;
+        // Keep add's cleaned-text/ASCII-case uniqueness without merging away
+        // either item's identity, source, or timestamps on a rejected edit.
+        if self.items.iter().enumerate().any(|(other, item)| other != index && item.text.eq_ignore_ascii_case(&text)) {
+            return Err(crate::i18n::t("This memory already exists."));
+        }
+        let item = &mut self.items[index];
         item.text = text;
         item.updated_at = now;
         Ok(())
@@ -364,6 +370,98 @@ mod tests {
         assert!(m.edit("mem-nope", "x", 10).is_err());
         assert!(m.delete(&a.id));
         assert!(!m.delete(&a.id));
+    }
+
+    #[test]
+    fn duplicate_edits_are_rejected_without_changing_any_item() {
+        for duplicate_first in [false, true] {
+            for text in ["I write in French", "i WRITE in FRENCH", "  I  write\tin French\n", "I\u{0}write\u{2003}in French"] {
+                let mut m = Memory::default();
+                let (target, duplicate) = if duplicate_first {
+                    let duplicate = m.add("I write in French", Source::Chat, 1).unwrap();
+                    (m.add("I use Rust at work", Source::User, 2).unwrap(), duplicate)
+                } else {
+                    let target = m.add("I use Rust at work", Source::User, 1).unwrap();
+                    (target, m.add("I write in French", Source::Chat, 2).unwrap())
+                };
+                m.add("Prefers short answers", Source::User, 3).unwrap();
+                let before = m.clone();
+                let prompt = m.prompt_block();
+                assert!(m.edit(&target.id, text, 99).is_err(), "duplicate edit: {text:?}");
+                assert_eq!(m, before, "a refusal must preserve every id, source, timestamp, and position");
+                assert_eq!(m.prompt_block(), prompt, "the prompt must not gain a duplicate fact");
+                assert_eq!(parse(&serde_json::to_vec(&m).unwrap()).unwrap(), before);
+                assert_eq!(m.add(text, Source::User, 100).unwrap(), duplicate, "add and edit agree about duplicates");
+                assert_eq!(m, before);
+            }
+        }
+    }
+
+    #[test]
+    fn an_item_can_edit_its_own_case_without_conflicting_with_itself() {
+        let mut m = Memory::default();
+        let a = m.add("I write in French", Source::Chat, 1).unwrap();
+        let other = m.add("I use Rust at work", Source::User, 2).unwrap();
+        for (offset, text) in ["I write in French", "i WRITE in FRENCH", "  I  write\tin French\n"].iter().enumerate() {
+            let now = 10 + offset as u64;
+            m.edit(&a.id, text, now).unwrap();
+            assert_eq!(m.items[0], Item { text: clean(text).unwrap(), updated_at: now, ..a.clone() });
+            assert_eq!(m.items[1], other, "self-edits do not touch another item");
+        }
+    }
+
+    #[test]
+    fn a_unique_edit_only_changes_the_selected_text_and_update_time() {
+        let mut m = Memory::default();
+        let first = m.add("Prefers short answers", Source::User, 1).unwrap();
+        let target = m.add("I use Rust", Source::Chat, 2).unwrap();
+        let last = m.add("I write in French", Source::User, 3).unwrap();
+        m.edit(&target.id, "  I use\tRust at work\n", 9).unwrap();
+        assert_eq!(m.items, vec![first, Item { text: "I use Rust at work".into(), updated_at: 9, ..target }, last]);
+    }
+
+    #[test]
+    fn invalid_edits_and_missing_ids_leave_memory_unchanged() {
+        let mut m = Memory::default();
+        let a = m.add("I write in French", Source::User, 1).unwrap();
+        m.add("I use Rust", Source::Chat, 2).unwrap();
+        let before = m.clone();
+        for text in [" \n\t".to_string(), "x".repeat(MAX_CHARS + 1)] {
+            assert!(m.edit(&a.id, &text, 9).is_err());
+            assert_eq!(m, before);
+        }
+        assert_eq!(m.edit("mem-missing", "i WRITE in FRENCH", 9), Err(crate::i18n::t("This memory is gone.")));
+        assert_eq!(m, before, "a missing target must not merge with an existing item");
+    }
+
+    #[test]
+    fn a_full_memory_can_be_edited_but_cannot_gain_duplicate_facts() {
+        let mut m = Memory::default();
+        for n in 0..MAX_ITEMS {
+            m.add(&format!("fact {n}"), Source::User, n as u64).unwrap();
+        }
+        let target = m.items[0].clone();
+        let before = m.clone();
+        assert!(m.edit(&target.id, " FACT   1 ", 999).is_err());
+        assert_eq!(m, before);
+        assert_eq!(m.add(" FACT   1 ", Source::Chat, 999).unwrap(), before.items[1]);
+        assert_eq!(m, before, "deduplicated adds still work at capacity");
+        m.edit(&target.id, "a different fact", 1000).unwrap();
+        assert_eq!(m.items.len(), MAX_ITEMS);
+        assert_eq!(m.items[0], Item { text: "a different fact".into(), updated_at: 1000, ..target });
+        assert_eq!(&m.items[1..], &before.items[1..]);
+    }
+
+    #[test]
+    fn deleting_the_conflicting_fact_allows_a_later_edit_without_replacing_its_id() {
+        let mut m = Memory::default();
+        let target = m.add("I use Rust", Source::Chat, 1).unwrap();
+        let duplicate = m.add("I write in French", Source::User, 2).unwrap();
+        let other = m.add("Prefers short answers", Source::User, 3).unwrap();
+        assert!(m.edit(&target.id, "I write in French", 4).is_err());
+        assert!(m.delete(&duplicate.id));
+        m.edit(&target.id, "I write in French", 5).unwrap();
+        assert_eq!(m.items, vec![Item { text: "I write in French".into(), updated_at: 5, ..target }, other]);
     }
 
     #[test]

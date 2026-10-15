@@ -180,7 +180,8 @@ impl Voice {
     }
 
     /// The shortcut or the mic button: starts a capture, or stops the one
-    /// that is listening. Returns the capture id it started or stopped.
+    /// that is listening. Returns the capture id it started or stopped, or
+    /// None while an earlier stop/cancellation is still closing the microphone.
     pub fn toggle(&self) -> Option<String> {
         self.begin(false)
     }
@@ -196,10 +197,12 @@ impl Voice {
         let mut phase = self.0.phase.lock().unwrap();
         match &*phase {
             Phase::Listening { id, signal } => {
-                // A pending cancellation is terminal, even before the capture
-                // thread has closed the microphone and left Listening.
-                let _ = signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst);
-                Some(id.clone())
+                // Only a live capture can be stopped by this press. A pending
+                // stop/cancellation is terminal, even while its capture thread
+                // is closing the microphone. Returning its id would let a new
+                // audio/dictation start claim that dying capture as its own.
+                signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst)
+                    .ok().map(|_| id.clone())
             }
             // Busy turning the last one into text: a press waits for it.
             Phase::Processing { .. } => None,
@@ -617,10 +620,6 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>, hands_free:
         if let Err(error) = capture.read(&mut samples) {
             break Err(error);
         }
-        if samples.len() >= max_samples || started.elapsed() >= MAX_CAPTURE {
-            samples.truncate(max_samples);
-            break Ok(true);
-        }
         if let Some(endpoint) = endpoint.as_mut() {
             let end = endpoint.feed(&samples[heard_from..]);
             heard_from = samples.len();
@@ -629,6 +628,12 @@ fn run_capture(inner: Arc<Inner>, id: String, signal: Arc<AtomicU8>, hands_free:
                 Some(Heard::Nothing) => break Err(VoiceError::Silence),
                 None => {}
             }
+        }
+        // Endpoint evidence takes priority even if a delayed device read
+        // delivers the capture limit's worth of background noise at once.
+        if samples.len() >= max_samples || started.elapsed() >= MAX_CAPTURE {
+            samples.truncate(max_samples);
+            break Ok(true);
         }
         if last_level.elapsed() >= LEVEL_EVERY {
             let level = (rms(&samples[level_from..]) * 8.0).min(1.0) as f64;
@@ -728,9 +733,17 @@ pub const NOTHING_FOR: Duration = Duration::from_secs(12);
 /// SPEECH_RMS.
 pub const SPEECH_OVER_NOISE: f32 = 3.0;
 pub const SPEECH_RMS: f32 = 0.012;
-/// The room is never taken for louder than this, so a bad estimate can't
-/// hide speech.
-pub const NOISE_CAP: f32 = 0.03;
+/// A stationary first second is room noise, even when it is above SPEECH_RMS.
+/// Short initial utterances remain tentative until their pause; changing speech
+/// envelopes leave calibration immediately instead of teaching speech as noise.
+pub const STARTUP_NOISE_FOR: Duration = Duration::from_secs(1);
+const STATIONARY_RATIO: f32 = 1.5;
+
+struct StartupNoise {
+    low: f32,
+    high: f32,
+    ms: u64,
+}
 
 /// End-of-speech detection for audio mode, on 50 ms windows: the room's
 /// noise is learned from the quiet windows, speech is clearly above it.
@@ -738,6 +751,7 @@ pub struct Endpoint {
     window: usize,
     pending: Vec<f32>,
     noise: Option<f32>,
+    startup: Option<StartupNoise>,
     speech_ms: u64,
     quiet_ms: u64,
     total_ms: u64,
@@ -745,7 +759,11 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn new(rate: u32) -> Self {
-        Self { window: (rate as usize / 20).max(1), pending: Vec::new(), noise: None, speech_ms: 0, quiet_ms: 0, total_ms: 0 }
+        Self {
+            window: (rate as usize / 20).max(1), pending: Vec::new(), noise: None,
+            startup: Some(StartupNoise { low: f32::INFINITY, high: 0.0, ms: 0 }),
+            speech_ms: 0, quiet_ms: 0, total_ms: 0,
+        }
     }
 
     /// Takes the samples that arrived since the last call.
@@ -756,13 +774,32 @@ impl Endpoint {
             let level = rms(&self.pending[at..at + self.window]);
             at += self.window;
             self.total_ms += 50;
-            // Before the room is known, the window itself, capped: speech at
-            // the very start still counts, a noisy room still doesn't.
-            let floor = self.noise.unwrap_or(level).min(NOISE_CAP);
+            if let Some(startup) = self.startup.as_mut() {
+                startup.low = startup.low.min(level);
+                startup.high = startup.high.max(level);
+                startup.ms += 50;
+                if startup.high > startup.low.max(SILENCE_RMS) * STATIONARY_RATIO {
+                    // Speech-like envelope changes: preserve the first frames.
+                    self.startup = None;
+                } else if startup.ms >= STARTUP_NOISE_FOR.as_millis() as u64 {
+                    // A fan/hum must not commit speech merely by being loud.
+                    self.noise = Some((startup.low + startup.high) / 2.0);
+                    self.speech_ms = 0;
+                    self.quiet_ms = 0;
+                    self.startup = None;
+                }
+            }
+            // Until calibration has evidence, initial words are tentative
+            // speech. A real, measured noise floor is not capped: loud steady
+            // noise must remain noise rather than exceed an artificial ceiling.
+            let floor = self.noise.unwrap_or(SILENCE_RMS);
             if level >= (floor * SPEECH_OVER_NOISE).max(SPEECH_RMS) {
                 self.speech_ms += 50;
                 self.quiet_ms = 0;
             } else {
+                // A quiet frame completes bootstrap without dropping preceding
+                // tentative speech, so a short first utterance is still heard.
+                self.startup = None;
                 // The room, slowly: a quiet window moves the estimate a little.
                 self.noise = Some(match self.noise {
                     None => level,
@@ -770,9 +807,14 @@ impl Endpoint {
                 });
                 self.quiet_ms += 50;
             }
-            if self.speech_ms >= MIN_SPEECH.as_millis() as u64 && self.quiet_ms >= PAUSE.as_millis() as u64 {
-                self.pending.clear();
-                return Some(Heard::Spoke);
+            if self.quiet_ms >= PAUSE.as_millis() as u64 {
+                if self.speech_ms >= MIN_SPEECH.as_millis() as u64 {
+                    self.pending.clear();
+                    return Some(Heard::Spoke);
+                }
+                // A cough or click is over. Separate noises must not add up
+                // to a turn across pauses that would have ended real speech.
+                self.speech_ms = 0;
             }
             if self.speech_ms < MIN_SPEECH.as_millis() as u64 && self.total_ms >= NOTHING_FOR.as_millis() as u64 {
                 self.pending.clear();

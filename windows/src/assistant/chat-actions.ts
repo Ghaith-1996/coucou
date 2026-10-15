@@ -26,6 +26,23 @@ export const ChatActions = {
   used: [] as string[],
 };
 
+/** Correlation only: this never grants permission for an action. */
+interface ToolUsed {
+  requestId: string | null;
+  tool: string;
+}
+
+let toolNotesFor: { requestId: string; messages: typeof State.chatHistory } | null = null;
+
+/** A fresh answer owns its notes, even when an older IPC event arrives late. */
+export function beginToolNotes(): string {
+  clearToolNotes();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const requestId = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  toolNotesFor = { requestId, messages: State.chatHistory };
+  return requestId;
+}
+
 export function answerCard(actionId: string, yes: boolean) {
   const card = ChatActions.cards.find((c) => c.actionId === actionId);
   if (!card || card.answered) return;
@@ -46,6 +63,7 @@ function close(actionId: string) {
 
 /** A new question or a new chat: what the last answer used is forgotten. */
 export function clearToolNotes() {
+  toolNotesFor = null;
   if (!ChatActions.used.length) return;
   ChatActions.used = [];
   State.notify();
@@ -59,14 +77,17 @@ export function registerChatActions() {
     State.notify();
   });
   void onEvent<string>("chat-action-closed", close);
-  void onEvent<string>("chat-tool-used", (what) => {
-    if (!ChatActions.used.includes(what)) ChatActions.used.push(what);
+  void onEvent<ToolUsed>("chat-tool-used", (event) => {
+    if (!toolNotesFor || event?.requestId !== toolNotesFor.requestId
+      || toolNotesFor.messages !== State.chatHistory || event.tool !== "browser-tabs") return;
+    if (!ChatActions.used.includes(event.tool)) ChatActions.used.push(event.tool);
     State.notify();
   });
 }
 
 /** Tests only. */
 export function resetChatActionsForTests() {
+  toolNotesFor = null;
   ChatActions.cards = [];
   ChatActions.used = [];
 }

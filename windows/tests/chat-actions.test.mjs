@@ -5,7 +5,10 @@
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { calls, emit, internals, sent } from "./tauri.mjs";
-import { ChatActions, answerCard, clearToolNotes, registerChatActions, resetChatActionsForTests } from "../src/assistant/chat-actions.ts";
+import { ChatActions, answerCard, beginToolNotes, clearToolNotes, registerChatActions, resetChatActionsForTests } from "../src/assistant/chat-actions.ts";
+
+import { State } from "../src/core/state.ts";
+import { Bridge } from "../src/core/bridge.ts";
 
 let fail = false;
 const realInvoke = internals.invoke;
@@ -71,8 +74,9 @@ test("the same card is shown once; read-only tools leave a note until the next q
   emit("chat-action", card());
   emit("chat-action", card());
   assert.equal(ChatActions.cards.length, 1);
-  emit("chat-tool-used", "browser-tabs");
-  emit("chat-tool-used", "browser-tabs");
+  const requestId = beginToolNotes();
+  emit("chat-tool-used", { requestId, tool: "browser-tabs" });
+  emit("chat-tool-used", { requestId, tool: "browser-tabs" });
   assert.deepEqual(ChatActions.used, ["browser-tabs"]);
   clearToolNotes();
   assert.deepEqual(ChatActions.used, []);
@@ -85,4 +89,41 @@ test("a memory the chat proposes is a card like any other: nothing is saved befo
   answerCard("act-60", false);
   await flush();
   assert.deepEqual(sent("chat_action_answer"), [{ actionId: "act-60", grant: null }]);
+});
+
+
+test("only the matching request and transcript can add tool notes", () => {
+  const oldRequest = beginToolNotes();
+  const requestId = beginToolNotes();
+  assert.notEqual(requestId, oldRequest);
+  for (const payload of [
+    null, "browser-tabs", {}, { tool: "browser-tabs" },
+    { requestId: null, tool: "browser-tabs" },
+    { requestId: oldRequest, tool: "browser-tabs" },
+    { requestId, tool: "unknown" },
+  ]) {
+    emit("chat-tool-used", payload);
+    assert.deepEqual(ChatActions.used, [], "unscoped, stale or malformed events do not claim a tool was used");
+  }
+  State.chatHistory = [];
+  emit("chat-tool-used", { requestId, tool: "browser-tabs" });
+  assert.deepEqual(ChatActions.used, [], "replacing the transcript also invalidates an otherwise matching request");
+  const currentRequest = beginToolNotes();
+  emit("chat-tool-used", { requestId: currentRequest, tool: "browser-tabs" });
+  assert.deepEqual(ChatActions.used, ["browser-tabs"]);
+});
+
+for (const alreadyUsed of [false, true]) {
+  test(`clearing tool notes retires their request ${alreadyUsed ? "with an existing note" : "before the first note"}`, () => {
+    const requestId = beginToolNotes();
+    if (alreadyUsed) emit("chat-tool-used", { requestId, tool: "browser-tabs" });
+    clearToolNotes();
+    emit("chat-tool-used", { requestId, tool: "browser-tabs" });
+    assert.deepEqual(ChatActions.used, []);
+  });
+}
+
+test("chat send keeps request identity optional for callers without tool notes", async () => {
+  await Bridge.chatSend("A legacy caller", null);
+  assert.deepEqual(sent("chat_send").at(-1), { query: "A legacy caller", context: null });
 });

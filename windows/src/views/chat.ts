@@ -28,9 +28,9 @@ import { cleanTitle, fromSaved, newChatId, titleFor, toSaved, whenLabel } from "
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
-import { voiceShortcut } from "../assistant/voice";
+import { Voice, voiceShortcut } from "../assistant/voice";
 import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
-import { ChatActions, answerCard, clearToolNotes } from "../assistant/chat-actions";
+import { ChatActions, answerCard, beginToolNotes, clearToolNotes } from "../assistant/chat-actions";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
 
@@ -53,6 +53,11 @@ const STRINGS = {
   doIt: N_("Do it"),
   no: N_("No"),
   lookedAtTabs: N_("Looked at your browser tabs"),
+  audioError: N_("Audio mode ended. Check your microphone and speech model in Settings, then try again."),
+  audioSpeechError: N_("Could not read the answer aloud. Audio mode ended. Please try again."),
+  audioModel: N_("Download a speech model in Settings to use audio mode."),
+  audioMicrophone: N_("Microphone unavailable"),
+  audioDenied: N_("Windows blocks the microphone for desktop apps. Allow it in Settings → Privacy & security → Microphone."),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
   loading: N_("Loading models…"),
@@ -431,6 +436,8 @@ function buildPicker(onChange: () => void): Picker {
 
 /** When the conversation on screen was first saved. */
 let chatCreatedAt = 0;
+/** Snapshot revisions stay monotonic through same-ms saves, reopen and clock changes. */
+const chatSavedAt = new Map<string, number>();
 /** Its generated or explicitly renamed title, kept when more messages arrive. */
 let chatTitle = "";
 /** New/open invalidates old saves; regeneration stays in the same conversation. */
@@ -443,6 +450,7 @@ let reopenedChatId: string | null = null;
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
+  stopAudioMode();
   chatSession++;
   State.chatHistory = [];
   State.chatId = null;
@@ -450,6 +458,7 @@ export function newConversation() {
   State.promptContext = null;
   saveFailure = null;
   reopenedChatId = null;
+  clearToolNotes();
   void Bridge.chatReset();
   State.notify();
 }
@@ -467,7 +476,10 @@ function saveConversation() {
   const attempt = ++saveAttempt;
   const session = chatSession;
   const isCurrent = () => attempt === saveAttempt && session === chatSession && State.chatId === id;
-  void Bridge.chatHistorySave(toSaved(id, chatTitle, chatCreatedAt || Date.now(), messages)).then(() => {
+  const snapshot = toSaved(id, chatTitle, chatCreatedAt || Date.now(), messages);
+  snapshot.updatedAt = Math.max(snapshot.updatedAt, (chatSavedAt.get(id) ?? 0) + 1);
+  chatSavedAt.set(id, snapshot.updatedAt);
+  void Bridge.chatHistorySave(snapshot).then(() => {
     if (!isCurrent()) return;
     saveFailure = null;
     State.notify();
@@ -755,10 +767,13 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       State.chatId = saved.id;
       reopenedChatId = saved.id;
       chatCreatedAt = saved.createdAt;
+      chatSavedAt.set(saved.id, Math.max(chatSavedAt.get(saved.id) ?? 0, saved.updatedAt));
       chatTitle = saved.title;
       saveFailure = null;
       State.droppedFile = null;
       State.promptContext = null;
+      // Only a successful, still-current restore replaces the visible answer.
+      clearToolNotes();
       Sound.play("blip");
       if (attempt === navigationAttempt) close();
       onOpened();
@@ -851,7 +866,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     title: tl(STRINGS.audio),
     "aria-label": tl(STRINGS.audio),
     onclick: () => {
-      if (AudioMode.state === "off" && (sending || undoPending || startingVoice || history.isOpening)) return;
+      if (AudioMode.state === "off" && (sending || undoPending || startingVoice || AudioMode.busy || Voice.busy || history.isOpening)) return;
       toggleAudioMode();
     },
   }, svg(ICONS.wave, 15, { stroke: 1.8 })) : null;
@@ -962,8 +977,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.classList.toggle("open", history.isOpen);
     modelBtn.disabled = sending;
     historyBtn.disabled = sending;
-    if (voice) voice.disabled = sending || startingVoice || history.isOpening;
-    if (audioBtn) audioBtn.disabled = AudioMode.state === "off" && (sending || undoPending || startingVoice || history.isOpening);
+    if (voice) voice.disabled = sending || startingVoice || AudioMode.busy || history.isOpening;
+    if (audioBtn) audioBtn.disabled = AudioMode.state === "off" && (sending || undoPending || startingVoice || AudioMode.busy || Voice.busy || history.isOpening);
     // While an answer comes, the send button is Stop.
     send.disabled = startingVoice || undoPending || history.isOpening;
     send.classList.toggle("stop", sending);
@@ -1101,7 +1116,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     usageLimit = false;
     drawNotice();
     liveText = "";
-    clearToolNotes();
+    const requestId = beginToolNotes();
     const messages = State.chatHistory;
     const session = chatSession;
     const isCurrent = () => State.chatHistory === messages && chatSession === session;
@@ -1131,7 +1146,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     let answer: string | null = null;
 
     try {
-      const reply = await Bridge.chatSend(query, context);
+      const reply = await Bridge.chatSend(query, context, requestId);
       if (!isCurrent()) return null;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text, ...answeredBy });
       State.stateOverride = null;
@@ -1172,11 +1187,18 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     return answer;
   }
 
-  setAudioAsk((text) => (sending || undoPending || startingVoice || history.isOpening ? Promise.resolve(null) : ask(text)));
+  const audioReady = () => !sending && !undoPending && !startingVoice && !history.isOpening;
+  const stopAnswer = () => {
+    if (!sending || undoPending || stopRequested) return;
+    stopRequested = true;
+    void Bridge.chatStop();
+  };
+  setAudioAsk((text) => audioReady() ? ask(text) : Promise.resolve(null), audioReady, stopAnswer);
 
   async function submit() {
     const query = input.value.trim();
     if (!query || sending || startingVoice || history.isOpening) return;
+    stopAudioMode();
     input.value = "";
     await ask(query);
   }
@@ -1188,6 +1210,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     const answer = messages[messages.length - 1];
     const question = messages[messages.length - 2];
     if (answer?.role !== "assistant" || question?.role !== "user") return;
+    stopAudioMode();
     // Reserve every entry point before native undo yields. It is an atomic
     // preparation, not an answer to Stop; keep the visible turn until success.
     sending = true;
@@ -1224,14 +1247,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   send.addEventListener("click", () => {
     if (undoPending) return;
     if (sending) {
-      stopRequested = true;
-      void Bridge.chatStop();
+      stopAudioMode();
+      stopAnswer();
       return;
     }
     void submit();
   });
   voice?.addEventListener("click", async () => {
-    if (sending || startingVoice || history.isOpening) return;
+    if (sending || startingVoice || AudioMode.busy || history.isOpening) return;
     startingVoice = true;
     if (picker.isOpen) picker.close();
     drawModelButton();
@@ -1256,8 +1279,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (history.isOpen) history.close();
     } else if (key === "Escape" && sending && !undoPending) {
       e.preventDefault();
-      stopRequested = true;
-      void Bridge.chatStop();
+      stopAnswer();
     }
     e.stopPropagation(); // Escape closes the island, not the chat
   });
@@ -1304,7 +1326,12 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       : AudioMode.state === "transcribing" ? STRINGS.audioTranscribing
       : AudioMode.state === "thinking" ? STRINGS.audioThinking
       : AudioMode.state === "speaking" ? STRINGS.audioSpeaking
-      : AudioMode.note === "silence" ? STRINGS.audioSilence : "",
+      : AudioMode.note === "silence" ? STRINGS.audioSilence
+      : AudioMode.note === "speech" ? STRINGS.audioSpeechError
+      : AudioMode.note === "model" ? STRINGS.audioModel
+      : AudioMode.note === "no-microphone" ? STRINGS.audioMicrophone
+      : AudioMode.note === "microphone-denied" ? STRINGS.audioDenied
+      : AudioMode.note ? STRINGS.audioError : "",
     );
     audioEnd.hidden = !on;
   }

@@ -182,3 +182,44 @@ test("the section says memory is sent to the chat's model", async (t) => {
   await settle();
   assert.match(section.textContent, /goes with every question to the model you chat with/);
 });
+
+
+test("a duplicate edit refusal keeps both rows and the draft, then permits a corrected retry", async (t) => {
+  const first = item("m1", "I use Rust", "chat");
+  const other = item("m2", "I write in French");
+  let edits = 0;
+  answering(t, {
+    memory_list: state([first, other]),
+    memory_edit: ({ id, text }) => {
+      if (++edits === 1) throw new Error("This memory already exists.");
+      return state([{ ...first, id, text, updatedAt: 9 }, other]);
+    },
+  });
+  const section = memorySection();
+  await settle();
+  button(section, "Edit").fire("click");
+  const field = section.find(".memory-item")[0].find("input")[0];
+  field.value = "i WRITE in FRENCH";
+  button(section, "Save").fire("click");
+  await settle();
+  assert.match(section.textContent, /This memory already exists\./);
+  assert.equal(section.find(".memory-item").length, 2);
+  assert.equal(section.find(".memory-item")[0].find("input")[0], field, "keep the editable draft after refusal");
+  assert.equal(field.value, "i WRITE in FRENCH");
+  assert.match(section.find(".memory-item")[1].textContent, /I write in French/);
+  assert.equal(sent("memory_add").length + sent("memory_delete").length, 0);
+  field.value = "I use Rust at work";
+  button(section, "Save").fire("click");
+  await settle();
+  assert.deepEqual(sent("memory_edit"), [
+    { id: "m1", text: "i WRITE in FRENCH" },
+    { id: "m1", text: "I use Rust at work" },
+  ]);
+  const rows = section.find(".memory-item");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].find("input").length, 0);
+  assert.match(rows[0].textContent, /I use Rust at work/);
+  assert.equal(rows[0].find(".memory-badge")[0].textContent, "From the chat");
+  assert.match(rows[1].textContent, /I write in French/);
+  assert.doesNotMatch(section.textContent, /This memory already exists\./);
+});

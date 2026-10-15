@@ -38,11 +38,26 @@ export function refreshMemorySection() {
   activeSection?.refresh();
 }
 
+function memoryInput(attrs: { value?: string; placeholder?: string }) {
+  // HTML maxlength counts UTF-16 units, while memory.rs cleans the text and
+  // permits 500 Unicode scalars. Let native validation reject an overlong
+  // draft without truncating it or interfering with an IME's composition.
+  const field = h("input", { type: "text", style: "flex:1", ...attrs });
+  let composing = false;
+  field.addEventListener("compositionstart", () => { composing = true; });
+  field.addEventListener("compositionend", () => { composing = false; });
+  return {
+    field,
+    isComposing: (event?: KeyboardEvent) => composing || event?.isComposing === true || event?.keyCode === 229,
+  };
+}
+
 export function memorySection(): HTMLElement {
   activeSection?.dispose();
   const list = h("div", { class: "memory-list" });
   const note = h("div", { class: "hint" });
-  const input = h("input", { type: "text", placeholder: STRINGS.placeholder, maxlength: "500", style: "flex:1" }) as HTMLInputElement;
+  const entry = memoryInput({ placeholder: STRINGS.placeholder });
+  const input = entry.field;
   const useSwitch = h("button", { class: "switch", "aria-label": STRINGS.use }) as HTMLButtonElement;
   const clearBtn = h("button", { class: "danger", text: STRINGS.clearAll });
   const addBtn = h("button", { text: STRINGS.add });
@@ -50,7 +65,7 @@ export function memorySection(): HTMLElement {
   let loaded = false;
   let toggling = false;
   let adding = false;
-  type Editor = { id: string; field: HTMLInputElement; save: HTMLButtonElement; el: HTMLElement };
+  type Editor = { id: string; field: HTMLInputElement; save: HTMLButtonElement; el: HTMLElement; isComposing: () => boolean };
   let editing: Editor | null = null;
   // A canceled editor can still own a native write. Its replacement may be
   // typed into, but must wait before submitting another edit.
@@ -129,17 +144,18 @@ export function memorySection(): HTMLElement {
 
   function beginEdit(item: MemoryItem) {
     if (disposed) return;
-    const field = h("input", { type: "text", value: item.text, maxlength: "500", style: "flex:1" });
+    const editorInput = memoryInput({ value: item.text });
+    const field = editorInput.field;
     const save = h("button", { text: STRINGS.save });
     const cancelBtn = h("button", { text: STRINGS.cancel });
-    const editor: Editor = { id: item.id, field, save, el: h("div", { class: "row memory-item" }, field, save, cancelBtn) };
+    const editor: Editor = { id: item.id, field, save, el: h("div", { class: "row memory-item" }, field, save, cancelBtn), isComposing: editorInput.isComposing };
     const cancel = () => {
       if (editing !== editor) return;
       editing = null;
       draw();
     };
     const commit = async () => {
-      if (disposed || editing !== editor || saving) return;
+      if (disposed || editing !== editor || saving || editorInput.isComposing()) return;
       const draft = field.value;
       saving = editor;
       save.disabled = true;
@@ -147,7 +163,7 @@ export function memorySection(): HTMLElement {
       try {
         const next = await Bridge.memoryEdit(editor.id, draft);
         if (editing === editor) {
-          if (field.value === draft) editing = null;
+          if (field.value === draft && !editorInput.isComposing()) editing = null;
           showNote("");
         }
         // The saved result still updates the list after Cancel, but never
@@ -164,9 +180,11 @@ export function memorySection(): HTMLElement {
     save.addEventListener("click", commit);
     cancelBtn.addEventListener("click", cancel);
     field.addEventListener("keydown", (e) => {
+      if (editorInput.isComposing(e)) return;
       if (e.key === "Enter") void commit();
       if (e.key === "Escape") cancel();
     });
+    field.addEventListener("compositionend", () => { if (editing === editor && !disposed) draw(); });
     editing = editor;
     draw();
     requestAnimationFrame(() => { if (editing === editor) field.focus(); });
@@ -195,19 +213,20 @@ export function memorySection(): HTMLElement {
     useSwitch.classList.toggle("on", state.enabled);
     useSwitch.setAttribute("aria-pressed", String(state.enabled));
     if (editing) editing.save.disabled = saving !== null;
-    // Reuse the draft field through unrelated redraws, including its focus
-    // and selection if rebuilding the surrounding list detaches it.
-    const focused = editing && editing.field === document.activeElement ? editing.field : null;
-    const selection = focused ? [focused.selectionStart, focused.selectionEnd] as const : null;
-    clear(list);
-    if (!state.items.length && !editing) list.append(h("div", { class: "hint", text: STRINGS.empty }));
-    for (const item of state.items) list.append(row(item));
-    // A refresh may reveal an external deletion. Keep the user's unsaved
-    // field available to copy/cancel rather than silently discarding it.
-    if (editing && !state.items.some(item => item.id === editing?.id)) list.append(editing.el);
-    if (focused && selection) {
-      focused.focus();
-      focused.setSelectionRange(selection[0], selection[1]);
+    // Even detaching/reinserting the same field can end an IME session. Keep
+    // the new state, but defer rebuilding its list until compositionend.
+    if (!editing?.isComposing()) {
+      const focused = editing && editing.field === document.activeElement ? editing.field : null;
+      const selection = focused ? [focused.selectionStart, focused.selectionEnd] as const : null;
+      clear(list);
+      if (!state.items.length && !editing) list.append(h("div", { class: "hint", text: STRINGS.empty }));
+      for (const item of state.items) list.append(row(item));
+      // An externally deleted item's unsaved field remains available to copy.
+      if (editing && !state.items.some(item => item.id === editing?.id)) list.append(editing.el);
+      if (focused && selection) {
+        focused.focus();
+        focused.setSelectionRange(selection[0], selection[1]);
+      }
     }
     clearBtn.disabled = !loaded || clearing;
     clearBtn.textContent = confirmingClear ? STRINGS.confirmClear : STRINGS.clearAll;
@@ -217,7 +236,7 @@ export function memorySection(): HTMLElement {
   const add = async () => {
     // An older initial list must not arrive after and overwrite an add result.
     // Reserve submission, but leave the input available for the next draft.
-    if (disposed || !loaded || adding) return;
+    if (disposed || !loaded || adding || entry.isComposing()) return;
     const draft = input.value;
     const text = draft.trim();
     if (!text) return;
@@ -226,7 +245,7 @@ export function memorySection(): HTMLElement {
     beginMutation();
     try {
       const next = await Bridge.memoryAdd(text);
-      if (input.value === draft) input.value = "";
+      if (input.value === draft && !entry.isComposing()) input.value = "";
       showNote("");
       apply(next);
     } catch (err) {
@@ -239,6 +258,7 @@ export function memorySection(): HTMLElement {
   };
   addBtn.addEventListener("click", add);
   input.addEventListener("keydown", (e) => {
+    if (entry.isComposing(e)) return;
     if (e.key === "Enter") add();
   });
   useSwitch.addEventListener("click", async () => {

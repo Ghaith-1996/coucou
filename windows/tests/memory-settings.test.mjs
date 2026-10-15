@@ -1201,3 +1201,205 @@ for (const deletion of ["matching Delete", "Delete everything"]) {
     assert.equal(editField(section), undefined);
   });
 }
+
+const eventOn = (field, type, details = {}) => {
+  for (const listener of field.listeners.get(type) ?? []) listener({ type, ...details });
+};
+const scalarText = (pattern, length) => {
+  const scalars = [...pattern];
+  return Array.from({ length }, (_, index) => scalars[index % scalars.length]).join("");
+};
+const memoryDraft = (section, action) => {
+  if (action === "Save") {
+    button(section, "Edit").fire("click");
+    return editField(section);
+  }
+  return section.find("input")[0];
+};
+// A fixture for the native clean/count replies, not execution of Rust. The
+// actual DOM input and submit handlers below must preserve and send each draft.
+function nativeMemoryReply({ text }) {
+  const cleaned = text.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").replace(/\s+/gu, " ").trim();
+  if ([...cleaned].length > 500) throw new Error("A memory is at most 500 characters.");
+  return state([item("one", cleaned)]);
+}
+function enterText(field, text, method) {
+  if (method === "paste") {
+    field.value = text;
+    eventOn(field, "input", { inputType: "insertFromPaste", data: text, isComposing: false });
+  } else {
+    field.value = "";
+    for (const scalar of text) {
+      field.value += scalar;
+      eventOn(field, "input", { inputType: "insertText", data: scalar, isComposing: false });
+    }
+  }
+}
+
+for (const action of ["Add", "Save"]) {
+  test(`${action} has no UTF-16 maxlength that rejects a native-valid 500-emoji draft`, async t => {
+    const text = "😀".repeat(500);
+    answering(t, { memory_list: state([item("one", text)]) });
+    const section = memorySection();
+    await settle();
+    const field = memoryDraft(section, action);
+    assert.equal(field.getAttribute("maxlength"), null, "the native Unicode-scalar validator owns the length limit");
+    if (action === "Save") assert.equal(field.getAttribute("value"), text, "an existing native-valid draft is not shortened on editing");
+  });
+
+  for (const [name, pattern] of [["ASCII", "x"], ["Japanese", "日"], ["emoji", "😀"], ["mixed combining text", "A日😀e\u0301"]]) {
+    for (const method of ["typing", "paste"]) {
+      test(`${action} after ${method} preserves 501 ${name} scalars on native rejection and accepts a corrected 500`, async t => {
+        const command = action === "Add" ? "memory_add" : "memory_edit";
+        answering(t, { memory_list: state([item("one", "Original")]), [command]: nativeMemoryReply });
+        const section = memorySection();
+        await settle();
+        const field = memoryDraft(section, action);
+        const long = scalarText(pattern, 501);
+        enterText(field, long, method);
+        assert.equal(field.value, long, "input handling never silently truncates a draft or surrogate pair");
+        assert.equal(sent(command).length, 0, "typing and paste alone do not save");
+        button(section, action).fire("click");
+        await settle();
+        assert.equal(sent(command)[0].text, long);
+        assert.equal(field.value, long);
+        if (action === "Save") assert.equal(editField(section), field);
+        assert.equal(button(section, action).disabled, false, "native refusal releases submission for a corrected retry");
+        assert.match(section.textContent, /A memory is at most 500 characters/);
+        const valid = scalarText(pattern, 500);
+        enterText(field, valid, method);
+        key(field, "Enter");
+        await settle();
+        assert.equal(sent(command)[1].text, valid);
+        assert.match(section.find(".memory-text")[0].textContent, new RegExp("^" + valid + "$", "u"));
+        assert.doesNotMatch(section.textContent, /A memory is at most 500 characters/);
+        if (action === "Add") assert.equal(field.value, "");
+        else assert.equal(editField(section), undefined);
+      });
+    }
+  }
+
+  test(`${action} lets native whitespace normalization accept 500 scalars even when the raw draft is longer`, async t => {
+    const command = action === "Add" ? "memory_add" : "memory_edit";
+    answering(t, { memory_list: state([item("one", "Original")]), [command]: nativeMemoryReply });
+    const section = memorySection();
+    await settle();
+    const field = memoryDraft(section, action);
+    const raw = `  ${"😀".repeat(249)}   \u2003 ${"日".repeat(250)}  `;
+    assert.ok([...raw].length > 500);
+    enterText(field, raw, "paste");
+    button(section, action).fire("click");
+    await settle();
+    const saved = section.find(".memory-text")[0].textContent;
+    assert.equal(saved, `${"😀".repeat(249)} ${"日".repeat(250)}`);
+    assert.equal([...saved].length, 500);
+    assert.equal(sent(command)[0].text, action === "Add" ? raw.trim() : raw);
+    assert.doesNotMatch(section.textContent, /A memory is at most 500 characters/);
+  });
+
+  test(`${action} leaves composition untouched and ignores Enter, Escape and synthetic submit until it ends`, async t => {
+    const command = action === "Add" ? "memory_add" : "memory_edit";
+    answering(t, { memory_list: state([item("one", "Original")]), [command]: nativeMemoryReply });
+    const section = memorySection();
+    await settle();
+    const field = memoryDraft(section, action);
+    const draft = "😀".repeat(501);
+    eventOn(field, "compositionstart");
+    field.value = draft;
+    eventOn(field, "input", { inputType: "insertCompositionText", isComposing: true });
+    key(field, "Enter");
+    key(field, "Escape");
+    button(section, action)?.fire("click");
+    await settle();
+    assert.equal(sent(command).length, 0, "composition confirmation is not a Memory submission");
+    assert.equal(field.value, draft);
+    if (action === "Save") assert.equal(editField(section), field, "Escape belongs to the IME while composing");
+    field.value = "日本語の確定した文";
+    eventOn(field, "compositionend");
+    eventOn(field, "input", { inputType: "insertText", isComposing: false });
+    assert.equal(sent(command).length, 0, "compositionend never automatically saves");
+    key(field, "Enter");
+    await settle();
+    assert.equal(sent(command).length, 1);
+    assert.equal(sent(command)[0].text, "日本語の確定した文");
+  });
+
+  for (const keyDetails of [{ isComposing: true }, { keyCode: 229 }]) {
+    test(`${action} ignores an IME Enter flagged ${Object.keys(keyDetails)[0]} even without compositionstart`, async t => {
+      const command = action === "Add" ? "memory_add" : "memory_edit";
+      answering(t, { memory_list: state([item("one", "Original")]), [command]: nativeMemoryReply });
+      const section = memorySection();
+      await settle();
+      const field = memoryDraft(section, action);
+      field.value = "Uncommitted IME draft";
+      eventOn(field, "keydown", { key: "Enter", ...keyDetails });
+      await settle();
+      assert.equal(sent(command).length, 0);
+      assert.equal(field.value, "Uncommitted IME draft");
+      key(field, "Enter");
+      await settle();
+      assert.equal(sent(command).length, 1);
+    });
+  }
+
+  test(`${action} completion does not clear or close a field with a newly started composition`, async t => {
+    const command = action === "Add" ? "memory_add" : "memory_edit";
+    const pending = deferred();
+    answering(t, { memory_list: state([item("one", "Original")]), [command]: pending.promise });
+    const section = memorySection();
+    await settle();
+    const field = memoryDraft(section, action);
+    field.value = "Submitted text";
+    button(section, action).fire("click");
+    eventOn(field, "compositionstart");
+    // Some IMEs have not changed the DOM value yet, but still own the field.
+    pending.resolve(state([item("one", "Submitted text")]));
+    await settle();
+    assert.equal(field.value, "Submitted text", "do not replace a composing field's value");
+    if (action === "Save") assert.equal(editField(section), field, "do not retire the composing editor");
+    field.value = "次の入力";
+    eventOn(field, "compositionend");
+    assert.equal(field.value, "次の入力");
+    assert.equal(sent(command).length, 1);
+  });
+}
+
+for (const update of ["refresh", "save", "toggle"]) {
+  test(`a ${update} redraw waits for compositionend before detaching the active editor`, async t => {
+    const pending = deferred();
+    let stored = state([item("one", "Original")]);
+    answering(t, {
+      memory_list: () => stored,
+      memory_edit: pending.promise,
+      memory_set_enabled: ({ enabled }) => state(stored.items, enabled),
+    });
+    const section = memorySection();
+    await settle();
+    button(section, "Edit").fire("click");
+    const field = editField(section);
+    field.value = "Submitted text";
+    if (update === "save") button(section, "Save").fire("click");
+    const row = section.find(".memory-item")[0];
+    const list = section.find(".memory-list")[0];
+    const remove = list.removeChild.bind(list);
+    let detached = 0;
+    t.mock.method(list, "removeChild", node => {
+      if (node === row) detached++;
+      return remove(node);
+    });
+    eventOn(field, "compositionstart");
+    field.value = "Composing current draft";
+    stored = state([item("one", "Submitted text"), item("chat", "New chat fact", "chat")]);
+    if (update === "refresh") refreshMemorySection();
+    else if (update === "save") pending.resolve(stored);
+    else section.find(".switch")[0].fire("click");
+    await settle();
+    assert.equal(detached, 0, "detaching a focused input can cancel the browser's IME session");
+    assert.equal(editField(section), field);
+    assert.equal(field.value, "Composing current draft");
+    eventOn(field, "compositionend");
+    assert.equal(editField(section), field);
+    assert.equal(field.value, "Composing current draft");
+    assert.match(section.textContent, /New chat fact/, "the retained authoritative state is drawn after composition ends");
+  });
+}

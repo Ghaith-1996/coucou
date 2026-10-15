@@ -5769,6 +5769,39 @@
    "pt-BR": "O que o chat sabe sobre você, em todas as conversas. Guardado neste PC, criptografado para sua conta do Windows. O chat pode propor um item; você o confirma em um cartão, a menos que tenha pedido para lembrar e Fazer sem perguntar esteja ativado.",
    "ru": "Что чат знает о вас в каждом разговоре. Хранится на этом ПК, зашифровано для вашей учётной записи Windows. Чат может предложить пункт; вы подтверждаете его на карточке, если только вы сами не попросили запомнить и не включено «Выполнять без вопросов».",
    "id": "Apa yang diketahui chat tentang Anda, di setiap percakapan. Disimpan di PC ini, dienkripsi untuk akun Windows Anda. Chat dapat mengusulkan item; Anda mengonfirmasinya di kartu, kecuali Anda memintanya untuk mengingat dan Lakukan tanpa bertanya aktif."
+  },
+  "Looked at your Codex and Claude Code sessions": {
+   "zh-Hans": "查看了你的 Codex 和 Claude Code 会话",
+   "hi": "आपके Codex और Claude Code सत्र देखे",
+   "es": "Miró tus sesiones de Codex y Claude Code",
+   "ar": "اطّلع على جلسات Codex وClaude Code الخاصة بك",
+   "fr": "A regardé vos sessions Codex et Claude Code",
+   "bn": "আপনার Codex ও Claude Code সেশনগুলো দেখেছে",
+   "pt-BR": "Olhou suas sessões do Codex e do Claude Code",
+   "ru": "Посмотрел ваши сеансы Codex и Claude Code",
+   "id": "Melihat sesi Codex dan Claude Code Anda"
+  },
+  "Let the chat read my Codex and Claude Code conversations": {
+   "zh-Hans": "允许聊天读取我的 Codex 和 Claude Code 对话",
+   "hi": "चैट को मेरी Codex और Claude Code बातचीत पढ़ने दें",
+   "es": "Permitir que el chat lea mis conversaciones de Codex y Claude Code",
+   "ar": "السماح للدردشة بقراءة محادثاتي في Codex وClaude Code",
+   "fr": "Laisser le chat lire mes conversations Codex et Claude Code",
+   "bn": "চ্যাটকে আমার Codex ও Claude Code কথোপকথন পড়তে দিন",
+   "pt-BR": "Deixar o chat ler minhas conversas do Codex e do Claude Code",
+   "ru": "Разрешить чату читать мои разговоры в Codex и Claude Code",
+   "id": "Izinkan chat membaca percakapan Codex dan Claude Code saya"
+  },
+  "Ask \"what did Codex do today?\" and the chat reads what you and your agents said (never their tool output) from their own files on this PC, then summarizes it. What it reads is sent to the chat's model, online for ChatGPT.": {
+   "zh-Hans": "问“Codex 今天做了什么？”，聊天会从这台电脑上它们自己的文件中读取你和代理说过的话（从不读取工具输出），然后进行总结。读取的内容会发送给聊天所用的模型，ChatGPT 为在线模型。",
+   "hi": "पूछें \"Codex ने आज क्या किया?\" और चैट इस पीसी पर उनकी अपनी फ़ाइलों से वह पढ़ता है जो आपने और आपके एजेंटों ने कहा (उनके टूल का आउटपुट कभी नहीं), फिर उसका सारांश देता है। जो पढ़ा जाता है वह चैट के मॉडल को भेजा जाता है, ChatGPT के लिए ऑनलाइन।",
+   "es": "Pregunta \"¿qué hizo Codex hoy?\" y el chat lee lo que tú y tus agentes dijeron (nunca la salida de sus herramientas) desde sus propios archivos en este PC, y lo resume. Lo que lee se envía al modelo del chat, en línea para ChatGPT.",
+   "ar": "اسأل \"ماذا فعل Codex اليوم؟\" فتقرأ الدردشة ما قلته أنت ووكلاؤك (وليس مخرجات أدواتهم أبدًا) من ملفاتهم على هذا الكمبيوتر، ثم تلخّصه. ما تقرؤه يُرسل إلى نموذج الدردشة، عبر الإنترنت في حالة ChatGPT.",
+   "fr": "Demandez « qu’a fait Codex aujourd’hui ? » et le chat lit ce que vous et vos agents avez dit (jamais la sortie de leurs outils) dans leurs propres fichiers sur ce PC, puis le résume. Ce qu’il lit est envoyé au modèle du chat, en ligne pour ChatGPT.",
+   "bn": "জিজ্ঞাসা করুন \"Codex আজ কী করেছে?\" আর চ্যাট এই পিসিতে তাদের নিজস্ব ফাইল থেকে আপনি ও আপনার এজেন্টরা যা বলেছেন (কখনো তাদের টুলের আউটপুট নয়) তা পড়ে সারাংশ দেয়। যা পড়া হয় তা চ্যাটের মডেলে পাঠানো হয়, ChatGPT-এর ক্ষেত্রে অনলাইনে।",
+   "pt-BR": "Pergunte \"o que o Codex fez hoje?\" e o chat lê o que você e seus agentes disseram (nunca a saída das ferramentas) nos próprios arquivos deles neste PC e resume. O que ele lê é enviado ao modelo do chat, online no caso do ChatGPT.",
+   "ru": "Спросите «что сделал Codex сегодня?», и чат прочитает, что говорили вы и ваши агенты (никогда не вывод их инструментов), из их собственных файлов на этом ПК, а затем кратко изложит. Прочитанное отправляется модели чата, для ChatGPT — в интернет.",
+   "id": "Tanyakan \"apa yang dilakukan Codex hari ini?\" dan chat membaca apa yang Anda dan agen Anda katakan (tidak pernah keluaran alat mereka) dari file mereka sendiri di PC ini, lalu merangkumnya. Apa yang dibaca dikirim ke model chat, secara online untuk ChatGPT."
   }
  }
 }

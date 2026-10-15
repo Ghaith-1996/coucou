@@ -113,6 +113,11 @@ pub struct Settings {
     /// it on in Settings; owned by Rust like `phone_link`, so what a webview
     /// sends back is ignored.
     pub assistant_auto_run: bool,
+    /// The chat may read the user's Claude Code and Codex conversations
+    /// (assistant/sessions.rs), and what ChatGPT and Claude windows show,
+    /// to summarize them. Off until the user turns it on in Settings; owned
+    /// by Rust like `assistant_auto_run`.
+    pub assistant_read_chats: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -188,6 +193,7 @@ impl Default for Settings {
             phone_relay_url: String::new(),
             voice_model: crate::assistant::voice::model::DEFAULT_MODEL.into(),
             assistant_auto_run: false,
+            assistant_read_chats: false,
         }
     }
 }
@@ -478,7 +484,8 @@ mod tests {
   "phoneRelay": true,
   "phoneRelayUrl": "wss://relay.example.workers.dev",
   "voiceModel": "large-v3-turbo-q5_0",
-  "assistantAutoRun": true
+  "assistantAutoRun": true,
+  "assistantReadChats": true
 }"##;
 
     fn custom() -> Value {
@@ -600,6 +607,18 @@ mod tests {
         let odd = load_from(&file);
         assert!(!odd.phone_link);
         assert_eq!(odd.mochi_outfit, "witchHat");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_from_before_reading_chats_keeps_them_unread() {
+        assert!(!Settings::default().assistant_read_chats);
+        let loaded = parse(&custom_with("assistantReadChats", None)).unwrap();
+        assert!(!loaded.assistant_read_chats);
+        assert!(parse(&custom_with("assistantReadChats", Some(serde_json::json!(true)))).unwrap().assistant_read_chats);
+        let (dir, file) = scratch("read-chats");
+        std::fs::write(&file, custom_with("assistantReadChats", Some(serde_json::json!(1)))).unwrap();
+        assert!(!load_from(&file).assistant_read_chats);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1008,6 +1027,7 @@ mod tests {
                 "phoneRelayUrl",
                 "voiceModel",
                 "assistantAutoRun",
+                "assistantReadChats",
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);

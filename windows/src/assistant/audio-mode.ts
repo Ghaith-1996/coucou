@@ -278,8 +278,13 @@ async function converse(at: number, text: string) {
   }
   if (at !== turn) return;
   if (answer == null) {
-    // Stopped or failed: the chat says why; back to listening.
-    await listen(at);
+    // A failed later round may already have streamed speech. Retire the turn
+    // before stopping playback, so a pending synthesis (or its error) cannot
+    // cross into the next capture. The chat already explains the failure.
+    const next = ++turn;
+    replyDone = true;
+    clearPlayback();
+    await listen(next);
     return;
   }
   replyText = answer;
@@ -329,6 +334,7 @@ async function speak(at: number) {
       if (at !== turn || !audio) return;
       next = queue.length ? fetch(queue.shift()!) : null;
       set("speaking");
+      if (at !== turn) return; // A state subscriber may synchronously stop us.
       await player.play(audio);
     }
   } catch {

@@ -40,6 +40,13 @@ const root = document.getElementById("settings-root")!;
 
 // One listener for the Settings window, even when language changes rebuild it.
 window.addEventListener("focus", refreshMemorySection);
+if (IS_WINDOWS) {
+  // A remember write can finish after focus already read the old store.
+  // Refresh again after installation too, closing any initial snapshot gap.
+  void onEvent("memory-changed", refreshMemorySection)
+    .then(refreshMemorySection)
+    .catch((error) => console.warn("[coucou] memory change listener failed", error));
+}
 
 async function save() {
   await Bridge.saveSettings(settings);

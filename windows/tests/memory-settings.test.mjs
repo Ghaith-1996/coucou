@@ -2,7 +2,8 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { installFakeDom } from "./fakedom.mjs";
-import { calls, sent, internals } from "./tauri.mjs";
+import { calls, sent, internals, emit } from "./tauri.mjs";
+import { onEvent } from "../src/core/bridge.ts";
 import { memorySection, refreshMemorySection } from "../src/settings/memory.ts";
 import { LANGUAGE_CODES, setLanguage, t as translate } from "../src/i18n/i18n.ts";
 
@@ -1401,5 +1402,209 @@ for (const update of ["refresh", "save", "toggle"]) {
     assert.equal(editField(section), field);
     assert.equal(field.value, "Composing current draft");
     assert.match(section.textContent, /New chat fact/, "the retained authoritative state is drawn after composition ends");
+  });
+}
+
+// Execute the page's actual registration through the real event bridge. This
+// avoids booting unrelated Settings sections while still testing its promise
+// ordering, rejection handling and the event delivered by Tauri's test fixture.
+function settingsMemoryEvents() {
+  const source = readFileSync(new URL("../src/settings/main.ts", import.meta.url), "utf8");
+  const registrations = source.match(/void onEvent\("memory-changed", refreshMemorySection\)[\s\S]*?;\n/g) ?? [];
+  assert.equal(registrations.length, 1, "one page-level subscription, not one per section/render");
+  assert.ok(source.indexOf(registrations[0]) < source.indexOf("async function main()"));
+  return new Function("onEvent", "refreshMemorySection", registrations[0].replace(/^void /, "return "))(onEvent, refreshMemorySection);
+}
+
+test("post-save memory-changed reveals a chat fact when focus read before remember persistence", async t => {
+  let stored = state([]);
+  answering(t, { memory_list: () => stored });
+  const section = memorySection();
+  await settle();
+  await settingsMemoryEvents();
+  await settle();
+  const focus = settingsFocus();
+  focus();
+  await settle();
+  assert.equal(section.find(".memory-item").length, 0, "focus happened while the native write was still pending");
+  stored = state([item("chat", "Confirmed after focus", "chat")]);
+  emit("memory-changed", null);
+  await settle();
+  assert.match(section.textContent, /Confirmed after focus/);
+  assert.equal(section.find(".memory-badge")[0].textContent, "From the chat");
+});
+
+test("listener installation refreshes an initial snapshot taken before a missed save notification", async t => {
+  const installed = deferred();
+  let stored = state([]);
+  answering(t, { memory_list: () => stored });
+  const invoke = internals.invoke;
+  let registrations = 0;
+  t.mock.method(internals, "invoke", async (command, args) => {
+    if (command === "plugin:event|listen" && args.event === "memory-changed") {
+      registrations++;
+      await installed.promise;
+    }
+    return invoke(command, args);
+  });
+  const section = memorySection();
+  const registering = settingsMemoryEvents();
+  await settle();
+  assert.equal(sent("memory_list").length, 1);
+  stored = state([item("chat", "Saved before listener installation", "chat")]);
+  // This native notification is intentionally absent: no listener was ready.
+  installed.resolve();
+  await registering;
+  await settle();
+  assert.equal(registrations, 1);
+  assert.equal(sent("memory_list").length, 2);
+  assert.match(section.textContent, /Saved before listener installation/);
+});
+
+test("memory event registration rejection is handled and focus remains a working fallback", async t => {
+  let stored = state([]);
+  answering(t, { memory_list: () => stored });
+  const invoke = internals.invoke;
+  t.mock.method(internals, "invoke", async (command, args) => {
+    if (command === "plugin:event|listen" && args.event === "memory-changed") throw new Error("listener unavailable");
+    return invoke(command, args);
+  });
+  const warnings = [];
+  t.mock.method(console, "warn", (...args) => warnings.push(args));
+  const section = memorySection();
+  await settle();
+  await assert.doesNotReject(settingsMemoryEvents());
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0].join(" "), /listener unavailable/);
+  stored = state([item("chat", "Visible through focus fallback", "chat")]);
+  settingsFocus()();
+  await settle();
+  assert.match(section.textContent, /Visible through focus fallback/);
+});
+
+test("duplicate memory events during an older read coalesce and discard its stale snapshot", async t => {
+  const pending = deferred();
+  let nextRead = null;
+  let stored = state([]);
+  answering(t, { memory_list: () => {
+    const read = nextRead;
+    nextRead = null;
+    return read ?? stored;
+  } });
+  const section = memorySection();
+  await settle();
+  await settingsMemoryEvents();
+  await settle();
+  const baseline = sent("memory_list").length;
+  nextRead = pending.promise;
+  settingsFocus()();
+  stored = state([item("chat", "Persisted after the old read", "chat")]);
+  emit("memory-changed", null);
+  emit("memory-changed", null);
+  emit("memory-changed", null);
+  assert.equal(sent("memory_list").length, baseline + 1, "the active read is not overlapped");
+  pending.resolve(state([item("stale", "Stale pre-save snapshot")]));
+  await settle();
+  assert.equal(sent("memory_list").length, baseline + 2, "duplicate events request only one later snapshot");
+  assert.doesNotMatch(section.textContent, /Stale pre-save snapshot/);
+  assert.match(section.textContent, /Persisted after the old read/);
+});
+
+test("memory-changed during a local write waits for it and preserves the next Add draft", async t => {
+  const pending = deferred();
+  let stored = state([]);
+  answering(t, { memory_list: () => stored, memory_add: pending.promise });
+  const section = memorySection();
+  await settle();
+  await settingsMemoryEvents();
+  await settle();
+  const baseline = sent("memory_list").length;
+  const input = section.find("input")[0];
+  input.value = "Local submitted fact";
+  button(section, "Add").fire("click");
+  input.value = "Next Add draft";
+  stored = state([item("local", "Local submitted fact"), item("chat", "Confirmed in chat", "chat")]);
+  emit("memory-changed", null);
+  emit("memory-changed", null);
+  assert.equal(sent("memory_list").length, baseline);
+  pending.resolve(state([item("local", "Local submitted fact")]));
+  await settle();
+  assert.equal(sent("memory_list").length, baseline + 1);
+  assert.equal(input.value, "Next Add draft");
+  assert.match(section.textContent, /Local submitted fact/);
+  assert.match(section.textContent, /Confirmed in chat/);
+});
+
+test("memory-changed retains both drafts and never detaches a composing editor", async t => {
+  let stored = state([item("one", "Original")]);
+  answering(t, { memory_list: () => stored });
+  const section = memorySection();
+  await settle();
+  await settingsMemoryEvents();
+  await settle();
+  const input = section.find("input")[0];
+  input.value = "Next Add draft";
+  button(section, "Edit").fire("click");
+  const field = editField(section);
+  field.value = "Composing edit draft";
+  eventOn(field, "compositionstart");
+  const list = section.find(".memory-list")[0];
+  const remove = list.removeChild.bind(list);
+  let detached = 0;
+  t.mock.method(list, "removeChild", node => { detached++; return remove(node); });
+  stored = state([item("one", "Original"), item("chat", "Chat fact during composition", "chat")]);
+  emit("memory-changed", null);
+  await settle();
+  assert.equal(detached, 0);
+  assert.equal(input.value, "Next Add draft");
+  assert.equal(editField(section), field);
+  assert.equal(field.value, "Composing edit draft");
+  eventOn(field, "compositionend");
+  assert.match(section.textContent, /Chat fact during composition/);
+  assert.equal(input.value, "Next Add draft");
+  assert.equal(field.value, "Composing edit draft");
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`section replacement retains one memory listener and ignores its old read ${outcome}`, async t => {
+    const pending = deferred();
+    let nextRead = null;
+    let stored = state([item("old", "Old section")]);
+    answering(t, { memory_list: () => {
+      const read = nextRead;
+      nextRead = null;
+      return read ?? stored;
+    } });
+    const invoke = internals.invoke;
+    let registrations = 0;
+    t.mock.method(internals, "invoke", (command, args) => {
+      if (command === "plugin:event|listen" && args.event === "memory-changed") registrations++;
+      return invoke(command, args);
+    });
+    memorySection();
+    await settle();
+    await settingsMemoryEvents();
+    await settle();
+    nextRead = pending.promise;
+    emit("memory-changed", null);
+    emit("memory-changed", null);
+    stored = state([item("new", "Replacement section")]);
+    const section = memorySection();
+    await settle();
+    const baseline = sent("memory_list").length;
+    section.find("input")[0].value = "Replacement draft";
+    if (outcome === "success") pending.resolve(state([item("old", "Late old read")]));
+    else pending.reject(new Error("late old read error"));
+    await settle();
+    assert.equal(sent("memory_list").length, baseline, "retired queued reads do not run");
+    assert.match(section.textContent, /Replacement section/);
+    assert.doesNotMatch(section.textContent, /Late old read|late old read error/);
+    stored = state([item("chat", "Newest chat fact", "chat")]);
+    emit("memory-changed", null);
+    await settle();
+    assert.equal(registrations, 1);
+    assert.equal(sent("memory_list").length, baseline + 1);
+    assert.equal(section.find("input")[0].value, "Replacement draft");
+    assert.match(section.textContent, /Newest chat fact/);
   });
 }

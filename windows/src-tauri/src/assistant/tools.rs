@@ -475,7 +475,12 @@ async fn remember(app: &AppHandle, args: RememberArgs, intent: &str, request_id:
     };
     log(format!("assistant action {action_id} {:?}", receipt.outcome()));
     match saved {
-        Ok(_) => result("Saved to the user's memory."),
+        Ok(_) => {
+            // Persistence finished before this invalidation. A Settings focus
+            // read may have raced the save; send no memory text with the event.
+            let _ = app.emit_to("settings", "memory-changed", ());
+            result("Saved to the user's memory.")
+        }
         Err(why) => result(format!("Not saved: {why}")),
     }
 }

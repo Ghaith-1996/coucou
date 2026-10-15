@@ -4912,116 +4912,6 @@
    "ru": "Исходные вложения недоступны в этом чате. Перетащите файл ещё раз, чтобы начать с ним новый чат.",
    "id": "Lampiran asli tidak tersedia dalam percakapan ini. Jatuhkan file lagi untuk memulai percakapan baru dengannya."
   },
-  "Audio mode: talk with the chat": {
-   "zh-Hans": "语音模式：与聊天对话",
-   "hi": "ऑडियो मोड: चैट से बात करें",
-   "es": "Modo de voz: habla con el chat",
-   "ar": "الوضع الصوتي: تحدّث مع الدردشة",
-   "fr": "Mode audio : parler avec le chat",
-   "bn": "অডিও মোড: চ্যাটের সাথে কথা বলুন",
-   "pt-BR": "Modo de áudio: converse com o chat",
-   "ru": "Голосовой режим: говорите с чатом",
-   "id": "Mode audio: bicara dengan obrolan"
-  },
-  "Thinking…": {
-   "zh-Hans": "思考中…",
-   "hi": "सोच रहा है…",
-   "es": "Pensando…",
-   "ar": "يفكّر…",
-   "fr": "Réflexion…",
-   "bn": "ভাবছে…",
-   "pt-BR": "Pensando…",
-   "ru": "Думаю…",
-   "id": "Berpikir…"
-  },
-  "Speaking — tap to interrupt": {
-   "zh-Hans": "正在说话 — 点按可打断",
-   "hi": "बोल रहा है — रोकने के लिए टैप करें",
-   "es": "Hablando — toca para interrumpir",
-   "ar": "يتحدث — انقر للمقاطعة",
-   "fr": "Parle — touchez pour interrompre",
-   "bn": "বলছে — থামাতে ট্যাপ করুন",
-   "pt-BR": "Falando — toque para interromper",
-   "ru": "Говорю — нажмите, чтобы прервать",
-   "id": "Berbicara — ketuk untuk menyela"
-  },
-  "End": {
-   "zh-Hans": "结束",
-   "hi": "समाप्त",
-   "es": "Terminar",
-   "ar": "إنهاء",
-   "fr": "Terminer",
-   "bn": "শেষ",
-   "pt-BR": "Encerrar",
-   "ru": "Завершить",
-   "id": "Akhiri"
-  },
-  "Audio mode ended: nothing was heard.": {
-   "zh-Hans": "语音模式已结束：没有听到任何声音。",
-   "hi": "ऑडियो मोड बंद हुआ: कुछ सुनाई नहीं दिया।",
-   "es": "Modo de voz terminado: no se oyó nada.",
-   "ar": "انتهى الوضع الصوتي: لم يُسمع شيء.",
-   "fr": "Mode audio terminé : rien n'a été entendu.",
-   "bn": "অডিও মোড শেষ: কিছুই শোনা যায়নি।",
-   "pt-BR": "Modo de áudio encerrado: nada foi ouvido.",
-   "ru": "Голосовой режим завершён: ничего не было слышно.",
-   "id": "Mode audio berakhir: tidak ada yang terdengar."
-  },
-  "Switch to this tab?": {
-   "zh-Hans": "切换到这个标签页？",
-   "hi": "इस टैब पर जाएँ?",
-   "es": "¿Cambiar a esta pestaña?",
-   "ar": "التبديل إلى علامة التبويب هذه؟",
-   "fr": "Passer à cet onglet ?",
-   "bn": "এই ট্যাবে যাবেন?",
-   "pt-BR": "Mudar para esta aba?",
-   "ru": "Переключиться на эту вкладку?",
-   "id": "Beralih ke tab ini?"
-  },
-  "Open this app?": {
-   "zh-Hans": "打开这个应用？",
-   "hi": "यह ऐप खोलें?",
-   "es": "¿Abrir esta app?",
-   "ar": "فتح هذا التطبيق؟",
-   "fr": "Ouvrir cette app ?",
-   "bn": "এই অ্যাপটি খুলবেন?",
-   "pt-BR": "Abrir este app?",
-   "ru": "Открыть это приложение?",
-   "id": "Buka aplikasi ini?"
-  },
-  "Do it": {
-   "zh-Hans": "执行",
-   "hi": "करें",
-   "es": "Hacerlo",
-   "ar": "نفّذ",
-   "fr": "Faire",
-   "bn": "করুন",
-   "pt-BR": "Fazer",
-   "ru": "Сделать",
-   "id": "Lakukan"
-  },
-  "No": {
-   "zh-Hans": "不",
-   "hi": "नहीं",
-   "es": "No",
-   "ar": "لا",
-   "fr": "Non",
-   "bn": "না",
-   "pt-BR": "Não",
-   "ru": "Нет",
-   "id": "Tidak"
-  },
-  "Looked at your browser tabs": {
-   "zh-Hans": "查看了你的浏览器标签页",
-   "hi": "आपके ब्राउज़र टैब देखे",
-   "es": "Miró tus pestañas del navegador",
-   "ar": "اطّلع على علامات تبويب متصفحك",
-   "fr": "A regardé vos onglets du navigateur",
-   "bn": "আপনার ব্রাউজারের ট্যাবগুলো দেখেছে",
-   "pt-BR": "Olhou as abas do seu navegador",
-   "ru": "Посмотрел вкладки вашего браузера",
-   "id": "Melihat tab peramban Anda"
-  },
   "Sending with another provider can discard attachments, even on failure or Stop. Switching back won't restore them. Drop the file again for a new chat.": {
    "zh-Hans": "向其他服务商发送消息可能丢失附件，即使请求失败或被停止。切换回来也无法恢复。请再次拖入文件以开始新对话。",
    "hi": "दूसरे प्रदाता को संदेश भेजने से अटैचमेंट हट सकते हैं, भले ही अनुरोध विफल हो या रोक दिया जाए। वापस बदलने से वे बहाल नहीं होंगे। नई चैट के लिए फ़ाइल फिर से ड्रॉप करें।",
@@ -5175,6 +5065,116 @@
    "pt-BR": "Outra operação do ChatGPT está em andamento. Tente novamente.",
    "ru": "Выполняется другая операция ChatGPT. Повторите попытку.",
    "id": "Operasi ChatGPT lain sedang berlangsung. Coba lagi."
+  },
+  "Audio mode: talk with the chat": {
+   "zh-Hans": "语音模式：与聊天对话",
+   "hi": "ऑडियो मोड: चैट से बात करें",
+   "es": "Modo de voz: habla con el chat",
+   "ar": "الوضع الصوتي: تحدّث مع الدردشة",
+   "fr": "Mode audio : parler avec le chat",
+   "bn": "অডিও মোড: চ্যাটের সাথে কথা বলুন",
+   "pt-BR": "Modo de áudio: converse com o chat",
+   "ru": "Голосовой режим: говорите с чатом",
+   "id": "Mode audio: bicara dengan obrolan"
+  },
+  "Thinking…": {
+   "zh-Hans": "思考中…",
+   "hi": "सोच रहा है…",
+   "es": "Pensando…",
+   "ar": "يفكّر…",
+   "fr": "Réflexion…",
+   "bn": "ভাবছে…",
+   "pt-BR": "Pensando…",
+   "ru": "Думаю…",
+   "id": "Berpikir…"
+  },
+  "Speaking — tap to interrupt": {
+   "zh-Hans": "正在说话 — 点按可打断",
+   "hi": "बोल रहा है — रोकने के लिए टैप करें",
+   "es": "Hablando — toca para interrumpir",
+   "ar": "يتحدث — انقر للمقاطعة",
+   "fr": "Parle — touchez pour interrompre",
+   "bn": "বলছে — থামাতে ট্যাপ করুন",
+   "pt-BR": "Falando — toque para interromper",
+   "ru": "Говорю — нажмите, чтобы прервать",
+   "id": "Berbicara — ketuk untuk menyela"
+  },
+  "End": {
+   "zh-Hans": "结束",
+   "hi": "समाप्त",
+   "es": "Terminar",
+   "ar": "إنهاء",
+   "fr": "Terminer",
+   "bn": "শেষ",
+   "pt-BR": "Encerrar",
+   "ru": "Завершить",
+   "id": "Akhiri"
+  },
+  "Audio mode ended: nothing was heard.": {
+   "zh-Hans": "语音模式已结束：没有听到任何声音。",
+   "hi": "ऑडियो मोड बंद हुआ: कुछ सुनाई नहीं दिया।",
+   "es": "Modo de voz terminado: no se oyó nada.",
+   "ar": "انتهى الوضع الصوتي: لم يُسمع شيء.",
+   "fr": "Mode audio terminé : rien n'a été entendu.",
+   "bn": "অডিও মোড শেষ: কিছুই শোনা যায়নি।",
+   "pt-BR": "Modo de áudio encerrado: nada foi ouvido.",
+   "ru": "Голосовой режим завершён: ничего не было слышно.",
+   "id": "Mode audio berakhir: tidak ada yang terdengar."
+  },
+  "Switch to this tab?": {
+   "zh-Hans": "切换到这个标签页？",
+   "hi": "इस टैब पर जाएँ?",
+   "es": "¿Cambiar a esta pestaña?",
+   "ar": "التبديل إلى علامة التبويب هذه؟",
+   "fr": "Passer à cet onglet ?",
+   "bn": "এই ট্যাবে যাবেন?",
+   "pt-BR": "Mudar para esta aba?",
+   "ru": "Переключиться на эту вкладку?",
+   "id": "Beralih ke tab ini?"
+  },
+  "Open this app?": {
+   "zh-Hans": "打开这个应用？",
+   "hi": "यह ऐप खोलें?",
+   "es": "¿Abrir esta app?",
+   "ar": "فتح هذا التطبيق؟",
+   "fr": "Ouvrir cette app ?",
+   "bn": "এই অ্যাপটি খুলবেন?",
+   "pt-BR": "Abrir este app?",
+   "ru": "Открыть это приложение?",
+   "id": "Buka aplikasi ini?"
+  },
+  "Do it": {
+   "zh-Hans": "执行",
+   "hi": "करें",
+   "es": "Hacerlo",
+   "ar": "نفّذ",
+   "fr": "Faire",
+   "bn": "করুন",
+   "pt-BR": "Fazer",
+   "ru": "Сделать",
+   "id": "Lakukan"
+  },
+  "No": {
+   "zh-Hans": "不",
+   "hi": "नहीं",
+   "es": "No",
+   "ar": "لا",
+   "fr": "Non",
+   "bn": "না",
+   "pt-BR": "Não",
+   "ru": "Нет",
+   "id": "Tidak"
+  },
+  "Looked at your browser tabs": {
+   "zh-Hans": "查看了你的浏览器标签页",
+   "hi": "आपके ब्राउज़र टैब देखे",
+   "es": "Miró tus pestañas del navegador",
+   "ar": "اطّلع على علامات تبويب متصفحك",
+   "fr": "A regardé vos onglets du navigateur",
+   "bn": "আপনার ব্রাউজারের ট্যাবগুলো দেখেছে",
+   "pt-BR": "Olhou as abas do seu navegador",
+   "ru": "Посмотрел вкладки вашего браузера",
+   "id": "Melihat tab peramban Anda"
   },
   "Memory": {
    "zh-Hans": "记忆",

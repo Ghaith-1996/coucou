@@ -18,7 +18,7 @@ import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { VOICE_EVENT, parseVoiceEvent, type VoiceEvent } from "./contracts";
-import { nextChunk } from "./speakable";
+import { nextChunk, speechChunks } from "./speakable";
 import { Voice } from "./voice";
 
 export type AudioState = "off" | "listening" | "transcribing" | "thinking" | "speaking";
@@ -325,7 +325,9 @@ async function converse(at: number, text: string) {
 /** Queues every complete chunk of the reply so far, and starts speaking. */
 function enqueue(at: number) {
   for (let c = nextChunk(replyText, queuedTo, replyDone); c; c = nextChunk(replyText, queuedTo, replyDone)) {
-    queue.push(c.text);
+    // Both providers truncate oversized input. Queue every bounded piece
+    // before advancing the raw-markdown cursor, so no spoken tail is lost.
+    queue.push(...speechChunks(c.text));
     queuedTo = c.end;
   }
   if (!speaking && queue.length) {

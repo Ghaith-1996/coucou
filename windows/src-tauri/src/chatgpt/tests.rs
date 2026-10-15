@@ -1991,13 +1991,83 @@ fn a_busy_native_account_operation_rejects_sign_in_without_queuing() {
 
 #[test]
 fn speech_refusals_belong_to_one_account_session() {
+    let now = Instant::now();
     let original = RequestAccount { client_id: "oaiapp_original".into(), generation: 7 };
     let other = RequestAccount { client_id: "oaiapp_other".into(), generation: 7 };
     let reconnected = RequestAccount { client_id: original.client_id.clone(), generation: 8 };
-    assert!(check_speech_session(&original, 7, None).is_ok());
-    assert!(check_speech_session(&original, 7, Some(&original)).is_err());
-    assert!(check_speech_session(&other, 7, Some(&original)).is_ok());
-    assert!(check_speech_session(&reconnected, 8, Some(&original)).is_ok());
-    assert!(check_speech_session(&original, 8, None).is_err(), "a late speech request must not follow a reconnect");
-    assert!(check_speech_session(&original, 8, Some(&reconnected)).is_err(), "stale requests cannot publish into the new session");
+    let refusal = SpeechFailure { account: original.clone(), retry_after: None };
+    let new_refusal = SpeechFailure { account: reconnected.clone(), retry_after: None };
+    assert!(check_speech_session(&original, 7, None, now).is_ok());
+    assert!(check_speech_session(&original, 7, Some(&refusal), now).is_err());
+    assert!(check_speech_session(&original, 7, Some(&refusal), now + SPEECH_RETRY_DELAY).is_err(), "HTTP refusals last for the session");
+    assert!(check_speech_session(&other, 7, Some(&refusal), now).is_ok());
+    assert!(check_speech_session(&reconnected, 8, Some(&refusal), now).is_ok());
+    assert!(check_speech_session(&original, 8, None, now).is_err(), "a late speech request must not follow a reconnect");
+    assert!(check_speech_session(&original, 8, Some(&new_refusal), now).is_err(), "stale requests cannot publish into the new session");
+}
+
+#[test]
+fn speech_transport_failures_skip_later_chunks_until_the_cooldown_expires() {
+    let now = Instant::now();
+    let request = RequestAccount { client_id: "oaiapp_original".into(), generation: 7 };
+    let mut refused = None;
+    let mut sends = 0;
+    for seconds in 0..=60 {
+        let at = now + Duration::from_secs(seconds);
+        // The same gate used by both speech_available() and speak(): later
+        // chunks use Windows immediately, without starting another request.
+        if check_speech_session(&request, 7, refused.as_ref(), at).is_ok() {
+            sends += 1;
+            assert!(speech_transport_result(&request, 7, Err::<(), _>("offline"), &mut refused, at).is_err());
+        }
+        assert_eq!(sends, if seconds < 60 { 1 } else { 2 }, "chunk at {seconds}s");
+    }
+    assert_eq!(refused.as_ref().unwrap().retry_after, Some(now + SPEECH_RETRY_DELAY * 2));
+    assert_eq!(SPEECH_TIMEOUT, Duration::from_secs(5), "the first probe must also fall back quickly");
+}
+
+#[test]
+fn speech_transport_cooldowns_do_not_follow_reconnects_or_account_switches() {
+    let now = Instant::now();
+    let original = RequestAccount { client_id: "oaiapp_original".into(), generation: 7 };
+    let other = RequestAccount { client_id: "oaiapp_other".into(), generation: 7 };
+    let reconnected = RequestAccount { client_id: original.client_id.clone(), generation: 8 };
+    let mut refused = None;
+    assert!(speech_transport_result(&original, 7, Err::<(), _>("timeout"), &mut refused, now).is_err());
+    assert!(check_speech_session(&original, 7, refused.as_ref(), now).is_err());
+    assert!(check_speech_session(&other, 7, refused.as_ref(), now).is_ok());
+    assert!(check_speech_session(&reconnected, 8, refused.as_ref(), now).is_ok());
+    assert!(check_speech_session(&original, 8, refused.as_ref(), now + SPEECH_RETRY_DELAY).is_err(), "expiry cannot revive a stale request");
+}
+
+#[test]
+fn stale_speech_transport_completions_cannot_affect_a_new_session() {
+    let now = Instant::now();
+    let original = RequestAccount { client_id: "oaiapp_original".into(), generation: 7 };
+    let reconnected = RequestAccount { client_id: original.client_id.clone(), generation: 8 };
+    let new_failure = SpeechFailure { account: reconnected, retry_after: Some(now + SPEECH_RETRY_DELAY) };
+    for initial in [None, Some(new_failure)] {
+        let mut refused = initial.clone();
+        assert!(speech_transport_result(&original, 8, Err::<(), _>("late timeout"), &mut refused, now).is_err());
+        assert_eq!(refused, initial, "a stale failure neither creates nor replaces a cooldown");
+        assert!(speech_transport_result(&original, 8, Ok::<_, ()>(vec![1, 2, 3]), &mut refused, now).is_err());
+        assert_eq!(refused, initial, "a stale success cannot publish audio or change the cache");
+    }
+}
+
+#[test]
+fn speech_body_failures_share_the_cooldown_without_shortening_http_refusals() {
+    let now = Instant::now();
+    let request = RequestAccount { client_id: "oaiapp_original".into(), generation: 7 };
+    let mut refused = None;
+    assert_eq!(speech_transport_result(&request, 7, Ok::<_, ()>(vec![1, 2, 3]), &mut refused, now).unwrap(), vec![1, 2, 3]);
+    assert_eq!(refused, None, "a successful response does not disable speech");
+    assert!(speech_transport_result(&request, 7, Err::<Vec<u8>, _>("body interrupted"), &mut refused, now).is_err());
+    assert!(check_speech_session(&request, 7, refused.as_ref(), now).is_err());
+    refused = Some(SpeechFailure { account: request.clone(), retry_after: None });
+    let permanent = refused.clone();
+    assert!(speech_transport_result(&request, 7, Err::<(), _>("late transport failure"), &mut refused, now).is_err());
+    assert_eq!(refused, permanent, "a concurrent transport failure must not shorten a session refusal");
+    assert!(speech_transport_result(&request, 7, Ok::<_, ()>(()), &mut refused, now).is_ok());
+    assert_eq!(refused, permanent, "a concurrent success must not clear a session refusal");
 }

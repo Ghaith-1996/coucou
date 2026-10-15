@@ -29,6 +29,7 @@
 // chat instead.
 
 import { Bridge, onEvent } from "../core/bridge";
+import { AudioMode } from "./audio-mode";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { HOST_OS, availablePills, sanitizeDeclared } from "../core/pills";
@@ -71,6 +72,8 @@ let pinnedByVoice = false;
 let userPinned = false;
 /** Only events belonging to a capture this page started may change its card. */
 let captureId: string | null = null;
+/** Cancel requests return before the native microphone closes. */
+let releasing: string | null = null;
 /** Rust may emit before the command reply identifies the new capture. */
 let starting: {
   events: Map<string, VoiceEvent>;
@@ -105,6 +108,11 @@ export const Voice = {
   copyFailed: false,
   /** A pending Use must not race a Copy check or an insertion. */
   using: false,
+
+  /** Includes native startup and cancellation until microphone release. */
+  get busy(): boolean {
+    return starting !== null || releasing !== null || this.active;
+  },
 
   get active(): boolean {
     const s = this.event?.state;
@@ -154,6 +162,7 @@ export async function voiceShortcut() {
     Sound.play("error");
     return;
   }
+  if (AudioMode.busy || releasing) return;
   if (starting) {
     starting.stop = true;
     return;
@@ -171,23 +180,25 @@ export async function voiceShortcut() {
     view: State.view, mode: State.mode,
   };
   starting = pending;
-  let id: string | null;
-  try {
-    id = await Bridge.voiceToggle();
-  } finally {
-    starting = null;
+  const id = await Bridge.voiceToggle();
+  if (starting !== pending) return;
+  starting = null;
+  const event = id ? pending.events.get(id) : undefined;
+  if (!id) {
+    State.notify();
+    return;
   }
-  if (!id) return;
   // A waiting agent or Cancel may have taken priority while Rust was opening
   // the microphone. Retire this capture without ever showing its card.
   if (pending.cancelled || waitingCard()) {
-    void Bridge.voiceCancel(id);
+    cancelCapture(id, event);
+    State.notify();
     return;
   }
   captureId = id;
   // Keep the newest real state, especially an immediate error or idle. Only
   // synthesize listening when Rust has not sent an event for this capture.
-  accept(pending.events.get(id) ?? { v: CONTRACT_VERSION, captureId: id, state: "listening", level: 0, elapsedMs: 0 });
+  accept(event ?? { v: CONTRACT_VERSION, captureId: id, state: "listening", level: 0, elapsedMs: 0 });
   if (pending.stop && Voice.event?.state === "listening") void Bridge.voiceStop(id);
 }
 
@@ -204,8 +215,15 @@ export function voiceCancel() {
     end();
     return;
   }
-  void Bridge.voiceCancel(current.captureId);
+  cancelCapture(current.captureId);
   end(!waitingCard());
+}
+
+/** Reserve cancellation until native idle/error confirms the microphone closed. */
+function cancelCapture(id: string, event?: VoiceEvent) {
+  if (event?.state === "idle" || event?.state === "error") return;
+  releasing = id;
+  void Bridge.voiceCancel(id);
 }
 
 /** Use: Rust's policy turns the transcript into a chat draft; the chat opens with it. */
@@ -463,10 +481,18 @@ function unpin() {
 }
 
 function accept(event: VoiceEvent) {
+  if (event.captureId === releasing) {
+    if (event.state === "idle" || event.state === "error") {
+      releasing = null;
+      State.notify();
+    }
+    return;
+  }
   if (starting) {
-    // Idle retires this capture. An interruption can emit it before a
-    // previously queued processing/listening event reaches the page.
-    if (starting.events.get(event.captureId)?.state !== "idle") {
+    // Release events retire this capture even if a previously queued preview
+    // or level reaches the page later, including during cancelled startup.
+    const prior = starting.events.get(event.captureId)?.state;
+    if (prior !== "idle" && (event.state === "idle" || event.state === "error" || (prior !== "error" && prior !== "preview"))) {
       starting.events.set(event.captureId, event);
     }
     return;
@@ -571,6 +597,7 @@ export function resetVoiceForTests() {
   pinnedByVoice = false;
   userPinned = false;
   starting = null;
+  releasing = null;
   host = null;
 }
 

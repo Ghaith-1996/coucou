@@ -397,9 +397,87 @@ fn assert_buffered_capture_cancelled(actions: impl FnOnce(&Voice, &str)) {
 
 fn press_stop(voice: &Voice, id: &str, toggle: bool) {
     if toggle {
-        assert_eq!(voice.toggle().as_deref(), Some(id));
+        // A concurrent cancellation may already be closing this capture.
+        if let Some(stopped) = voice.toggle() {
+            assert_eq!(stopped, id);
+        }
     } else {
         voice.stop(id);
+    }
+}
+
+#[test]
+fn cancelled_audio_is_not_claimed_by_a_new_audio_or_dictation_start() {
+    for hands_free in [true, false] {
+        let (tx, events) = mpsc::channel();
+        let (buffered_tx, buffered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let transcribed = Arc::new(AtomicBool::new(false));
+        let mic = SimMic::new(RATE, vec![Chunk::Tone(400, 0.3), Chunk::Tone(400, 0.3)]);
+        let gated = GatedMic { mic: mic.clone(), buffered: Mutex::new(buffered_tx), resume: Arc::new(Mutex::new(resume_rx)) };
+        let h = Harness { voice: Voice::new(Recorder(Mutex::new(tx)), gated, RecordingStt(transcribed.clone()), log), events, mic };
+        let start = || if hands_free { h.voice.listen_hands_free() } else { h.voice.toggle() };
+
+        let first = h.voice.listen_hands_free().unwrap();
+        assert_eq!(h.wait(VoiceState::Listening).capture_id, first);
+        buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        h.voice.cancel(&first);
+        // Cancellation has returned, but the blocked read still owns the mic.
+        assert_eq!(h.mic_open(), 1);
+        assert_eq!(start(), None, "a pending cancel cannot supply a new capture id");
+        h.voice.stop(&first);
+        assert!(matches!(&*h.voice.0.phase.lock().unwrap(),
+            Phase::Listening { id, signal } if id == &first && signal.load(Ordering::SeqCst) == CANCEL));
+        assert!(!transcribed.load(Ordering::SeqCst));
+        resume_tx.send(()).unwrap();
+        assert_eq!(h.wait(VoiceState::Idle).capture_id, first);
+        assert_eq!(h.mic_open(), 0, "idle acknowledges that the microphone has closed");
+        assert_eq!(h.voice.use_transcript(&first), Err(ErrorCode::Expired));
+
+        let second = start().unwrap();
+        assert_ne!(second, first, "the next mode receives a fresh capture");
+        assert_eq!(h.wait(VoiceState::Listening).capture_id, second);
+        buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        h.voice.cancel(&first);
+        h.voice.stop(&first);
+        assert!(matches!(&*h.voice.0.phase.lock().unwrap(),
+            Phase::Listening { id, signal } if id == &second && signal.load(Ordering::SeqCst) == RUN));
+        assert_eq!(h.mic_open(), 1);
+        h.voice.cancel(&second);
+        resume_tx.send(()).unwrap();
+        assert_eq!(h.wait(VoiceState::Idle).capture_id, second);
+        assert_eq!(h.mic_open(), 0);
+        assert!(!transcribed.load(Ordering::SeqCst), "neither cancelled capture is transcribed");
+    }
+}
+
+#[test]
+fn stopped_audio_is_not_claimed_by_a_new_audio_or_dictation_start() {
+    for hands_free in [true, false] {
+        let (tx, events) = mpsc::channel();
+        let (buffered_tx, buffered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let transcribed = Arc::new(AtomicBool::new(false));
+        let mic = SimMic::new(RATE, vec![Chunk::Tone(400, 0.3)]);
+        let gated = GatedMic { mic: mic.clone(), buffered: Mutex::new(buffered_tx), resume: Arc::new(Mutex::new(resume_rx)) };
+        let h = Harness { voice: Voice::new(Recorder(Mutex::new(tx)), gated, RecordingStt(transcribed.clone()), log), events, mic };
+        let first = h.voice.listen_hands_free().unwrap();
+        h.wait(VoiceState::Listening);
+        buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(h.voice.toggle().as_deref(), Some(first.as_str()), "a live capture still toggles to stop");
+        let next = if hands_free { h.voice.listen_hands_free() } else { h.voice.toggle() };
+        assert_eq!(next, None, "a pending stop cannot supply a new capture id");
+        assert!(matches!(&*h.voice.0.phase.lock().unwrap(),
+            Phase::Listening { id, signal } if id == &first && signal.load(Ordering::SeqCst) == STOP));
+        assert_eq!(h.mic_open(), 1);
+        assert!(!transcribed.load(Ordering::SeqCst));
+        resume_tx.send(()).unwrap();
+        assert_eq!(h.wait(VoiceState::Processing).capture_id, first);
+        assert_eq!(h.mic_open(), 0);
+        assert_eq!(h.wait(VoiceState::Preview).capture_id, first);
+        assert!(transcribed.load(Ordering::SeqCst), "refusing a new start does not cancel a stopped transcript");
+        h.voice.cancel(&first);
+        assert_eq!(h.wait(VoiceState::Idle).capture_id, first);
     }
 }
 
@@ -707,8 +785,86 @@ fn a_cough_is_not_a_turn_and_silence_ends_the_capture() {
 }
 
 #[test]
+fn moderate_speech_from_the_first_frame_ends_the_turn() {
+    for amplitude in [0.02, 0.05] {
+        let mut e = Endpoint::new(RATE);
+        assert_eq!(e.feed(&tone(600, amplitude)), None, "initial speech at {amplitude}");
+        assert_eq!(e.feed(&tone(1100, 0.002)), Some(Heard::Spoke), "speech at {amplitude} must not become the noise floor");
+    }
+}
+
+#[test]
+fn stationary_startup_noise_times_out_without_becoming_speech() {
+    for amplitude in [0.012, 0.02, 0.05, 0.1, 0.3] {
+        let mut e = Endpoint::new(RATE);
+        assert_eq!(e.feed(&tone(12_000, amplitude)), Some(Heard::Nothing),
+            "stationary startup noise at {amplitude} must not reach transcription");
+    }
+}
+
+#[test]
+fn slightly_varying_startup_noise_is_still_room_noise() {
+    let mut e = Endpoint::new(RATE);
+    for i in 0..239 {
+        let amplitude = if i % 2 == 0 { 0.019 } else { 0.021 };
+        assert_eq!(e.feed(&tone(50, amplitude)), None);
+    }
+    assert_eq!(e.feed(&tone(50, 0.02)), Some(Heard::Nothing));
+}
+
+#[test]
+fn stationary_startup_noise_ending_does_not_submit_a_turn() {
+    let mut e = Endpoint::new(RATE);
+    assert_eq!(e.feed(&tone(1500, 0.05)), None);
+    assert_eq!(e.feed(&tone(1100, 0.002)), None, "the fan stopping is not speech ending");
+    assert_eq!(e.feed(&tone(9400, 0.002)), Some(Heard::Nothing));
+}
+
+#[test]
+fn immediate_modulated_speech_is_not_calibrated_away() {
+    let mut e = Endpoint::new(RATE);
+    // Ordinary speech varies over syllables even when it begins immediately.
+    for _ in 0..5 {
+        for amplitude in [0.02, 0.05, 0.025, 0.04] {
+            assert_eq!(e.feed(&tone(100, amplitude)), None);
+        }
+    }
+    assert_eq!(e.feed(&tone(1100, 0.002)), Some(Heard::Spoke));
+}
+
+#[test]
+fn speech_after_stationary_startup_noise_can_still_end_the_turn() {
+    let mut e = Endpoint::new(RATE);
+    assert_eq!(e.feed(&tone(1500, 0.02)), None);
+    assert_eq!(e.feed(&tone(600, 0.08)), None);
+    assert_eq!(e.feed(&tone(1100, 0.02)), Some(Heard::Spoke));
+}
+
+#[test]
+fn isolated_short_noises_never_accumulate_into_a_turn() {
+    let mut e = Endpoint::new(RATE);
+    for _ in 0..3 {
+        assert_eq!(e.feed(&tone(150, 0.2)), None, "a short noise is not a turn");
+        assert_eq!(e.feed(&tone(1200, 0.001)), None, "a full endpoint pause discards tentative speech");
+    }
+    assert_eq!(e.feed(&tone(8000, 0.001)), Some(Heard::Nothing));
+}
+
+#[test]
+fn tentative_speech_resets_at_the_endpoint_pause_boundary() {
+    for pause in [1050, 1100] {
+        let mut e = Endpoint::new(RATE);
+        assert_eq!(e.feed(&tone(150, 0.2)), None);
+        assert_eq!(e.feed(&tone(pause, 0.001)), None);
+        assert_eq!(e.feed(&tone(150, 0.2)), None);
+        let expected = if pause < 1100 { Some(Heard::Spoke) } else { None };
+        assert_eq!(e.feed(&tone(1100, 0.001)), expected, "pause: {pause} ms");
+    }
+}
+
+#[test]
 fn speech_is_measured_against_the_room() {
-    // A noisy room (0.02) is not speech; talking well above it is.
+    // A steady noisy room is learned directly, without a quieter prelude.
     let mut e = Endpoint::new(RATE);
     assert_eq!(e.feed(&tone(1000, 0.02)), None);
     assert_eq!(e.feed(&tone(500, 0.2)), None);
@@ -746,6 +902,24 @@ fn a_hands_free_capture_with_nothing_said_ends_in_silence() {
     h.voice.listen_hands_free().unwrap();
     let error = h.wait(VoiceState::Error);
     assert_eq!(error.error, Some(VoiceError::Silence));
+}
+
+#[test]
+fn a_hands_free_capture_of_startup_noise_never_transcribes() {
+    for seconds in [13, 30] {
+        let h = harness(SimMic::new(RATE, vec![Chunk::Tone(RATE as usize * seconds, 0.02)]));
+        h.voice.listen_hands_free().unwrap();
+        loop {
+            let event = h.events.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!matches!(event.state, VoiceState::Processing | VoiceState::Preview),
+                "stationary noise must not be handed to a transcriber");
+            if event.state == VoiceState::Error {
+                assert_eq!(event.error, Some(VoiceError::Silence));
+                assert_eq!(h.mic_open(), 0);
+                break;
+            }
+        }
+    }
 }
 
 #[test]

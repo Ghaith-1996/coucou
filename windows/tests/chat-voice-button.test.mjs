@@ -242,6 +242,7 @@ test("a cancelled startup cannot reclaim a newer capture through late events", a
   assert.equal(mic().disabled, false);
   State.view = "prompt";
   answers.assistant_voice_toggle = "cap-new";
+  emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-old", state: "idle" });
   mic().fire("click");
   await flush();
   for (const state of ["listening", "preview", "idle"]) {

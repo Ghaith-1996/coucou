@@ -34,6 +34,28 @@ pub async fn open(action_id: String, app_id: String) -> Result<ActionReceipt, Er
     on_launch_thread(move || open_in_sta(&action_id, &app_id)).await
 }
 
+/// Hands a checked web address (policy::url_ok) to the default browser.
+/// Nothing tells which window or tab shows it, so a launch Windows accepted
+/// is `unknown`, never `succeeded`.
+pub async fn open_url(action_id: String, url: String) -> Result<ActionReceipt, ErrorCode> {
+    on_launch_thread(move || {
+        let file = HSTRING::from(url.as_str());
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
+            lpVerb: w!("open"),
+            lpFile: PCWSTR(file.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+        };
+        if unsafe { ShellExecuteExW(&mut info) }.is_err() {
+            return ActionReceipt::failed(&action_id, ErrorCode::Failed);
+        }
+        ActionReceipt::unknown(&action_id)
+    })
+    .await
+}
+
 async fn on_launch_thread(launch: impl FnOnce() -> ActionReceipt + Send + 'static) -> Result<ActionReceipt, ErrorCode> {
     let (send, recv) = tokio::sync::oneshot::channel();
     // Shell extensions may require STA. A reused async/blocking worker could

@@ -63,6 +63,8 @@ pub fn decide(action: &AssistantAction, now_ms: u64) -> Verdict {
         ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::AskRegion | ActionKind::SwitchTab => Decision::Ask,
         // The chat proposed it: the user sees exactly what is kept.
         ActionKind::MemorySave => Decision::Ask,
+        // Reaches the web: the user sees the address first.
+        ActionKind::OpenUrl => Decision::Ask,
     };
     Verdict { decision, error: None, args: Some(args) }
 }
@@ -97,6 +99,10 @@ pub fn validate(kind: ActionKind, args: &serde_json::Value) -> Option<ValidArgs>
             let a: MemorySaveArgs = serde_json::from_value(args).ok()?;
             (text_ok(&a.text, crate::memory::MAX_CHARS) && !a.text.contains(['\n', '\r'])).then_some(ValidArgs::MemorySave(a))?
         }
+        ActionKind::OpenUrl => {
+            let a: OpenUrlArgs = serde_json::from_value(args).ok()?;
+            url_ok(&a.url).then_some(ValidArgs::OpenUrl(a))?
+        }
         ActionKind::SwitchTab => {
             let a: SwitchTabArgs = serde_json::from_value(args).ok()?;
             let id_ok = (3..=16).contains(&a.tab_id.len())
@@ -123,6 +129,22 @@ fn text_ok(text: &str, max_chars: usize) -> bool {
     !text.trim().is_empty()
         && text.chars().count() <= max_chars
         && text.chars().all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+}
+
+/// Longest address `open-url` takes.
+pub const MAX_URL_CHARS: usize = 2048;
+
+/// An http(s) address the browser opens as a page: printable ASCII with
+/// no spaces or quotes, a host, and no user name or password (which would
+/// make "https://google.com@evil.example" look like Google on the card).
+pub fn url_ok(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else { return false };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    url.len() <= MAX_URL_CHARS
+        && url.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b'<' | b'>' | b'\\' | b'^' | b'`' | b'{' | b'|' | b'}'))
+        && !host.is_empty()
+        && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
+        && !host.starts_with(['.', '-', ':'])
 }
 
 /// A pill id as the catalog writes them: `integration_github`, `agent_claude-desktop`.

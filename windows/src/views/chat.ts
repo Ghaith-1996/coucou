@@ -50,6 +50,7 @@ const STRINGS = {
   switchTab: N_("Switch to this tab?"),
   openApp: N_("Open this app?"),
   remember: N_("Remember this?"),
+  openPage: N_("Open this page?"),
   doIt: N_("Do it"),
   no: N_("No"),
   lookedAtTabs: N_("Looked at your browser tabs"),
@@ -1275,6 +1276,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     for (const card of ChatActions.cards) {
       const question = card.kind === "switch-tab" ? STRINGS.switchTab
         : card.kind === "memory-save" ? STRINGS.remember
+        : card.kind === "open-url" ? STRINGS.openPage
         : STRINGS.openApp;
       actionSlot.append(h(
         "div",

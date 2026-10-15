@@ -5373,6 +5373,17 @@
    "pt-BR": "Quando ativada, ela vai com cada pergunta para o modelo com que você conversa, local ou on-line.",
    "ru": "Когда она включена, она отправляется с каждым вопросом модели, с которой вы общаетесь, — локальной или онлайн.",
    "id": "Saat aktif, memori dikirim bersama setiap pertanyaan ke model yang Anda ajak chat, lokal maupun online."
+  },
+  "Open this page?": {
+   "zh-Hans": "打开这个网页？",
+   "hi": "यह पेज खोलें?",
+   "es": "¿Abrir esta página?",
+   "ar": "فتح هذه الصفحة؟",
+   "fr": "Ouvrir cette page ?",
+   "bn": "এই পেজটি খুলবেন?",
+   "pt-BR": "Abrir esta página?",
+   "ru": "Открыть эту страницу?",
+   "id": "Buka halaman ini?"
   }
  }
 }

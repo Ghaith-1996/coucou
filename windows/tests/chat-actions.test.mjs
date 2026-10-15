@@ -86,3 +86,14 @@ test("a memory the chat proposes is a card like any other: nothing is saved befo
   await flush();
   assert.deepEqual(sent("chat_action_answer"), [{ actionId: "act-60", grant: null }]);
 });
+
+test("a web page card carries the site and the whole address, and opens nothing itself", async () => {
+  const url = "https://www.youtube.com/results?search_query=lofi+beats";
+  emit("chat-action", { ...card("act-70"), kind: "open-url", label: "www.youtube.com", detail: url });
+  assert.equal(ChatActions.cards[0].kind, "open-url");
+  assert.equal(ChatActions.cards[0].detail, url);
+  answerCard("act-70", true);
+  await flush();
+  assert.deepEqual(sent("chat_action_answer"), [{ actionId: "act-70", grant: { ...GRANT, actionId: "act-70" } }]);
+  assert.equal(calls.filter(([cmd]) => cmd !== "chat_action_answer").length, 0, "only the grant goes back");
+});

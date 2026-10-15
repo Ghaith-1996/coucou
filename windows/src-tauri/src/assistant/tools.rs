@@ -9,6 +9,8 @@
 //     policy says `ask`.
 //   * remember: a `memory-save` action, one line for the user's memory
 //     (memory.rs). The policy says `ask`.
+//   * open_web: an `open-url` action, an http(s) page or search in the
+//     default browser. The policy says `ask`.
 // "Ask" means the island shows a card in the chat with exactly what will
 // happen, and nothing runs until the user clicks it. Rust keeps the action;
 // the page only hands the grant back, and check_grant recomputes the binding.
@@ -81,6 +83,18 @@ pub fn definitions() -> Value {
             },
             {
                 "type": "function",
+                "name": "open_web",
+                "description": "Open a web page in the user's default browser. For a search, give the site's search address: Google https://www.google.com/search?q=..., YouTube https://www.youtube.com/results?search_query=... (words joined with +). The user sees the address and confirms it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "url": { "type": "string", "description": "An http or https address, without spaces." } },
+                    "required": ["url"],
+                    "additionalProperties": false
+                },
+                "strict": true
+            },
+            {
+                "type": "function",
                 "name": "open_app",
                 "description": "Open an app installed on the user's PC, by the name the Start menu shows (\"Calculator\", \"Spotify\", \"Visual Studio Code\"). The user is asked to confirm.",
                 "parameters": {
@@ -96,7 +110,7 @@ pub fn definitions() -> Value {
 }
 
 /// What the model is told about the tools, after the chat's own instructions.
-pub const INSTRUCTIONS: &str = "You can act on the user's Windows PC only through the coucou tools: list and switch browser tabs, open apps, and propose a fact for the user's memory. Every action is shown to the user, who confirms it; if they decline, say so in a few words. Never claim something happened unless the tool's result says it did. You cannot click, type, read pages or answer an agent's permission request.";
+pub const INSTRUCTIONS: &str = "You can act on the user's Windows PC only through the coucou tools: list and switch browser tabs, open web pages and searches in the default browser, open apps, and propose a fact for the user's memory. Every action is shown to the user, who confirms it; if they decline, say so in a few words. Never claim something happened unless the tool's result says it did. You cannot click, type, read pages, open files or folders, or answer an agent's permission request.";
 
 /// One call the model made.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,15 +143,33 @@ struct RememberArgs {
     text: String,
 }
 
+#[derive(Deserialize, Default)]
+struct WebArgs {
+    url: String,
+}
+
+/// The address as the card shows it: trimmed, spaces encoded (a model
+/// sometimes leaves "q=two words"). Anything else is the policy's to judge.
+fn web_address(url: &str) -> String {
+    url.trim().replace(' ', "+")
+}
+
+/// The site, shown large on the card above the full address.
+fn web_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
+}
+
 /// A card for the island: what will happen, and the grant that confirms it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
     pub action_id: String,
     pub kind: ActionKind,
-    /// The tab's title, or the app's name as Start shows it.
+    /// The tab's title, the app's name as Start shows it, the memory's text
+    /// or the web page's site.
     pub label: String,
-    /// The browser, or "app".
+    /// The browser, "app", "memory", or the page's full address.
     pub detail: String,
     pub grant: Grant,
 }
@@ -228,6 +260,7 @@ pub async fn run(app: &AppHandle, call: &ToolCall, intent: &str) -> String {
         "switch_browser_tab" => switch_tab(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
         "open_app" => open_app(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
         "remember" => remember(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
+        "open_web" => open_web(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
         _ => result("There is no such tool."),
     }
 }
@@ -344,6 +377,30 @@ async fn remember(app: &AppHandle, args: RememberArgs, intent: &str) -> String {
     }
 }
 
+async fn open_web(app: &AppHandle, args: WebArgs, intent: &str) -> String {
+    let url = web_address(&args.url);
+    if !policy::url_ok(&url) {
+        return result("That address can't be opened: only http or https web pages, without a user name or password.");
+    }
+    let Some((action_id, ValidArgs::OpenUrl(a))) =
+        confirm(app, ActionKind::OpenUrl, json!({ "url": url }), web_host(&url).to_string(), url.clone(), intent).await
+    else {
+        return result("The user declined: the page was not opened.");
+    };
+    #[cfg(windows)]
+    let receipt = super::launch::open_url(action_id.clone(), a.url).await.unwrap_or_else(|_| ActionReceipt::failed(&action_id, ErrorCode::Failed));
+    #[cfg(not(windows))]
+    let receipt = {
+        let _ = a;
+        ActionReceipt::failed(&action_id, ErrorCode::Unavailable)
+    };
+    log(format!("assistant action {action_id} {:?}", receipt.outcome()));
+    match receipt.outcome() {
+        Outcome::Failed => result("Windows could not open the page."),
+        _ => result("The page was handed to the default browser; whether it loaded is not known."),
+    }
+}
+
 /// The island's answer to a card: the grant on "Do it", nothing on "No".
 #[tauri::command]
 pub fn chat_action_answer(
@@ -369,12 +426,22 @@ mod tests {
         assert_eq!(d[0]["type"], "namespace");
         assert_eq!(d[0]["name"], NAMESPACE);
         let names: Vec<&str> = d[0]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["list_browser_tabs", "switch_browser_tab", "remember", "open_app"]);
+        assert_eq!(names, ["list_browser_tabs", "switch_browser_tab", "remember", "open_web", "open_app"]);
         for tool in d[0]["tools"].as_array().unwrap() {
             assert_eq!(tool["type"], "function");
             assert_eq!(tool["strict"], true);
             assert_eq!(tool["parameters"]["additionalProperties"], false);
         }
+    }
+
+    #[test]
+    fn a_web_address_is_trimmed_and_its_spaces_encoded_then_checked() {
+        assert_eq!(web_address(" https://www.google.com/search?q=lofi beats "), "https://www.google.com/search?q=lofi+beats");
+        assert!(policy::url_ok(&web_address("https://www.youtube.com/results?search_query=lofi beats")));
+        assert!(!policy::url_ok(&web_address("javascript:alert(1)")));
+        assert!(!policy::url_ok(&web_address("https://a@b.example")));
+        assert_eq!(web_host("https://www.youtube.com/results?search_query=x"), "www.youtube.com");
+        assert_eq!(web_host("http://localhost:8080#top"), "localhost:8080");
     }
 
     #[test]

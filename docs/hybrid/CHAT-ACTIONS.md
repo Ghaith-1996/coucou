@@ -1,6 +1,6 @@
 # Hybrid assistant — chat actions (ChatGPT can act, you confirm)
 
-"Can you open my 2nd tab?" ChatGPT gets three tools, and every action is
+"Can you open my 2nd tab?" ChatGPT gets these tools, and every action is
 confirmed by the user on a card in the chat before it runs.
 
 ## Tools (`assistant/tools.rs`, namespace `coucou`)
@@ -14,6 +14,36 @@ available, so these are Coucou's own.
 | `list_browser_tabs` | Titles of the tabs in Chrome, Edge, Brave and Vivaldi windows (id `window.position`, browser, position, title, active) | None: read only. The chat shows "Looked at your browser tabs" |
 | `switch_browser_tab` | A `switch-tab` action: tab by id, by position in the front window, or by a title part only one tab has | Card: "Switch to this tab?" + title + browser |
 | `open_app` | A `launch-app` action, from the Start menu's own list (as voice "open <app>") | Card: "Open this app?" + the name Start shows |
+| `open_web` | An `open-url` action: an http(s) page or a search address (Google, YouTube…) in the default browser | Card: "Open this page?" + the site, and the whole address below it |
+| `remember` | A `memory-save` action ([P3-MEMORY.md](P3-MEMORY.md)) | Card: "Remember this?" + the text |
+
+### Which app (`assistant/apps.rs`)
+
+- The chat's names are matched **without near spellings** (`find_typed`):
+  exact name, first words, then a whole word. Voice keeps near spellings
+  for Whisper's ("spotfy"), now one edit under seven letters and two from
+  seven.
+  - Found live: "Open Google Chrome" started Dev Home ("chrome" is two
+    edits from "home") because Chrome wasn't in the list.
+- The list is AppsFolder's items, then the `.lnk` shortcuts of both Start
+  menu Programs folders that AppsFolder doesn't name (Chrome's
+  registration was missing from AppsFolder on the owner's PC, its
+  shortcut was not). Such an entry opens as that shortcut. `launch.rs`
+  opens a path only if it is a `.lnk` inside those folders; anything else
+  goes through `shell:AppsFolder`.
+
+### Web pages (`open_web`)
+
+- The address is trimmed and its spaces become `+`; then the policy
+  (`url_ok`) requires `http://` or `https://`, a host, printable ASCII
+  without quotes or spaces, at most 2,048 characters, and **no user name
+  or password** (`https://google.com@evil.example` would show Google on
+  the card).
+- `ShellExecuteEx` hands it to the default browser. Nothing tells which
+  tab shows it, so the receipt is `unknown`, and the model is told the
+  page was handed to the browser, not that it loaded.
+- No file, folder or other scheme (`file:`, `ms-settings:`, `shell:`) can
+  be opened.
 
 The model is told it can only do these, that each is confirmed, and never
 to claim something happened unless the tool's result says so. No tool can
@@ -57,6 +87,10 @@ a page's own tab widgets are never taken for browser tabs.
   printed.
 
 ## Contract
+
+Version **5** adds `open-url` (`{ url }`, ask, not idempotent). Fixture:
+ask for a YouTube search; refused for `file:`, a user name before the
+host, and a space. Version 4 added `memory-save`.
 
 Version **3** adds `switch-tab` (`{ window, tabId, title }`; `tabId` must
 be `<digits>.<digits>`, the title at most 200 characters). The shared

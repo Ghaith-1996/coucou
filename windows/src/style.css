@@ -3051,6 +3051,10 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
 .action-detail {
   font-size: 11.5px;
   opacity: 0.6;
+  /* A web address is shown whole, wrapped, never cut. */
+  overflow-wrap: anywhere;
+  max-height: 4.5em;
+  overflow-y: auto;
 }
 
 .action-buttons {

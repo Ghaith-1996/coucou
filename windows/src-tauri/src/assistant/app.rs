@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, State, Webview};
 use serde::Serialize;
 
 use super::contracts::{ActionKind, ActionReceipt, ErrorCode, ValidArgs, VoiceEvent, VOICE_EVENT};
+use super::dictation::{Dictation, Refusal, Rejection, Written};
 use super::policy::Grant;
 use super::voice::{self, model, ChatDraft, Voice};
 use crate::island::WINDOW_LABEL;
@@ -46,10 +47,13 @@ pub fn voice(app: &AppHandle) -> Voice {
 }
 
 /// The voice shortcut or the island's own button. The island decides first
-/// whether a capture may start (never over an agent's waiting card).
+/// whether a capture may start (never over an agent's waiting card). The field
+/// of another app that has the keyboard right now is remembered first, before
+/// the island takes the keyboard for its card: dictation may go there later.
 #[tauri::command]
-pub fn assistant_voice_toggle(voice: State<Voice>) -> Option<String> {
-    voice.toggle()
+pub async fn assistant_voice_toggle(voice: State<'_, Voice>, dictation: State<'_, Dictation>) -> Result<Option<String>, ()> {
+    voice.cancel_preview();
+    Ok(dictation.toggle_capture(|| voice.toggle()).await)
 }
 
 #[tauri::command]
@@ -132,6 +136,122 @@ pub async fn assistant_app_launch(voice: State<'_, Voice>, capture_id: String, g
     };
     voice.receipt(&receipt);
     Ok(receipt)
+}
+
+/// Dictation: the transcript offered for the field that had the keyboard
+/// when the capture started, if that field can take it. Rust builds the
+/// `insert-text` action from its own transcript and remembered field; the
+/// page only ever holds the grant.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum InsertOffer {
+    /// "Insert into <label>", for the user to confirm.
+    Ready { label: String, grant: Grant },
+    /// There was a field but it can't take the words (shown on the card).
+    Refused { #[serde(flatten)] refusal: Rejection },
+}
+
+#[tauri::command]
+pub async fn assistant_insert_offer(
+    voice: State<'_, Voice>,
+    dictation: State<'_, Dictation>,
+    capture_id: String,
+) -> Result<Option<InsertOffer>, ErrorCode> {
+    let (text, expires) = voice.insertion_preview(&capture_id)?;
+    let offer = match dictation.offer(&capture_id, expires).await {
+        Ok(Some(offer)) => offer,
+        // No other app's field had the keyboard: nothing to offer.
+        Ok(None) => return Ok(None),
+        Err(refusal) => return Ok(Some(InsertOffer::Refused { refusal })),
+    };
+    let args = serde_json::json!({ "text": text, "targetWindow": offer.target_window, "targetPid": offer.target_pid });
+    let grant = voice.propose(&capture_id, ActionKind::InsertText, args)?;
+    Ok(Some(InsertOffer::Ready { label: offer.label, grant }))
+}
+
+/// Fresh evidence for one clipboard attempt, without proposing or consuming
+/// an insertion. The page already holds the transcript; no text is returned.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum InsertCopyCheck {
+    Allowed,
+    Refused { reason: Refusal },
+}
+
+#[tauri::command]
+pub async fn assistant_insert_copy_check(
+    webview: Webview,
+    voice: State<'_, Voice>,
+    dictation: State<'_, Dictation>,
+    capture_id: String,
+) -> Result<InsertCopyCheck, ErrorCode> {
+    if webview.label() != WINDOW_LABEL { return Err(ErrorCode::Unavailable); }
+    checked_copy_preview(&voice, &capture_id, |expires| dictation.check_copy(&capture_id, expires)).await
+}
+
+/// Check ownership on both sides of the await. A native Cancel, replacement,
+/// Use, insertion or expiry can invalidate a positive UIA answer meanwhile.
+pub(super) async fn checked_copy_preview<F>(
+    voice: &Voice,
+    capture_id: &str,
+    check: impl FnOnce(std::time::Instant) -> F,
+) -> Result<InsertCopyCheck, ErrorCode>
+where F: std::future::Future<Output = Result<(), Refusal>> {
+    let (_, expires) = voice.insertion_preview(capture_id)?;
+    let result = check(expires).await;
+    if voice.insertion_preview(capture_id)?.1 != expires { return Err(ErrorCode::Expired); }
+    Ok(match result {
+        Ok(()) => InsertCopyCheck::Allowed,
+        Err(reason) => InsertCopyCheck::Refused { reason },
+    })
+}
+
+/// What came of the user's "Insert into <app>".
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum InsertResult {
+    /// The words are in the field (`succeeded`), or may be (`unknown`).
+    Done { receipt: ActionReceipt },
+    /// Checked again and refused before anything was written. The
+    /// transcript is still on the card, untouched.
+    Kept { #[serde(flatten)] refusal: Rejection },
+    /// Confirmed but not written: the words went to Coucou's chat field
+    /// instead, unsent (`draft`), so they are not lost.
+    Failed { receipt: ActionReceipt, draft: Option<ChatDraft> },
+}
+
+/// The user confirmed "Insert into <app>". Reserve its preview and grant
+/// until the write is terminal, or a definitive pre-write refusal keeps them.
+#[tauri::command]
+pub async fn assistant_insert_text(
+    voice: State<'_, Voice>,
+    dictation: State<'_, Dictation>,
+    capture_id: String,
+    grant: Grant,
+) -> Result<InsertResult, ErrorCode> {
+    let (action_id, args, permit) = voice.begin_insert(&capture_id, &grant)?;
+    let text = args.text.clone();
+    let written = dictation.write(&capture_id, args, permit).await;
+    voice.finish_insert(&capture_id, &action_id, written.is_err())?;
+    let reply = match written {
+        Ok(Written::Verified) => match ActionReceipt::succeeded(&action_id, "uia-value:read-back") {
+            Some(receipt) => InsertResult::Done { receipt },
+            None => InsertResult::Done { receipt: ActionReceipt::unknown(&action_id) },
+        },
+        // Unverified read-back or write timeout: it may be there already,
+        // and must never be written twice.
+        Ok(Written::Unconfirmed) => InsertResult::Done { receipt: ActionReceipt::unknown(&action_id) },
+        Err(refusal) => InsertResult::Kept { refusal },
+        Ok(Written::Failed) => InsertResult::Failed {
+            receipt: ActionReceipt::failed(&action_id, ErrorCode::Failed),
+            draft: voice.fallback_draft(&capture_id, text).ok(),
+        },
+    };
+    match &reply {
+        InsertResult::Done { receipt } | InsertResult::Failed { receipt, .. } => voice.receipt(receipt),
+        InsertResult::Kept { .. } => {}
+    }
+    Ok(reply)
 }
 
 #[tauri::command]

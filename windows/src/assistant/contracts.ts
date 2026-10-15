@@ -19,7 +19,7 @@ export type ActionKind = "chat-draft" | "pill-set" | "insert-text" | "launch-app
 export const ACTION_KINDS: readonly { kind: ActionKind; available: boolean; idempotent: boolean }[] = [
   { kind: "chat-draft", available: true, idempotent: true },
   { kind: "pill-set", available: true, idempotent: true },
-  { kind: "insert-text", available: false, idempotent: false },
+  { kind: "insert-text", available: true, idempotent: false },
   { kind: "launch-app", available: true, idempotent: false },
   { kind: "ask-region", available: false, idempotent: false },
 ];
@@ -73,6 +73,27 @@ export interface AppGrant {
   readonly digest: string;
   readonly expiresAtMs: number;
 }
+
+/** Why another app's field can't take dictated words (dictation.rs `Refusal`). Nothing was written. */
+export type InsertRefusal = "focus-moved" | "gone" | "protected" | "read-only" | "unsupported" | "busy" | "value-changed";
+
+/** assistant_insert_offer: "Insert into <label>", or why the field can't take it.
+ * `copyAllowed` requires native evidence from this check of a non-protected field.
+ */
+export type InsertOfferReply =
+  | { status: "ready"; label: string; grant: AppGrant }
+  | { status: "refused"; reason: InsertRefusal; copyAllowed: boolean };
+
+/** Fresh read-only evidence for one Copy click; no insertion grant or transcript. */
+export type InsertCopyReply =
+  | { status: "allowed" }
+  | { status: "refused"; reason: InsertRefusal };
+
+/** assistant_insert_text: written (or maybe), kept on the card, or put in the chat instead. */
+export type InsertTextReply =
+  | { status: "done"; receipt: ActionReceipt }
+  | { status: "kept"; reason: InsertRefusal; copyAllowed: boolean }
+  | { status: "failed"; receipt: ActionReceipt; draft: { actionId: string; text: string } | null };
 
 export type VoiceState = "idle" | "listening" | "processing" | "preview" | "speaking" | "error";
 

@@ -122,10 +122,29 @@ pub fn store(name: &str, bytes: &[u8]) -> Result<DroppedFile, String> {
     let dir = inbox_dir();
     crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let dest = free_path(&dir, name);
+    store_into(&dir, name, bytes, |file, bytes| std::io::Write::write_all(file, bytes))
+}
+
+/// The name is not exposed to chat until the complete write succeeds. Keep
+/// create-new's no-overwrite guarantee on every supported inbox filesystem,
+/// and close the handle before removing an incomplete private screenshot.
+fn store_into(
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<DroppedFile, String> {
+    let dest = free_path(dir, name);
     let mut file = std::fs::File::options().write(true).create_new(true).open(&dest).map_err(|e| e.to_string())?;
-    std::io::Write::write_all(&mut file, bytes).map_err(|e| e.to_string())?;
-    sweep(&dir);
+    let written = write(&mut file, bytes).and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        return match std::fs::remove_file(&dest) {
+            Ok(()) => Err(error.to_string()),
+            Err(cleanup) => Err(format!("{error}; partial screenshot cleanup failed: {cleanup}")),
+        };
+    }
+    sweep(dir);
     Ok(DroppedFile {
         name: dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| name.to_string()),
         path: dest.to_string_lossy().to_string(),
@@ -151,6 +170,45 @@ fn sweep(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn store_test_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(crate::assistant::policy::new_id("coucou-store-test"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_partial_screenshot_write_is_removed_before_returning_failure() {
+        let dir = store_test_dir();
+        let result = store_into(&dir, "region.png", b"private screenshot bytes", |file, bytes| {
+            std::io::Write::write_all(file, &bytes[..7])?;
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "simulated disk full"))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no partial private screenshot survives");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn completed_screenshots_publish_once_without_staging_files_or_overwrites() {
+        let dir = store_test_dir();
+        let first = store_into(&dir, "region.png", b"first", |f, b| std::io::Write::write_all(f, b)).unwrap();
+        let second = store_into(&dir, "region.png", b"second", |f, b| std::io::Write::write_all(f, b)).unwrap();
+        assert_ne!(first.path, second.path);
+        assert_eq!(std::fs::read(&first.path).unwrap(), b"first");
+        assert_eq!(std::fs::read(&second.path).unwrap(), b"second");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_destination_failure_leaves_no_screenshot_data() {
+        let dir = store_test_dir();
+        // No parent directory exists for the requested final filename.
+        assert!(store_into(&dir, "missing/region.png", b"private", |f, b| std::io::Write::write_all(f, b)).is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn ingest_copies_and_never_overwrites() {

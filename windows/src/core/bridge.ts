@@ -397,7 +397,7 @@ export const Bridge = {
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
   chatSend: (query: string, context: ChatContext | null, requestId?: string) =>
-    afterChatNavigation(() => withChatContext(() => callOrThrow<{ text: string }>("chat_send", { query, context, ...(requestId ? { requestId } : {}) }))),
+    afterChatNavigation(() => withChatContext(() => callOrThrow<{ text: string }>("chat_send", { query, context, ...(requestId === undefined ? {} : { requestId }) }))),
   chatReset: () => navigateChat(async () => {
     if (!IS_TAURI) return null;
     try {
@@ -506,6 +506,9 @@ export const Bridge = {
   /** The user confirmed: Rust checks the grant, opens the app and says what came of it. */
   appLaunch: (captureId: string, grant: AppGrant) =>
     callOrThrow<ActionReceipt>("assistant_app_launch", { captureId, grant }),
+  /** A chat action card: Rust's grant on "Do it", null on "No". */
+  chatActionAnswer: (actionId: string, grant: AppGrant | null) =>
+    callOrThrow<void>("chat_action_answer", { actionId, grant }),
   /**
    * Dictation: the transcript offered for the field of another app that had
    * the keyboard when the capture started. Null when there was none.

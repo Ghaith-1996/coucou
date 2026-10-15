@@ -49,6 +49,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
+use assistant::tools::{ActionScope, ChatActions};
 use chat::{Chat, ChatContext, ChatReply, ModelInfo};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
@@ -561,21 +562,23 @@ async fn chat_send(
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
     stop: State<'_, ChatStop>,
+    actions: State<'_, ChatActions>,
     speech: State<'_, assistant::speech::Turns>,
     query: String,
     context: Option<ChatContext>,
     request_id: Option<String>,
 ) -> Result<ChatReply, String> {
+    // Register cancellation before any settings or account lookup can delay us.
+    let (scope, rx, closed) = stop.begin_with(&actions, || speech.clear());
+    let _turn = ChatTurnGuard { app: &app, stop: &stop, actions: &actions, scope: scope.clone() };
+    assistant::tools::close_cards(&app, closed);
     let settings = shared.settings.lock().unwrap().clone();
-    let speech_turn = speech.begin(request_id.as_deref(), &settings);
-    let account_before = (settings.chat_provider == chatgpt::PROVIDER).then(chatgpt::status);
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    *stop.0.lock().unwrap() = Some(tx);
-    // Stop drops the request mid-way: nothing more is read or recorded.
-    let result = tokio::select! {
-        reply = chat::send(&app, &chat, &settings, query, context) => reply,
-        _ = rx => Err(i18n::t("Stopped.")),
+    let Some(speech_turn) = stop.with_current(&scope, || speech.begin(request_id.as_deref(), &settings)) else {
+        return Err(i18n::t("Stopped."));
     };
+    let account_before = (settings.chat_provider == chatgpt::PROVIDER).then(chatgpt::status);
+    let result = until_chat_cancelled(rx, chat::send(&app, &chat, &settings, query, context, request_id, &scope))
+        .await.unwrap_or_else(|| Err(i18n::t("Stopped.")));
     if result.is_err() {
         speech.failed(speech_turn.as_ref());
     }
@@ -583,9 +586,85 @@ async fn chat_send(
     result
 }
 
-/// The turn under way, which the chat's Stop button ends.
+/// A buffered confirmation must not win when cancellation is already ready.
+async fn until_chat_cancelled<T>(cancelled: tokio::sync::oneshot::Receiver<()>, reply: impl std::future::Future<Output = T>) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = cancelled => None,
+        reply = reply => Some(reply),
+    }
+}
+
+struct ActiveChat {
+    scope: ActionScope,
+    stop: tokio::sync::oneshot::Sender<()>,
+}
+
+/// The turn under way, including native action authority. Start, stop and
+/// history reset share this lock so replacement cannot inherit an old grant.
 #[derive(Default)]
-struct ChatStop(std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+struct ChatStop(Mutex<Option<ActiveChat>>);
+
+impl ChatStop {
+    fn cancel_active(active: &mut Option<ActiveChat>, actions: &ChatActions) -> Vec<String> {
+        let Some(turn) = active.take() else { return Vec::new() };
+        let closed = actions.retire(&turn.scope);
+        let _ = turn.stop.send(());
+        closed
+    }
+
+    fn begin(&self, actions: &ChatActions) -> (ActionScope, tokio::sync::oneshot::Receiver<()>, Vec<String>) {
+        self.begin_with(actions, || {})
+    }
+
+    fn begin_with(&self, actions: &ChatActions, after_cancel: impl FnOnce()) -> (ActionScope, tokio::sync::oneshot::Receiver<()>, Vec<String>) {
+        let mut active = self.0.lock().unwrap();
+        let closed = Self::cancel_active(&mut active, actions);
+        after_cancel();
+        let scope = ActionScope::new();
+        let (send, recv) = tokio::sync::oneshot::channel();
+        *active = Some(ActiveChat { scope: scope.clone(), stop: send });
+        (scope, recv, closed)
+    }
+
+    /// Settings/account work may finish after Stop or replacement. Bind speech
+    /// only while this native turn still owns the cancellation slot.
+    fn with_current<T>(&self, scope: &ActionScope, action: impl FnOnce() -> T) -> Option<T> {
+        let active = self.0.lock().unwrap();
+        active.as_ref().filter(|turn| turn.scope.same_turn(scope)).map(|_| action())
+    }
+
+    fn cancel_with(&self, actions: &ChatActions, after: impl FnOnce()) -> Vec<String> {
+        let mut active = self.0.lock().unwrap();
+        let closed = Self::cancel_active(&mut active, actions);
+        // Native grants are invalid before history is changed or Stop returns.
+        after();
+        closed
+    }
+
+    fn finish(&self, actions: &ChatActions, scope: &ActionScope) -> Vec<String> {
+        let mut active = self.0.lock().unwrap();
+        let closed = actions.retire(scope);
+        if active.as_ref().is_some_and(|turn| turn.scope.same_turn(scope)) {
+            active.take();
+        }
+        closed
+    }
+}
+
+/// Also retire the native scope if Tauri drops the command future itself.
+struct ChatTurnGuard<'a> {
+    app: &'a AppHandle,
+    stop: &'a ChatStop,
+    actions: &'a ChatActions,
+    scope: ActionScope,
+}
+
+impl Drop for ChatTurnGuard<'_> {
+    fn drop(&mut self) {
+        assistant::tools::close_cards(self.app, self.stop.finish(self.actions, &self.scope));
+    }
+}
 
 // ── Saved conversations (chat_store.rs) ─────────────────────────────────────
 
@@ -626,11 +705,8 @@ fn chat_undo_last(chat: State<Chat>, speech: State<assistant::speech::Turns>) ->
 }
 
 #[tauri::command]
-fn chat_stop(stop: State<ChatStop>, speech: State<assistant::speech::Turns>) {
-    speech.clear();
-    if let Some(tx) = stop.0.lock().unwrap().take() {
-        let _ = tx.send(());
-    }
+fn chat_stop(app: AppHandle, stop: State<ChatStop>, actions: State<ChatActions>, speech: State<assistant::speech::Turns>) {
+    assistant::tools::close_cards(&app, stop.cancel_with(&actions, || speech.clear()));
 }
 
 // ── ChatGPT (chatgpt.rs): the island and Settings see a status, never a token ─
@@ -718,9 +794,11 @@ fn local_set_key(url: String, key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn chat_reset(chat: State<Chat>, speech: State<assistant::speech::Turns>) {
-    speech.clear();
-    chat.reset();
+fn chat_reset(app: AppHandle, chat: State<Chat>, stop: State<ChatStop>, actions: State<ChatActions>, speech: State<assistant::speech::Turns>) {
+    assistant::tools::close_cards(&app, stop.cancel_with(&actions, || {
+        speech.clear();
+        chat.reset();
+    }));
 }
 
 /// Copies a dropped file into the inbox and reports its name back.
@@ -907,6 +985,7 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(assistant::tools::ChatActions::default())
         .manage(assistant::region::Regions::default())
         .manage(ChatStop::default())
         .manage(assistant::speech::Turns::default())
@@ -1006,6 +1085,7 @@ pub fn run() {
             assistant::app::assistant_voice_hands_free,
             assistant::app::assistant_voice_converse,
             assistant::speech::speech_say,
+            assistant::tools::chat_action_answer,
             assistant::speech::speech_end,
             assistant::app::assistant_voice_stop,
             assistant::app::assistant_voice_cancel,
@@ -1116,7 +1196,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{diff_file, BROWSER_ARGS};
+    use super::{diff_file, until_chat_cancelled, BROWSER_ARGS};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_is_polled_before_an_already_ready_reply_or_grant() {
+        let (send, recv) = tokio::sync::oneshot::channel();
+        send.send(()).unwrap();
+        let mut polled_reply = false;
+        let result = until_chat_cancelled(recv, async {
+            polled_reply = true;
+            "ready reply"
+        }).await;
+        assert_eq!(result, None);
+        assert!(!polled_reply, "the cancelled tool future must not consume a ready grant");
+    }
 
     /// What wry passes to WebView2 when an app gives no arguments of its own
     /// (wry 0.57, src/webview2/mod.rs). Giving any replaces it, so Coucou has to

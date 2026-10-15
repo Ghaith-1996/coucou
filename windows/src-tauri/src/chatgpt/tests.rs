@@ -1292,6 +1292,57 @@ fn disconnect_result_serializes_only_the_two_outcomes() {
     }));
 }
 
+#[test]
+fn speech_asks_for_openais_voice_and_nothing_else() {
+    let body = speech_body("Bonjour, ça va ?");
+    assert_eq!(body["model"], SPEECH_MODEL);
+    assert_eq!(body["voice"], SPEECH_VOICE);
+    assert_eq!(body["input"], "Bonjour, ça va ?");
+    assert_eq!(body["response_format"], "mp3");
+    let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["model", "voice", "input", "instructions", "response_format"]);
+}
+
+#[test]
+fn finished_output_items_are_kept_for_the_tool_loop() {
+    let event = r#"{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"switch_browser_tab","namespace":"coucou","arguments":"{\"tab_id\":\"1.2\",\"position\":null,\"title_contains\":null}"}}"#;
+    let StreamEvent::Item(item) = parse_event(event) else { panic!("an item") };
+    let call = tool_call(&item).unwrap();
+    assert_eq!(call.call_id, "call_1");
+    assert_eq!(call.name, "switch_browser_tab");
+    assert!(call.arguments.contains("1.2"));
+    assert_eq!(parse_event(r#"{"type":"response.output_item.done"}"#), StreamEvent::Other);
+}
+
+#[test]
+fn only_function_calls_become_tool_calls() {
+    assert!(tool_call(&json!({ "type": "message", "content": [] })).is_none());
+    assert!(tool_call(&json!({ "type": "reasoning", "encrypted_content": "x" })).is_none());
+    assert!(tool_call(&json!({ "type": "function_call", "name": "open_app" })).is_none(), "no call id");
+    let dotted = tool_call(&json!({ "type": "function_call", "call_id": "c", "name": "coucou.open_app", "arguments": "{}" })).unwrap();
+    assert_eq!(dotted.name, "open_app");
+}
+
+#[test]
+fn each_round_carries_the_tools_and_what_came_before() {
+    let base = request_body(LUNA, "low", "x", &[], json!("open my second tab"));
+    let call = json!({ "type": "function_call", "call_id": "c1", "name": "list_browser_tabs", "arguments": "{}" });
+    let output = json!({ "type": "function_call_output", "call_id": "c1", "output": "{\"tabs\":[]}" });
+    let body = with_tools(&base, &[call.clone(), output.clone()], false);
+    assert_eq!(body["tools"][0]["type"], "namespace");
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    assert!(body.get("tool_choice").is_none());
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(input[input.len() - 2], call);
+    assert_eq!(input[input.len() - 1], output);
+    assert_eq!(body["store"], false);
+    assert_eq!(body["stream"], true);
+    // The last round answers in words.
+    assert_eq!(with_tools(&base, &[], true)["tool_choice"], "none");
+    // The question's own body is untouched.
+    assert!(base.get("tools").is_none());
+}
+
 fn registered_account() -> Account {
     Account {
         sub: Some("original-user".into()), plan_enabled: true, welcomed: true,
@@ -1936,17 +1987,6 @@ fn a_busy_native_account_operation_rejects_sign_in_without_queuing() {
     assert!(try_sign_in_lock(&serial).is_err(), "double clicks and other busy operations fail immediately");
     drop(operation);
     assert!(try_sign_in_lock(&serial).is_ok(), "a later explicit retry can proceed");
-}
-
-#[test]
-fn speech_asks_for_openais_voice_and_nothing_else() {
-    let body = speech_body("Bonjour, ça va ?");
-    assert_eq!(body["model"], SPEECH_MODEL);
-    assert_eq!(body["voice"], SPEECH_VOICE);
-    assert_eq!(body["input"], "Bonjour, ça va ?");
-    assert_eq!(body["response_format"], "mp3");
-    let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["model", "voice", "input", "instructions", "response_format"]);
 }
 
 #[test]

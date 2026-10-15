@@ -59,7 +59,7 @@ pub fn decide(action: &AssistantAction, now_ms: u64) -> Verdict {
         // a click on the card that shows the change. Undone the same way.
         ActionKind::PillSet => Decision::Allow,
         // Anything that reaches outside Coucou is confirmed first.
-        ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::AskRegion => Decision::Ask,
+        ActionKind::InsertText | ActionKind::LaunchApp | ActionKind::AskRegion | ActionKind::SwitchTab => Decision::Ask,
     };
     Verdict { decision, error: None, args: Some(args) }
 }
@@ -89,6 +89,13 @@ pub fn validate(kind: ActionKind, args: &serde_json::Value) -> Option<ValidArgs>
         ActionKind::LaunchApp => {
             let a: LaunchAppArgs = serde_json::from_value(args).ok()?;
             app_id_ok(&a.app_id).then_some(ValidArgs::LaunchApp(a))?
+        }
+        ActionKind::SwitchTab => {
+            let a: SwitchTabArgs = serde_json::from_value(args).ok()?;
+            let id_ok = (3..=16).contains(&a.tab_id.len())
+                && a.tab_id.split('.').count() == 2
+                && a.tab_id.split('.').all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            (a.window != 0 && id_ok && text_ok(&a.title, 200)).then_some(ValidArgs::SwitchTab(a))?
         }
         ActionKind::AskRegion => {
             let a: AskRegionArgs = serde_json::from_value(args).ok()?;

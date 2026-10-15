@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import ts from "typescript";
 import { installFakeDom } from "./fakedom.mjs";
-import { calls, internals, sent } from "./tauri.mjs";
+import { calls, emit, internals, sent } from "./tauri.mjs";
 
 registerHooks({
   load(url, context, nextLoad) {
@@ -21,6 +21,7 @@ installFakeDom();
 const { Island } = await import("../src/island/island.ts");
 const { buildPrompt, newConversation } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
+const { ChatActions, answerCard, registerChatActions, resetChatActionsForTests } = await import("../src/assistant/chat-actions.ts");
 const nativeInvoke = internals.invoke;
 let records, answers, view, host;
 internals.invoke = async (cmd, args) => {
@@ -51,6 +52,7 @@ async function open(id) {
 beforeEach(async () => {
   records = new Map();
   answers = {};
+  resetChatActionsForTests(); registerChatActions();
   newConversation();
   State.settings = { ...DEFAULT_SETTINGS, chatModels: {} };
   State.stateOverride = null;
@@ -129,4 +131,39 @@ test("a region chat invalidates a delayed old save failure and preserves an appr
   assert.deepEqual(State.droppedFile, attachment);
   assert.equal($(".chat-notice.warn"), null, "an old save cannot warn in the fresh region chat");
   assert.deepEqual(records.get(id), original);
+});
+
+
+test("a confirmed region retires the old chat action and rejects its late events", async t => {
+  const delayed = Promise.withResolvers();
+  t.after(async () => { delayed.resolve({ text: "Old answer" }); await flush(); });
+  answers.chat_send = () => delayed.promise;
+  await send("Open the old chat's app");
+  const requestId = sent("chat_send").at(-1).requestId;
+  const card = { requestId, actionId: "old-action", kind: "launch-app", label: "Old app", detail: "app",
+    grant: { actionId: "old-action", digest: "a".repeat(64), expiresAtMs: Date.now() + 60_000 } };
+  const note = { requestId, tool: "browser-tabs" };
+  emit("chat-action", card); emit("chat-tool-used", note);
+  assert.equal(ChatActions.cards.length, 1);
+  assert.deepEqual(ChatActions.used, ["browser-tabs"]);
+
+  host.chatWithFile(attachment);
+  view.sync();
+  assert.equal(sent("chat_stop").length, 1, "the old native request is cancelled before resetting");
+  assert.deepEqual(ChatActions.cards, []);
+  assert.deepEqual(ChatActions.used, []);
+  answerCard(card.actionId, true);
+  emit("chat-action", card); emit("chat-tool-used", note);
+  assert.deepEqual(sent("chat_action_answer"), [], "a retained old confirmation cannot execute");
+  assert.deepEqual(ChatActions.cards, []);
+  assert.deepEqual(ChatActions.used, []);
+
+  delayed.resolve({ text: "Old answer" });
+  await flush(); view.sync();
+  assert.deepEqual(State.chatHistory, []);
+  assert.deepEqual(State.droppedFile, attachment);
+  delete answers.chat_send;
+  await send("Describe this region");
+  assert.notEqual(sent("chat_send").at(-1).requestId, requestId);
+  assert.deepEqual(State.chatHistory.map(message => message.content), ["Describe this region", "An answer"]);
 });

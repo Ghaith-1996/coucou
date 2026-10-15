@@ -58,3 +58,11 @@ test("remote speech rechecks native authorization after token work and on each s
   assert.ok(speak.indexOf("access_token(false, &account).await?") < speak.indexOf("request.send().await"));
   assert.match(speak, /lock\(\)\.await;\s*authorize\(\)\?;\s*check_session_generation/);
 });
+
+test("speech binding shares the native cancellation and replacement lock", () => {
+  const send = body(wiring, "chat_send");
+  assert.match(send, /stop\.begin_with\(&actions, \|\| speech\.clear\(\)\)/);
+  assert.match(send, /stop\.with_current\(&scope, \|\| speech\.begin\(request_id\.as_deref\(\), &settings\)\)/);
+  assert.match(wiring, /fn with_current<T>[\s\S]*let active = self\.0\.lock\(\)\.unwrap\(\);\s*active\.as_ref\(\)\.filter\(\|turn\| turn\.scope\.same_turn\(scope\)\)\.map\(\|_\| action\(\)\)/);
+  assert.match(body(wiring, "chat_stop"), /cancel_with\(&actions, \|\| speech\.clear\(\)\)/);
+});

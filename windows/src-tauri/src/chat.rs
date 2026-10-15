@@ -252,6 +252,8 @@ pub async fn send(
     settings: &Settings,
     query: String,
     context: Option<ChatContext>,
+    request_id: Option<String>,
+    action_scope: &crate::assistant::tools::ActionScope,
 ) -> Result<ChatReply, String> {
     let context = chat.context_for_turn(context)?;
     let provider = settings.chat_provider.as_str();
@@ -263,6 +265,15 @@ pub async fn send(
         use tauri::Emitter;
         let effort = chatgpt_effort_for(settings, &model);
         let island = crate::island::WINDOW_LABEL;
+        // What the chat may do on this PC (assistant/tools.rs), each action
+        // confirmed by the user on a card.
+        let intent = crate::assistant::policy::new_id("chat");
+        let runner = |call: crate::assistant::tools::ToolCall| -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + '_>> {
+            let app = app.clone();
+            let intent = intent.clone();
+            let request_id = request_id.clone();
+            Box::pin(async move { crate::assistant::tools::run(&app, &call, &intent, request_id.as_deref(), action_scope).await })
+        };
         return chatgpt::send(
             chat,
             &model,
@@ -275,6 +286,7 @@ pub async fn send(
             || {
                 let _ = app.emit_to(island, "chatgpt-usage-limit", ());
             },
+            Some(&runner),
         )
         .await;
     }

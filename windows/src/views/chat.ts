@@ -31,6 +31,7 @@ import { HOST_OS } from "../core/pills";
 import { Voice, voiceShortcut } from "../assistant/voice";
 import { captureReleasePending, captureReleaseFailed, retryCaptureRelease } from "../assistant/capture-release";
 import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
+import { ChatActions, answerCard, beginToolNotes, clearToolNotes, retireActionCards } from "../assistant/chat-actions";
 import { Region, startRegion } from "../assistant/region";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
@@ -50,6 +51,11 @@ const STRINGS = {
   captureReleasing: N_("Waiting for the microphone to close…"),
   captureReleaseFailed: N_("Could not release the microphone. Retry to reconnect."),
   audioSilence: N_("Audio mode ended: nothing was heard."),
+  switchTab: N_("Switch to this tab?"),
+  openApp: N_("Open this app?"),
+  doIt: N_("Do it"),
+  no: N_("No"),
+  lookedAtTabs: N_("Looked at your browser tabs"),
   audioError: N_("Audio mode ended. Check your microphone and speech model in Settings, then try again."),
   audioSpeechError: N_("Could not read the answer aloud. Audio mode ended. Please try again."),
   audioModel: N_("Download a speech model in Settings to use audio mode."),
@@ -434,6 +440,8 @@ function buildPicker(onChange: () => void): Picker {
 
 /** When the conversation on screen was first saved. */
 let chatCreatedAt = 0;
+/** Snapshot revisions stay monotonic through same-ms saves, reopen and clock changes. */
+const chatSavedAt = new Map<string, number>();
 /** Its generated or explicitly renamed title, kept when more messages arrive. */
 let chatTitle = "";
 /** New/open invalidates old saves; regeneration stays in the same conversation. */
@@ -448,6 +456,8 @@ let reopenedChatId: string | null = null;
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
+  // Revoke grants before cancellation can notify any view subscribers.
+  clearToolNotes();
   cancelCurrentAnswer?.();
   stopAudioMode();
   chatSession++;
@@ -474,7 +484,10 @@ function saveConversation() {
   const attempt = ++saveAttempt;
   const session = chatSession;
   const isCurrent = () => attempt === saveAttempt && session === chatSession && State.chatId === id;
-  void Bridge.chatHistorySave(toSaved(id, chatTitle, chatCreatedAt || Date.now(), messages)).then(() => {
+  const snapshot = toSaved(id, chatTitle, chatCreatedAt || Date.now(), messages);
+  snapshot.updatedAt = Math.max(snapshot.updatedAt, (chatSavedAt.get(id) ?? 0) + 1);
+  chatSavedAt.set(id, snapshot.updatedAt);
+  void Bridge.chatHistorySave(snapshot).then(() => {
     if (!isCurrent()) return;
     saveFailure = null;
     State.notify();
@@ -762,10 +775,13 @@ function buildHistory(onChange: () => void, onOpened: () => void): HistoryPanel 
       State.chatId = saved.id;
       reopenedChatId = saved.id;
       chatCreatedAt = saved.createdAt;
+      chatSavedAt.set(saved.id, Math.max(chatSavedAt.get(saved.id) ?? 0, saved.updatedAt));
       chatTitle = saved.title;
       saveFailure = null;
       State.droppedFile = null;
       State.promptContext = null;
+      // Only a successful, still-current restore replaces the visible answer.
+      clearToolNotes();
       Sound.play("blip");
       if (attempt === navigationAttempt) close();
       onOpened();
@@ -879,6 +895,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   } });
   const audioRow = h("div", { class: "audio-row" }, audioStatus, audioEnd);
   audioRow.hidden = true;
+  // Cards for what the chat wants to do on the PC (chat-actions.ts).
+  const actionSlot = h("div", { class: "action-slot" });
+  let shownCards = "";
 
   const modelDot = h("i", { class: "model-dot" });
   const modelName = h("span", { class: "model-name" });
@@ -917,7 +936,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       input.focus();
     },
   );
-  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, modelRow, audioRow, bar);
+  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, actionSlot, modelRow, audioRow, bar);
 
   const el = h("div", { class: "view" }, h("div", { class: "card wash chat-card" }, body));
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
@@ -1110,7 +1129,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.notify();
   });
 
-  async function ask(query: string, requestId?: string): Promise<string | null> {
+  async function ask(query: string, spokenRequestId?: string): Promise<string | null> {
     if (picker.isOpen) picker.close();
     if (history.isOpen) history.close();
     sending = true;
@@ -1140,6 +1159,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     let answer: string | null = null;
     try {
+      const requestId = beginToolNotes(spokenRequestId);
       // Notes and state notifications may synchronously reset the conversation.
       if (!isCurrent() || stopRequested) return null;
       State.chatHistory.push({ id: nextId++, role: "user", content: query });
@@ -1181,6 +1201,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         // Reset may replace the transcript, but a newer answer owns its own
         // thinking state even if this older IPC result arrives afterwards.
         if (State.stateOverride === "thinking") State.stateOverride = null;
+        retireActionCards();
       }
       sending = false;
       stopRequested = false;
@@ -1200,6 +1221,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   const stopAnswer = () => {
     if (!sending || undoPending || stopRequested) return;
     stopRequested = true;
+    retireActionCards();
     void Bridge.chatStop();
   };
   setAudioAsk((text, requestId) => audioReady() ? ask(text, requestId) : Promise.resolve(null), audioReady, stopAnswer);
@@ -1301,6 +1323,33 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
   refreshChatGpt();
 
+  function drawCards() {
+    const key = JSON.stringify([ChatActions.cards.map((c) => [c.actionId, c.answered]), ChatActions.used]);
+    if (key === shownCards) return;
+    shownCards = key;
+    clear(actionSlot);
+    for (const used of ChatActions.used) {
+      if (used === "browser-tabs") actionSlot.append(h("div", { class: "tool-note", text: t(STRINGS.lookedAtTabs) }));
+    }
+    for (const card of ChatActions.cards) {
+      const question = card.kind === "switch-tab" ? STRINGS.switchTab : STRINGS.openApp;
+      actionSlot.append(h(
+        "div",
+        { class: "action-card" },
+        h("div", { class: "action-text" },
+          h("div", { class: "action-question", text: t(question) }),
+          h("div", { class: "action-label", text: card.label }),
+          card.detail && card.detail !== "app" ? h("div", { class: "action-detail", text: card.detail }) : null,
+        ),
+        h("div", { class: "action-buttons" },
+          h("button", { type: "button", class: "btn secondary", text: t(STRINGS.no), disabled: card.answered, onclick: () => answerCard(card.actionId, false) }),
+          h("button", { type: "button", class: "btn primary", text: t(STRINGS.doIt), disabled: card.answered, onclick: () => answerCard(card.actionId, true) }),
+        ),
+      ));
+    }
+    onHeightChange();
+  }
+
   function drawAudio() {
     const on = AudioMode.state !== "off";
     const releasing = captureReleasePending();
@@ -1330,6 +1379,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     el,
     sync() {
       drawAudio();
+      drawCards();
       const file = State.droppedFile;
       const wantChip = file?.name ?? "";
       if (chipRow.dataset.label !== wantChip) {

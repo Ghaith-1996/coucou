@@ -89,8 +89,8 @@ windows = { version = "0.61", features = [
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
-  # Dictation into another app's field (assistant/dictation): UI Automation,
-  # and the app's name from its file's version info.
+  # Browser-tab tools and dictation use UI Automation; dictation resolves
+  # the app's name from its file's version information.
   "Win32_UI_Accessibility",
   "Win32_Storage_FileSystem",
   # "Open <app>" (assistant/launch.rs): a Start menu shortcut, as Start opens it.

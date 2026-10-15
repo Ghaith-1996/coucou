@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::assistant::tools::ToolCall;
 use crate::chat::{self, Chat, ChatContext, ChatReply, ModelInfo};
 use crate::openai_compat::{file_part, FilePart};
 use crate::i18n::{t, tf};
@@ -1558,6 +1559,8 @@ pub fn request_body(model: &str, effort: &str, instructions: &str, history: &[Va
 #[derive(Debug, PartialEq)]
 pub enum StreamEvent {
     Delta(String),
+    /// A finished output item (a message, reasoning, a function call).
+    Item(Value),
     Completed,
     Failed { status: u16, code: String, message: String },
     Incomplete(String),
@@ -1569,6 +1572,10 @@ pub fn parse_event(data: &str) -> StreamEvent {
     let s = |p: &str| v.pointer(p).and_then(Value::as_str).unwrap_or("").to_string();
     match v["type"].as_str().unwrap_or("") {
         "response.output_text.delta" => StreamEvent::Delta(s("/delta")),
+        "response.output_item.done" => match v.get("item") {
+            Some(item) if item.is_object() => StreamEvent::Item(item.clone()),
+            _ => StreamEvent::Other,
+        },
         "response.completed" => StreamEvent::Completed,
         "response.failed" => StreamEvent::Failed { status: 0, code: s("/response/error/code"), message: s("/response/error/message") },
         "response.incomplete" => StreamEvent::Incomplete(s("/response/incomplete_details/reason")),
@@ -1644,6 +1651,47 @@ fn finish_turn(chat: &Chat, turn: &chat::Turn, user: Value, plain: &str, answer:
 
 /// One turn on the ChatGPT plan, streamed: `on_delta` gets the text so far.
 /// `on_usage_limit` is told when the plan's limit is reached.
+/// How many times one question may go back and forth through tools.
+pub const MAX_TOOL_ROUNDS: usize = 4;
+
+/// Runs one tool call (assistant/tools.rs) and returns what the model is told.
+pub type ToolRunner<'a> =
+    dyn Fn(ToolCall) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> + Send + Sync + 'a;
+
+/// The round's request: the question's body, plus the tools and what the
+/// earlier rounds produced (their output items and the tools' results).
+/// The last round may not call tools again.
+pub fn with_tools(base: &Value, extra: &[Value], last_round: bool) -> Value {
+    let mut body = base.clone();
+    body["tools"] = crate::assistant::tools::definitions();
+    // Stateless (store: false): reasoning travels back encrypted.
+    body["include"] = json!(["reasoning.encrypted_content"]);
+    if last_round {
+        body["tool_choice"] = json!("none");
+    }
+    if let Some(input) = body["input"].as_array_mut() {
+        input.extend(extra.iter().cloned());
+    }
+    body
+}
+
+/// A function call among a round's output items.
+pub fn tool_call(item: &Value) -> Option<ToolCall> {
+    if item["type"] != "function_call" {
+        return None;
+    }
+    let name = item["name"].as_str()?;
+    let name = match item["namespace"].as_str() {
+        Some(ns) if !name.contains('.') => format!("{ns}.{name}"),
+        _ => name.to_string(),
+    };
+    Some(ToolCall {
+        call_id: item["call_id"].as_str()?.to_string(),
+        name: crate::assistant::tools::bare_name(&name).to_string(),
+        arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
+    })
+}
+
 pub async fn send(
     chat: &Chat,
     model: &str,
@@ -1652,6 +1700,7 @@ pub async fn send(
     context: Option<ChatContext>,
     mut on_delta: impl FnMut(String),
     on_usage_limit: impl Fn(),
+    tools: Option<&ToolRunner<'_>>,
 ) -> Result<ChatReply, String> {
     let account = plan_ready().await?;
     if !effort_ok(model, effort) {
@@ -1659,34 +1708,72 @@ pub async fn send(
     }
     let turn = chat.begin(PROVIDER);
     let user = user_content(turn.first, context.as_ref(), &query);
-    let body = request_body(model, effort, &chat::system_prompt(false), &turn.history, user.clone());
+    let instructions = match tools {
+        Some(_) => format!("{}\n\n{}", chat::system_prompt(false), crate::assistant::tools::INSTRUCTIONS),
+        None => chat::system_prompt(false),
+    };
+    let base = request_body(model, effort, &instructions, &turn.history, user.clone());
 
     let mut token = access_token(false, &account).await?;
+    let mut answer = String::new();
+    let mut extra: Vec<Value> = Vec::new();
+    for round in 0..=MAX_TOOL_ROUNDS {
+        check_session_generation(&account, session_generation())?;
+        let body = match tools {
+            Some(_) => with_tools(&base, &extra, round == MAX_TOOL_ROUNDS),
+            None => base.clone(),
+        };
+        let reply = open_stream(&body, &mut token, &account, &on_usage_limit).await?;
+        let prefix = if answer.is_empty() { String::new() } else { format!("{answer}\n\n") };
+        let (text, items) = read_stream(reply, &prefix, &account, &mut on_delta, &on_usage_limit).await?;
+        if !text.is_empty() {
+            answer = format!("{prefix}{text}");
+        }
+        let calls: Vec<ToolCall> = items.iter().filter_map(tool_call).collect();
+        let Some(run) = tools.filter(|_| !calls.is_empty()) else { break };
+        extra.extend(items);
+        for call in calls {
+            check_session_generation(&account, session_generation())?;
+            crate::log::line(format!("chatgpt: tool {}", call.name));
+            let output = run(call.clone()).await;
+            check_session_generation(&account, session_generation())?;
+            extra.push(json!({ "type": "function_call_output", "call_id": call.call_id, "output": output }));
+        }
+    }
+    let _serial = REFRESHING.get_or_init(Default::default).lock().await;
+    check_session_generation(&account, session_generation())?;
+    on_delta(answer.clone());
+    let plain = chat::plain_question(turn.first, context.as_ref(), &query);
+    Ok(finish_turn(chat, &turn, user, &plain, answer))
+}
+
+/// The request, retried after a refreshed token (401) or a passing failure.
+async fn open_stream(body: &Value, token: &mut String, account: &RequestAccount, on_usage_limit: &impl Fn()) -> Result<reqwest::Response, String> {
     let mut tries = 0;
     let mut refreshed = false;
-    let reply = loop {
-        check_session_generation(&account, session_generation())?;
+    loop {
+        check_session_generation(account, session_generation())?;
         tries += 1;
         let reply = http(Duration::from_secs(600))?
             .post(RESPONSES)
-            .bearer_auth(&token)
-            .json(&body)
+            .bearer_auth(&*token)
+            .json(body)
             .send()
             .await
             .map_err(|_| t("ChatGPT can't be reached."))?;
-        check_session_generation(&account, session_generation())?;
+        check_session_generation(account, session_generation())?;
         let status = reply.status().as_u16();
         if reply.status().is_success() {
-            break reply;
+            return Ok(reply);
         }
         if let Some(next) = recover_authentication_with(status, &mut refreshed,
-            || access_token(true, &account), || reject_session(&account, &token),
+            || access_token(true, account), || reject_session(account, token),
         ).await? {
-            token = next;
+            *token = next;
             continue;
         }
         let body: Value = reply.json().await.unwrap_or(Value::Null);
-        check_session_generation(&account, session_generation())?;
+        check_session_generation(account, session_generation())?;
         let failure = error_message(status, &body);
         // Bounded backoff, only before anything streamed.
         if failure.transient && tries <= 2 {
@@ -1694,22 +1781,31 @@ pub async fn send(
             continue;
         }
         let _serial = REFRESHING.get_or_init(Default::default).lock().await;
-        check_session_generation(&account, session_generation())?;
+        check_session_generation(account, session_generation())?;
         crate::log::line(format!("chatgpt: HTTP {status} {}", body.pointer("/error/code").and_then(Value::as_str).unwrap_or("")));
         if failure.usage_limit {
             on_usage_limit();
         }
         return Err(failure.text);
-    };
+    }
+}
 
-    let mut reply = reply;
+/// One round's stream: its text (shown after `prefix`) and its output items.
+async fn read_stream(
+    mut reply: reqwest::Response,
+    prefix: &str,
+    account: &RequestAccount,
+    on_delta: &mut impl FnMut(String),
+    on_usage_limit: &impl Fn(),
+) -> Result<(String, Vec<Value>), String> {
     let mut answer = String::new();
+    let mut items = Vec::new();
     let mut pending = Vec::<u8>::new();
     let mut last = Instant::now();
     let mut done = false;
     'read: while let Some(chunk) = reply.chunk().await.map_err(|_| t("ChatGPT stopped before finishing the answer."))? {
         let _serial = REFRESHING.get_or_init(Default::default).lock().await;
-        check_session_generation(&account, session_generation())?;
+        check_session_generation(account, session_generation())?;
         pending.extend_from_slice(&chunk);
         while let Some(end) = pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
@@ -1717,6 +1813,11 @@ pub async fn send(
             let Some(data) = line.trim_end().strip_prefix("data:") else { continue };
             match parse_event(data.trim()) {
                 StreamEvent::Delta(text) => answer.push_str(&text),
+                StreamEvent::Item(item) => {
+                    if items.len() < 64 {
+                        items.push(item);
+                    }
+                }
                 StreamEvent::Completed => {
                     done = true;
                     break 'read;
@@ -1739,9 +1840,9 @@ pub async fn send(
         if answer.len() > 4 * 1024 * 1024 {
             return Err(t("The server's answer is too large."));
         }
-        if last.elapsed() >= Duration::from_millis(66) {
+        if last.elapsed() >= Duration::from_millis(66) && !answer.is_empty() {
             last = Instant::now();
-            on_delta(answer.clone());
+            on_delta(format!("{prefix}{answer}"));
         }
     }
     // `response.completed` is the only sign it succeeded.
@@ -1749,10 +1850,8 @@ pub async fn send(
         return Err(t("ChatGPT stopped before finishing the answer."));
     }
     let _serial = REFRESHING.get_or_init(Default::default).lock().await;
-    check_session_generation(&account, session_generation())?;
-    on_delta(answer.clone());
-    let plain = chat::plain_question(turn.first, context.as_ref(), &query);
-    Ok(finish_turn(chat, &turn, user, &plain, answer))
+    check_session_generation(account, session_generation())?;
+    Ok((answer, items))
 }
 
 #[cfg(test)]

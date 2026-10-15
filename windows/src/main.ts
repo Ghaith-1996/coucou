@@ -11,6 +11,7 @@ import { registerIntegrationHandlers, refreshConfigured } from "./island/integra
 import { registerShortcutHandlers } from "./island/shortcuts";
 import { registerVoice } from "./assistant/voice";
 import { registerAudioMode } from "./assistant/audio-mode";
+import { registerChatActions } from "./assistant/chat-actions";
 import { registerRegion } from "./assistant/region";
 import { applySpotify, registerSpotifyHandlers } from "./island/spotify";
 import { SPOTIFY_ID } from "./core/spotify";
@@ -119,6 +120,7 @@ async function main() {
   registerShortcutHandlers(island, () => setPaused(false));
   registerVoice(island);
   registerAudioMode(island);
+  registerChatActions();
   registerRegion(island);
   registerSpotifyHandlers(island);
   // Rust may have read Spotify before this page listened: ask once.

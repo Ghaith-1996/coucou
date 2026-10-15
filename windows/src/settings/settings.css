@@ -431,3 +431,32 @@ html[dir="rtl"] :is(.diff, .path, .keycap, input[type="password"], input[type="t
 /* Settings → Android phone: the pairing QR code (an SVG from Rust, black on white). */
 .qr { width: 220px; max-width: 100%; background: #fff; border-radius: 8px; padding: 4px; }
 .qr svg { display: block; width: 100%; height: auto; }
+
+/* Settings → Memory (memory.ts) */
+.memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-item {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.memory-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.memory-badge {
+  flex: 0 0 auto;
+  font: 500 10.5px var(--font);
+  color: var(--dim);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 2px 8px;
+}

@@ -5175,6 +5175,204 @@
    "pt-BR": "Outra operação do ChatGPT está em andamento. Tente novamente.",
    "ru": "Выполняется другая операция ChatGPT. Повторите попытку.",
    "id": "Operasi ChatGPT lain sedang berlangsung. Coba lagi."
+  },
+  "Memory": {
+   "zh-Hans": "记忆",
+   "hi": "मेमोरी",
+   "es": "Memoria",
+   "ar": "الذاكرة",
+   "fr": "Mémoire",
+   "bn": "মেমোরি",
+   "pt-BR": "Memória",
+   "ru": "Память",
+   "id": "Memori"
+  },
+  "What the chat knows about you, in every conversation. Kept on this PC, encrypted for your Windows account. The chat can propose an item; nothing is saved until you confirm it.": {
+   "zh-Hans": "聊天在每次对话中都知道的关于你的信息。保存在这台电脑上，并针对你的 Windows 帐户加密。聊天可以提议一条内容；在你确认之前不会保存任何内容。",
+   "hi": "चैट हर बातचीत में आपके बारे में क्या जानती है। इसी PC पर रखा जाता है, आपके Windows खाते के लिए एन्क्रिप्ट किया हुआ। चैट कोई आइटम सुझा सकती है; जब तक आप पुष्टि नहीं करते, कुछ भी सहेजा नहीं जाता।",
+   "es": "Lo que el chat sabe de ti, en cada conversación. Se guarda en este PC, cifrado para tu cuenta de Windows. El chat puede proponer un elemento; no se guarda nada hasta que lo confirmes.",
+   "ar": "ما يعرفه الدردشة عنك في كل محادثة. محفوظ على هذا الكمبيوتر ومشفّر لحساب Windows الخاص بك. يمكن للدردشة اقتراح عنصر؛ لا يُحفظ شيء حتى تؤكده.",
+   "fr": "Ce que le chat sait de vous, dans chaque conversation. Conservé sur ce PC, chiffré pour votre compte Windows. Le chat peut proposer un élément ; rien n'est enregistré tant que vous ne l'avez pas confirmé.",
+   "bn": "প্রতিটি কথোপকথনে চ্যাট আপনার সম্পর্কে যা জানে। এই PC-তেই রাখা হয়, আপনার Windows অ্যাকাউন্টের জন্য এনক্রিপ্ট করা। চ্যাট একটি আইটেম প্রস্তাব করতে পারে; আপনি নিশ্চিত না করা পর্যন্ত কিছুই সংরক্ষিত হয় না।",
+   "pt-BR": "O que o chat sabe sobre você, em todas as conversas. Fica neste PC, criptografado para sua conta do Windows. O chat pode propor um item; nada é salvo até você confirmar.",
+   "ru": "Что чат знает о вас — в каждом разговоре. Хранится на этом ПК, зашифровано для вашей учётной записи Windows. Чат может предложить запись; ничего не сохраняется, пока вы не подтвердите.",
+   "id": "Apa yang diketahui chat tentang Anda, di setiap percakapan. Disimpan di PC ini, dienkripsi untuk akun Windows Anda. Chat dapat mengusulkan item; tidak ada yang disimpan sampai Anda mengonfirmasinya."
+  },
+  "Use memory in the chat": {
+   "zh-Hans": "在聊天中使用记忆",
+   "hi": "चैट में मेमोरी का उपयोग करें",
+   "es": "Usar la memoria en el chat",
+   "ar": "استخدام الذاكرة في الدردشة",
+   "fr": "Utiliser la mémoire dans le chat",
+   "bn": "চ্যাটে মেমোরি ব্যবহার করুন",
+   "pt-BR": "Usar a memória no chat",
+   "ru": "Использовать память в чате",
+   "id": "Gunakan memori di chat"
+  },
+  "Something the chat should remember…": {
+   "zh-Hans": "聊天应该记住的内容…",
+   "hi": "कुछ ऐसा जो चैट को याद रखना चाहिए…",
+   "es": "Algo que el chat debería recordar…",
+   "ar": "شيء يجب أن تتذكره الدردشة…",
+   "fr": "Quelque chose que le chat doit retenir…",
+   "bn": "এমন কিছু যা চ্যাটের মনে রাখা উচিত…",
+   "pt-BR": "Algo que o chat deve lembrar…",
+   "ru": "Что чату стоит запомнить…",
+   "id": "Sesuatu yang perlu diingat chat…"
+  },
+  "Add": {
+   "zh-Hans": "添加",
+   "hi": "जोड़ें",
+   "es": "Añadir",
+   "ar": "إضافة",
+   "fr": "Ajouter",
+   "bn": "যোগ করুন",
+   "pt-BR": "Adicionar",
+   "ru": "Добавить",
+   "id": "Tambah"
+  },
+  "Edit": {
+   "zh-Hans": "编辑",
+   "hi": "संपादित करें",
+   "es": "Editar",
+   "ar": "تعديل",
+   "fr": "Modifier",
+   "bn": "সম্পাদনা",
+   "pt-BR": "Editar",
+   "ru": "Изменить",
+   "id": "Edit"
+  },
+  "From the chat": {
+   "zh-Hans": "来自聊天",
+   "hi": "चैट से",
+   "es": "Del chat",
+   "ar": "من الدردشة",
+   "fr": "Du chat",
+   "bn": "চ্যাট থেকে",
+   "pt-BR": "Do chat",
+   "ru": "Из чата",
+   "id": "Dari chat"
+  },
+  "Nothing yet.": {
+   "zh-Hans": "暂无内容。",
+   "hi": "अभी कुछ नहीं।",
+   "es": "Nada todavía.",
+   "ar": "لا شيء بعد.",
+   "fr": "Rien pour l'instant.",
+   "bn": "এখনও কিছু নেই।",
+   "pt-BR": "Nada ainda.",
+   "ru": "Пока ничего.",
+   "id": "Belum ada."
+  },
+  "Export": {
+   "zh-Hans": "导出",
+   "hi": "निर्यात करें",
+   "es": "Exportar",
+   "ar": "تصدير",
+   "fr": "Exporter",
+   "bn": "রপ্তানি",
+   "pt-BR": "Exportar",
+   "ru": "Экспорт",
+   "id": "Ekspor"
+  },
+  "Delete everything": {
+   "zh-Hans": "全部删除",
+   "hi": "सब कुछ हटाएँ",
+   "es": "Eliminar todo",
+   "ar": "حذف الكل",
+   "fr": "Tout supprimer",
+   "bn": "সবকিছু মুছুন",
+   "pt-BR": "Excluir tudo",
+   "ru": "Удалить всё",
+   "id": "Hapus semuanya"
+  },
+  "Really delete everything?": {
+   "zh-Hans": "确定全部删除？",
+   "hi": "क्या वाकई सब कुछ हटाना है?",
+   "es": "¿Seguro que quieres eliminar todo?",
+   "ar": "هل تريد حقًا حذف الكل؟",
+   "fr": "Vraiment tout supprimer ?",
+   "bn": "সত্যিই সবকিছু মুছবেন?",
+   "pt-BR": "Excluir tudo mesmo?",
+   "ru": "Точно удалить всё?",
+   "id": "Yakin hapus semuanya?"
+  },
+  "Saved to {path}": {
+   "zh-Hans": "已保存到 {path}",
+   "hi": "{path} में सहेजा गया",
+   "es": "Guardado en {path}",
+   "ar": "تم الحفظ في {path}",
+   "fr": "Enregistré dans {path}",
+   "bn": "{path}-এ সংরক্ষিত",
+   "pt-BR": "Salvo em {path}",
+   "ru": "Сохранено в {path}",
+   "id": "Disimpan ke {path}"
+  },
+  "Remember this?": {
+   "zh-Hans": "记住这一点？",
+   "hi": "इसे याद रखें?",
+   "es": "¿Recordar esto?",
+   "ar": "تذكّر هذا؟",
+   "fr": "Retenir ceci ?",
+   "bn": "এটি মনে রাখবেন?",
+   "pt-BR": "Lembrar disto?",
+   "ru": "Запомнить это?",
+   "id": "Ingat ini?"
+  },
+  "Nothing to remember.": {
+   "zh-Hans": "没有要记住的内容。",
+   "hi": "याद रखने के लिए कुछ नहीं है।",
+   "es": "No hay nada que recordar.",
+   "ar": "لا يوجد ما يُتذكَّر.",
+   "fr": "Rien à retenir.",
+   "bn": "মনে রাখার মতো কিছু নেই।",
+   "pt-BR": "Nada para lembrar.",
+   "ru": "Нечего запоминать.",
+   "id": "Tidak ada yang perlu diingat."
+  },
+  "A memory is at most {count} characters.": {
+   "zh-Hans": "一条记忆最多 {count} 个字符。",
+   "hi": "एक मेमोरी में अधिकतम {count} वर्ण हो सकते हैं।",
+   "es": "Un recuerdo tiene como máximo {count} caracteres.",
+   "ar": "لا تتجاوز الذكرى الواحدة {count} حرفًا.",
+   "fr": "Un souvenir fait au plus {count} caractères.",
+   "bn": "একটি মেমোরিতে সর্বোচ্চ {count}টি অক্ষর থাকতে পারে।",
+   "pt-BR": "Uma memória tem no máximo {count} caracteres.",
+   "ru": "Запись памяти — не больше {count} символов.",
+   "id": "Satu memori paling banyak {count} karakter."
+  },
+  "Memory is full: delete something first.": {
+   "zh-Hans": "记忆已满：请先删除一些内容。",
+   "hi": "मेमोरी भर गई है: पहले कुछ हटाएँ।",
+   "es": "La memoria está llena: elimina algo primero.",
+   "ar": "الذاكرة ممتلئة: احذف شيئًا أولًا.",
+   "fr": "La mémoire est pleine : supprimez d'abord quelque chose.",
+   "bn": "মেমোরি পূর্ণ: আগে কিছু মুছুন।",
+   "pt-BR": "A memória está cheia: exclua algo primeiro.",
+   "ru": "Память заполнена: сначала удалите что-нибудь.",
+   "id": "Memori penuh: hapus sesuatu terlebih dahulu."
+  },
+  "This memory is gone.": {
+   "zh-Hans": "这条记忆已不存在。",
+   "hi": "यह मेमोरी अब नहीं है।",
+   "es": "Este recuerdo ya no existe.",
+   "ar": "لم تعد هذه الذكرى موجودة.",
+   "fr": "Ce souvenir n'existe plus.",
+   "bn": "এই মেমোরিটি আর নেই।",
+   "pt-BR": "Esta memória não existe mais.",
+   "ru": "Этой записи больше нет.",
+   "id": "Memori ini sudah tidak ada."
+  },
+  "When it is on, it goes with every question to the model you chat with, local or online.": {
+   "zh-Hans": "开启后，它会随每个问题一起发送给你正在聊天的模型，无论是本地模型还是在线模型。",
+   "hi": "चालू होने पर, यह हर सवाल के साथ उस मॉडल को भेजी जाती है जिससे आप चैट करते हैं, चाहे वह लोकल हो या ऑनलाइन।",
+   "es": "Cuando está activada, se envía con cada pregunta al modelo con el que chateas, local o en línea.",
+   "ar": "عند تفعيلها، تُرسل مع كل سؤال إلى النموذج الذي تدردش معه، سواء كان محليًا أو عبر الإنترنت.",
+   "fr": "Quand elle est activée, elle accompagne chaque question envoyée au modèle avec lequel vous discutez, local ou en ligne.",
+   "bn": "চালু থাকলে, আপনি যে মডেলের সাথে চ্যাট করেন — লোকাল বা অনলাইন — প্রতিটি প্রশ্নের সাথে এটি পাঠানো হয়।",
+   "pt-BR": "Quando ativada, ela vai com cada pergunta para o modelo com que você conversa, local ou on-line.",
+   "ru": "Когда она включена, она отправляется с каждым вопросом модели, с которой вы общаетесь, — локальной или онлайн.",
+   "id": "Saat aktif, memori dikirim bersama setiap pertanyaan ke model yang Anda ajak chat, lokal maupun online."
   }
  }
 }

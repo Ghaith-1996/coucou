@@ -77,3 +77,12 @@ test("the same card is shown once; read-only tools leave a note until the next q
   clearToolNotes();
   assert.deepEqual(ChatActions.used, []);
 });
+
+test("a memory the chat proposes is a card like any other: nothing is saved before Do it", async () => {
+  emit("chat-action", { ...card("act-60"), kind: "memory-save", label: "Prefers answers in French", detail: "memory" });
+  assert.equal(ChatActions.cards[0].label, "Prefers answers in French");
+  assert.equal(calls.filter(([cmd]) => cmd.startsWith("memory_")).length, 0, "the page never saves a memory itself");
+  answerCard("act-60", false);
+  await flush();
+  assert.deepEqual(sent("chat_action_answer"), [{ actionId: "act-60", grant: null }]);
+});

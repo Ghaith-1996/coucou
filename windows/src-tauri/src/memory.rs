@@ -62,7 +62,7 @@ impl Default for Memory {
 /// One line of text worth remembering: trimmed, not empty, not too long,
 /// no control characters.
 pub fn clean(text: &str) -> Result<String, String> {
-    let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text: String = text.replace(|c: char| c.is_control(), " ").split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         return Err(crate::i18n::t("Nothing to remember."));
     }
@@ -345,6 +345,7 @@ mod tests {
         assert_eq!(a.text, "I write in French");
         assert_eq!(m.add("i write in french", Source::Chat, 2).unwrap().id, a.id, "the same thing once");
         assert!(m.add("   ", Source::User, 3).is_err());
+        assert_eq!(clean("a\u{1b}[31mb\u{0}c").unwrap(), "a [31mb c", "no control characters");
         assert!(m.add(&"x".repeat(MAX_CHARS + 1), Source::User, 3).is_err());
         for n in 1..MAX_ITEMS {
             m.add(&format!("fact {n}"), Source::User, 4).unwrap();

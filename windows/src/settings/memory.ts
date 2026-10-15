@@ -10,6 +10,7 @@ import { t } from "../i18n/i18n";
 const STRINGS = {
   get title() { return t("Memory"); },
   get hint() { return t("What the chat knows about you, in every conversation. Kept on this PC, encrypted for your Windows account. The chat can propose an item; nothing is saved until you confirm it."); },
+  get sent() { return t("When it is on, it goes with every question to the model you chat with, local or online."); },
   get use() { return t("Use memory in the chat"); },
   get placeholder() { return t("Something the chat should remember…"); },
   get add() { return t("Add"); },
@@ -105,7 +106,7 @@ export function memorySection(): HTMLElement {
     if (!confirmingClear) {
       confirmingClear = true;
       draw();
-      window.setTimeout(() => {
+      setTimeout(() => {
         confirmingClear = false;
         draw();
       }, 4000);
@@ -127,6 +128,7 @@ export function memorySection(): HTMLElement {
     {},
     h("h2", {}, h("span", { text: STRINGS.title })),
     h("div", { class: "hint", text: STRINGS.hint }),
+    h("div", { class: "hint", text: STRINGS.sent }),
     h("div", { class: "row" }, h("label", { text: STRINGS.use }), useSwitch),
     h("div", { class: "row" }, input, h("button", { text: STRINGS.add, onclick: add })),
     list,

@@ -396,8 +396,8 @@ export const Bridge = {
 
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
-  chatSend: (query: string, context: ChatContext | null) =>
-    afterChatNavigation(() => withChatContext(() => callOrThrow<{ text: string }>("chat_send", { query, context }))),
+  chatSend: (query: string, context: ChatContext | null, requestId?: string) =>
+    afterChatNavigation(() => withChatContext(() => callOrThrow<{ text: string }>("chat_send", { query, context, ...(requestId === undefined ? {} : { requestId }) }))),
   chatReset: () => navigateChat(async () => {
     if (!IS_TAURI) return null;
     try {

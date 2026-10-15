@@ -397,9 +397,87 @@ fn assert_buffered_capture_cancelled(actions: impl FnOnce(&Voice, &str)) {
 
 fn press_stop(voice: &Voice, id: &str, toggle: bool) {
     if toggle {
-        assert_eq!(voice.toggle().as_deref(), Some(id));
+        // A concurrent cancellation may already be closing this capture.
+        if let Some(stopped) = voice.toggle() {
+            assert_eq!(stopped, id);
+        }
     } else {
         voice.stop(id);
+    }
+}
+
+#[test]
+fn cancelled_audio_is_not_claimed_by_a_new_audio_or_dictation_start() {
+    for hands_free in [true, false] {
+        let (tx, events) = mpsc::channel();
+        let (buffered_tx, buffered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let transcribed = Arc::new(AtomicBool::new(false));
+        let mic = SimMic::new(RATE, vec![Chunk::Tone(400, 0.3), Chunk::Tone(400, 0.3)]);
+        let gated = GatedMic { mic: mic.clone(), buffered: Mutex::new(buffered_tx), resume: Arc::new(Mutex::new(resume_rx)) };
+        let h = Harness { voice: Voice::new(Recorder(Mutex::new(tx)), gated, RecordingStt(transcribed.clone()), log), events, mic };
+        let start = || if hands_free { h.voice.listen_hands_free() } else { h.voice.toggle() };
+
+        let first = h.voice.listen_hands_free().unwrap();
+        assert_eq!(h.wait(VoiceState::Listening).capture_id, first);
+        buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        h.voice.cancel(&first);
+        // Cancellation has returned, but the blocked read still owns the mic.
+        assert_eq!(h.mic_open(), 1);
+        assert_eq!(start(), None, "a pending cancel cannot supply a new capture id");
+        h.voice.stop(&first);
+        assert!(matches!(&*h.voice.0.phase.lock().unwrap(),
+            Phase::Listening { id, signal } if id == &first && signal.load(Ordering::SeqCst) == CANCEL));
+        assert!(!transcribed.load(Ordering::SeqCst));
+        resume_tx.send(()).unwrap();
+        assert_eq!(h.wait(VoiceState::Idle).capture_id, first);
+        assert_eq!(h.mic_open(), 0, "idle acknowledges that the microphone has closed");
+        assert_eq!(h.voice.use_transcript(&first), Err(ErrorCode::Expired));
+
+        let second = start().unwrap();
+        assert_ne!(second, first, "the next mode receives a fresh capture");
+        assert_eq!(h.wait(VoiceState::Listening).capture_id, second);
+        buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        h.voice.cancel(&first);
+        h.voice.stop(&first);
+        assert!(matches!(&*h.voice.0.phase.lock().unwrap(),
+            Phase::Listening { id, signal } if id == &second && signal.load(Ordering::SeqCst) == RUN));
+        assert_eq!(h.mic_open(), 1);
+        h.voice.cancel(&second);
+        resume_tx.send(()).unwrap();
+        assert_eq!(h.wait(VoiceState::Idle).capture_id, second);
+        assert_eq!(h.mic_open(), 0);
+        assert!(!transcribed.load(Ordering::SeqCst), "neither cancelled capture is transcribed");
+    }
+}
+
+#[test]
+fn stopped_audio_is_not_claimed_by_a_new_audio_or_dictation_start() {
+    for hands_free in [true, false] {
+        let (tx, events) = mpsc::channel();
+        let (buffered_tx, buffered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let transcribed = Arc::new(AtomicBool::new(false));
+        let mic = SimMic::new(RATE, vec![Chunk::Tone(400, 0.3)]);
+        let gated = GatedMic { mic: mic.clone(), buffered: Mutex::new(buffered_tx), resume: Arc::new(Mutex::new(resume_rx)) };
+        let h = Harness { voice: Voice::new(Recorder(Mutex::new(tx)), gated, RecordingStt(transcribed.clone()), log), events, mic };
+        let first = h.voice.listen_hands_free().unwrap();
+        h.wait(VoiceState::Listening);
+        buffered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(h.voice.toggle().as_deref(), Some(first.as_str()), "a live capture still toggles to stop");
+        let next = if hands_free { h.voice.listen_hands_free() } else { h.voice.toggle() };
+        assert_eq!(next, None, "a pending stop cannot supply a new capture id");
+        assert!(matches!(&*h.voice.0.phase.lock().unwrap(),
+            Phase::Listening { id, signal } if id == &first && signal.load(Ordering::SeqCst) == STOP));
+        assert_eq!(h.mic_open(), 1);
+        assert!(!transcribed.load(Ordering::SeqCst));
+        resume_tx.send(()).unwrap();
+        assert_eq!(h.wait(VoiceState::Processing).capture_id, first);
+        assert_eq!(h.mic_open(), 0);
+        assert_eq!(h.wait(VoiceState::Preview).capture_id, first);
+        assert!(transcribed.load(Ordering::SeqCst), "refusing a new start does not cancel a stopped transcript");
+        h.voice.cancel(&first);
+        assert_eq!(h.wait(VoiceState::Idle).capture_id, first);
     }
 }
 

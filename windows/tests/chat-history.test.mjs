@@ -13,6 +13,8 @@ const { buildPrompt, newConversation } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
 const { Sound } = await import("../src/core/sound.ts");
 const { Bridge } = await import("../src/core/bridge.ts");
+const { runIslandKey } = await import("../src/island/shortcuts.ts");
+const { ChatActions, beginToolNotes, registerChatActions, resetChatActionsForTests } = await import("../src/assistant/chat-actions.ts");
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const CURRENT = "c-0000000000000001";
@@ -27,6 +29,7 @@ let answers;
 let view;
 let nativeHistory;
 let sendHistories;
+let actionsRegistered = false;
 const nativeInvoke = internals.invoke;
 internals.invoke = async (cmd, args) => {
   const result = await nativeInvoke(cmd, args);
@@ -62,6 +65,11 @@ beforeEach(async () => {
   answers = {};
   nativeHistory = [];
   sendHistories = [];
+  resetChatActionsForTests();
+  if (!actionsRegistered) {
+    registerChatActions();
+    actionsRegistered = true;
+  }
   await Bridge.chatReset();
   calls.length = 0;
   State.settings = { ...DEFAULT_SETTINGS, chatModels: {} };
@@ -77,6 +85,11 @@ beforeEach(async () => {
 });
 
 const $ = (selector) => view.el.querySelector(selector);
+
+// A tool event carries the identity assigned when its answer started.
+function noteTabsRead() {
+  emit("chat-tool-used", { requestId: beginToolNotes(), tool: "browser-tabs" });
+}
 
 // The island redraws after State.notify(), not after every button click.
 function observeView(t) {
@@ -190,8 +203,12 @@ test("New chat redraws the empty conversation and does not inherit its title or 
   assert.ok($(".chat-restored"));
   assert.ok($(".chip"));
   assert.equal($(".chat-input").placeholder, "Continue…");
+  noteTabsRead();
+  assert.ok($(".tool-note"));
   await history();
   $(".history-new").fire("click");
+  assert.deepEqual(ChatActions.used, []);
+  assert.equal($(".tool-note"), null, "a fresh chat must not claim it inspected browser tabs");
   assert.equal(view.el.find(".chat-row").length, 0, "the click redraws without a manual sync");
   assert.equal($(".chat-restored"), null);
   assert.equal($(".chip"), null);
@@ -209,6 +226,81 @@ test("New chat redraws the empty conversation and does not inherit its title or 
   assert.notEqual(records.get(State.chatId).createdAt, 123);
 });
 
+test("the new-chat shortcut clears tool notes only when its reset is allowed", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  await open(CURRENT);
+  noteTabsRead();
+  const note = $(".tool-note");
+  assert.ok(note);
+  const host = { setView(view) { State.view = view; State.notify(); } };
+  State.stateOverride = "thinking";
+  runIslandKey(host, { kind: "newChat" });
+  assert.equal(State.chatId, CURRENT);
+  assert.equal($(".tool-note"), note);
+  assert.deepEqual(ChatActions.used, ["browser-tabs"]);
+  State.stateOverride = null;
+  runIslandKey(host, { kind: "newChat" });
+  assert.equal(State.chatId, null);
+  assert.deepEqual(ChatActions.used, []);
+  assert.equal($(".tool-note"), null);
+  await flush();
+  assert.equal(sent("chat_reset").length, 1);
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`tool notes follow the visible conversation when history restoration ends in ${outcome}`, async (t) => {
+    observeView(t);
+    seed(CURRENT, "Lisbon trip");
+    seed(OTHER, "Paris trip");
+    await open(CURRENT);
+    noteTabsRead();
+    const note = $(".tool-note");
+    assert.ok(note);
+    const messages = State.chatHistory;
+    const pending = deferredOpen(t, OTHER);
+    answers.chat_history_open = () => pending.promise;
+    await history();
+    assert.equal($(".tool-note"), note, "browsing saved chats keeps the current answer's notes");
+    await open(OTHER);
+    assert.equal(State.chatHistory, messages);
+    assert.deepEqual(ChatActions.used, ["browser-tabs"], "pending navigation still displays the original conversation");
+    assert.equal($(".tool-note"), note);
+
+    if (outcome === "success") pending.resolve(pending.saved);
+    else pending.reject(new Error("Paris unavailable"));
+    await flush();
+    if (outcome === "success") {
+      assert.equal(State.chatId, OTHER);
+      assert.deepEqual(ChatActions.used, []);
+      assert.equal($(".tool-note"), null, "restored history must not inherit another conversation's tool note");
+    } else {
+      assert.equal(State.chatId, CURRENT);
+      assert.equal(State.chatHistory, messages);
+      assert.deepEqual(ChatActions.used, ["browser-tabs"]);
+      assert.equal($(".tool-note"), note, "failed navigation keeps the original answer's tool note");
+      assert.match($(".history").textContent, /Paris unavailable/);
+    }
+  });
+}
+
+test("a superseded history restoration cannot clear newer tool notes", async (t) => {
+  observeView(t);
+  seed(CURRENT, "Lisbon trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = () => pending.promise;
+  await open(CURRENT);
+  newConversation();
+  noteTabsRead();
+  const note = $(".tool-note");
+  assert.ok(note);
+  pending.resolve(pending.saved);
+  await flush();
+  assert.equal(State.chatId, null);
+  assert.deepEqual(ChatActions.used, ["browser-tabs"]);
+  assert.equal($(".tool-note"), note, "an ignored restoration cannot mutate the replacement chat's notes");
+});
+
 for (const deleted of [CURRENT, OTHER]) {
   test(`confirmed deletion of ${deleted === CURRENT ? "the active" : "another"} conversation redraws only the affected chat`, async (t) => {
     observeView(t);
@@ -217,6 +309,8 @@ for (const deleted of [CURRENT, OTHER]) {
     await open(CURRENT);
     const messages = State.chatHistory;
     const transcript = $(".chat-log").textContent;
+    noteTabsRead();
+    assert.ok($(".tool-note"));
     await history();
     const row = historyRow(deleted);
     const button = row.find(".history-act").find((b) => b.getAttribute("aria-label") === "Delete");
@@ -228,6 +322,8 @@ for (const deleted of [CURRENT, OTHER]) {
     assert.deepEqual(sent("chat_history_delete"), [{ id: deleted }]);
     assert.equal(records.has(deleted), false);
     assert.equal(view.el.find(".history-row").length, 1);
+    assert.deepEqual(ChatActions.used, deleted === CURRENT ? [] : ["browser-tabs"]);
+    assert.equal(Boolean($(".tool-note")), deleted !== CURRENT);
     if (deleted === CURRENT) {
       assert.equal(State.chatId, null);
       assert.deepEqual(State.chatHistory, []);
@@ -500,8 +596,12 @@ for (const outcome of ["resolves", "rejects"]) {
     t.after(async () => { pending.resolve(); await flush(); });
     answers.chat_reset = () => pending.promise;
     const errors = t.mock.method(console, "error", () => {});
+    noteTabsRead();
+    assert.ok($(".tool-note"));
     await history();
     $(".history-new").fire("click");
+    assert.deepEqual(ChatActions.used, [], "notes clear before native reset settles");
+    assert.equal($(".tool-note"), null);
     assert.equal(view.el.find(".chat-row").length, 0, "redraw cannot wait for native reset");
     assert.equal($(".chat-restored"), null);
     assert.equal($(".chat-input").placeholder, "Ask me anything…");
@@ -1987,6 +2087,17 @@ for (const phase of ["listening", "transcribing", "starting", "fetching transcri
     await flush();
     assert.equal(State.chatId, CURRENT);
     assert.equal(audio.AudioMode.state, "off", "history completion does not restart the microphone");
+    if (phase !== "fetching transcript") {
+      assert.equal($(".audio-btn").disabled, true, "history completion cannot release the old microphone");
+      $(".audio-btn").fire("click");
+      await flush();
+      assert.equal(sent("assistant_voice_hands_free").length, 1);
+      capture.resolve("old-audio");
+      await flush();
+      assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "old-audio" }]);
+      voiceEvent("idle"); // Native cancellation acknowledges microphone closure.
+      await flush();
+    }
     assert.equal($(".audio-btn").disabled, false);
     answers.assistant_voice_hands_free = () => "new-audio";
     $(".audio-btn").fire("click");

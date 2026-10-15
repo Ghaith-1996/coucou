@@ -13,6 +13,7 @@ import { cyclePill, islandKeyAction, navigate, pillByNumber, type IslandKeyActio
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { voiceShortcut } from "../assistant/voice";
+import { newConversation } from "../views/chat";
 
 const CLAUDE_DESKTOP_ID = "agent_claude-desktop";
 
@@ -173,11 +174,7 @@ export function runIslandKey(host: ShortcutHost, action: IslandKeyAction) {
     case "newChat":
       // Not while an answer is on its way: it would land in the new chat.
       if (State.stateOverride === "thinking") return;
-      State.chatHistory = [];
-      State.chatId = null;
-      State.droppedFile = null;
-      State.promptContext = null;
-      void Bridge.chatReset();
+      newConversation();
       Sound.play("blip");
       host.setView("prompt");
       break;

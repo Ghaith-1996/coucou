@@ -180,7 +180,8 @@ impl Voice {
     }
 
     /// The shortcut or the mic button: starts a capture, or stops the one
-    /// that is listening. Returns the capture id it started or stopped.
+    /// that is listening. Returns the capture id it started or stopped, or
+    /// None while an earlier stop/cancellation is still closing the microphone.
     pub fn toggle(&self) -> Option<String> {
         self.begin(false)
     }
@@ -196,10 +197,12 @@ impl Voice {
         let mut phase = self.0.phase.lock().unwrap();
         match &*phase {
             Phase::Listening { id, signal } => {
-                // A pending cancellation is terminal, even before the capture
-                // thread has closed the microphone and left Listening.
-                let _ = signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst);
-                Some(id.clone())
+                // Only a live capture can be stopped by this press. A pending
+                // stop/cancellation is terminal, even while its capture thread
+                // is closing the microphone. Returning its id would let a new
+                // audio/dictation start claim that dying capture as its own.
+                signal.compare_exchange(RUN, STOP, Ordering::SeqCst, Ordering::SeqCst)
+                    .ok().map(|_| id.clone())
             }
             // Busy turning the last one into text: a press waits for it.
             Phase::Processing { .. } => None,

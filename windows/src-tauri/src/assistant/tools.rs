@@ -34,6 +34,14 @@ pub const CLOSED_EVENT: &str = "chat-action-closed";
 /// To the island: a read-only tool was used ("Looked at your browser tabs").
 pub const USED_EVENT: &str = "chat-tool-used";
 
+/// Frontend note ownership only; unrelated to the native authorization intent.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolUsed<'a> {
+    request_id: Option<&'a str>,
+    tool: &'a str,
+}
+
 /// The tools, as one namespace (Sign in with ChatGPT accepts function tools
 /// only grouped in a namespace).
 pub fn definitions() -> Value {
@@ -203,9 +211,9 @@ fn result(text: impl Into<String>) -> String {
 }
 
 /// Runs one call and returns what the model is told.
-pub async fn run(app: &AppHandle, call: &ToolCall, intent: &str) -> String {
+pub async fn run(app: &AppHandle, call: &ToolCall, intent: &str, request_id: Option<&str>) -> String {
     match bare_name(&call.name) {
-        "list_browser_tabs" => list_tabs(app).await,
+        "list_browser_tabs" => list_tabs(app, request_id).await,
         "switch_browser_tab" => switch_tab(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
         "open_app" => open_app(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent).await,
         _ => result("There is no such tool."),
@@ -223,10 +231,10 @@ async fn tabs() -> Result<Vec<super::browser::Tab>, String> {
     }
 }
 
-async fn list_tabs(app: &AppHandle) -> String {
+async fn list_tabs(app: &AppHandle, request_id: Option<&str>) -> String {
     match tabs().await {
         Ok(tabs) => {
-            let _ = app.emit_to(crate::island::WINDOW_LABEL, USED_EVENT, "browser-tabs");
+            let _ = app.emit_to(crate::island::WINDOW_LABEL, USED_EVENT, ToolUsed { request_id, tool: "browser-tabs" });
             log(format!("chat: browser tabs read ({})", tabs.len()));
             if tabs.is_empty() {
                 return result("No Chrome, Edge, Brave or Vivaldi window is open.");
@@ -320,6 +328,18 @@ pub fn chat_action_answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_notes_carry_only_the_frontend_request_identity_and_tool() {
+        let note = ToolUsed { request_id: Some("request-one"), tool: "browser-tabs" };
+        assert_eq!(serde_json::to_value(note).unwrap(), json!({
+            "requestId": "request-one", "tool": "browser-tabs"
+        }));
+        let unscoped = ToolUsed { request_id: None, tool: "browser-tabs" };
+        assert_eq!(serde_json::to_value(unscoped).unwrap(), json!({
+            "requestId": null, "tool": "browser-tabs"
+        }));
+    }
 
     #[test]
     fn the_tools_are_one_namespace_of_three_strict_functions() {

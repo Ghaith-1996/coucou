@@ -563,6 +563,7 @@ async fn chat_send(
     stop: State<'_, ChatStop>,
     query: String,
     context: Option<ChatContext>,
+    request_id: Option<String>,
 ) -> Result<ChatReply, String> {
     let settings = shared.settings.lock().unwrap().clone();
     let account_before = (settings.chat_provider == chatgpt::PROVIDER).then(chatgpt::status);
@@ -570,7 +571,7 @@ async fn chat_send(
     *stop.0.lock().unwrap() = Some(tx);
     // Stop drops the request mid-way: nothing more is read or recorded.
     let result = tokio::select! {
-        reply = chat::send(&app, &chat, &settings, query, context) => reply,
+        reply = chat::send(&app, &chat, &settings, query, context, request_id) => reply,
         _ = rx => Err(i18n::t("Stopped.")),
     };
     emit_chatgpt_status_change(&app, account_before);

@@ -655,11 +655,9 @@ export class Island {
    */
   private swallow(path: string) {
     const name = path.split(/[\\/]/).pop() || "file";
+    newConversation();
     State.droppedFile = { name, path };
     State.promptContext = { kind: "file", name, path };
-    State.chatHistory = [];
-    State.chatId = null;
-    void Bridge.chatReset();
 
     UploadSeq.performDrop(State.uploadDuration);
     this.uploadTens = 0;

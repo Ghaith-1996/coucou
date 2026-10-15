@@ -2,16 +2,25 @@
 import { beforeEach, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { installFakeDom } from "./fakedom.mjs";
-import { calls, internals, sent } from "./tauri.mjs";
+import { calls, emit, internals, sent } from "./tauri.mjs";
 installFakeDom();
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent: "Windows" } });
 const { buildPrompt } = await import("../src/views/chat.ts");
 const { DEFAULT_SETTINGS, State } = await import("../src/core/state.ts");
 const { Region, registerRegion, resetRegionForTests, regionCancel } = await import("../src/assistant/region.ts");
-const { registerVoice, resetVoiceForTests } = await import("../src/assistant/voice.ts");
+const { registerVoice, resetVoiceForTests, voiceShortcut } = await import("../src/assistant/voice.ts");
+const { AudioMode, registerAudioMode, resetAudioModeForTests, startAudioMode, stopAudioMode } = await import("../src/assistant/audio-mode.ts");
+const { CONTRACT_VERSION } = await import("../src/assistant/contracts.ts");
 const answers = new Map();
+const listeners = new Map();
 const nativeInvoke = internals.invoke;
 internals.invoke = async (cmd, args) => {
+  if (cmd === "plugin:event|listen") {
+    listeners.set(args.event, [...(listeners.get(args.event) ?? []), args.handler]);
+    return nativeInvoke(cmd, { ...args, handler: (event) => {
+      for (const listener of listeners.get(args.event) ?? []) listener(event);
+    } });
+  }
   const result = await nativeInvoke(cmd, args);
   return answers.has(cmd) ? answers.get(cmd) : result;
 };
@@ -25,10 +34,11 @@ const host = {
 let view;
 let unsubscribe;
 beforeEach(() => {
-  resetRegionForTests(); resetVoiceForTests();
+  listeners.clear();
+  resetRegionForTests(); resetVoiceForTests(); resetAudioModeForTests();
   const subscribe = State.subscribe;
   State.subscribe = () => () => {};
-  registerRegion(host); registerVoice(host);
+  registerRegion(host); registerVoice(host); registerAudioMode(host);
   State.subscribe = subscribe;
   calls.length = 0;
   answers.clear();
@@ -42,7 +52,7 @@ beforeEach(() => {
   unsubscribe = State.subscribe(() => view.sync());
   view.sync();
 });
-afterEach(() => { unsubscribe(); resetRegionForTests(); resetVoiceForTests(); });
+afterEach(() => { unsubscribe(); resetRegionForTests(); resetVoiceForTests(); resetAudioModeForTests(); });
 const $ = (selector) => view.el.querySelector(selector);
 function deferred(t, cmd, fallback = null) {
   const pending = Promise.withResolvers();
@@ -115,4 +125,48 @@ test("history opening reserves the composer against region capture", async (t) =
   opening.resolve(record);
   await flush();
   assert.equal($(".region-btn").disabled, false);
+});
+
+
+test("region startup and picking reserve the global voice shortcut and audio mode", async (t) => {
+  const region = deferred(t, "region_start", "reg-1");
+  $(".region-btn").fire("click");
+  for (const phase of ["starting", "picking"]) {
+    assert.equal(Region.status, phase);
+    $(".audio-btn").fire("click");
+    await startAudioMode();
+    await voiceShortcut();
+    await flush();
+    assert.equal($(".audio-btn").disabled, true);
+    assert.deepEqual(sent("assistant_voice_hands_free"), []);
+    assert.deepEqual(sent("assistant_voice_toggle"), []);
+    if (phase === "starting") { region.resolve("reg-1"); await flush(); }
+  }
+  regionCancel();
+  assert.equal($(".audio-btn").disabled, false);
+  await voiceShortcut();
+  assert.equal(sent("assistant_voice_toggle").length, 1);
+});
+
+test("audio startup and unacknowledged release block region capture", async (t) => {
+  const capture = deferred(t, "assistant_voice_hands_free", "audio-1");
+  const starting = startAudioMode();
+  $(".region-btn").fire("click");
+  assert.equal($(".region-btn").disabled, true);
+  assert.deepEqual(sent("region_start"), []);
+  stopAudioMode();
+  capture.resolve("audio-1");
+  await starting; await flush();
+  assert.equal(AudioMode.state, "off");
+  assert.equal(AudioMode.busy, true);
+  $(".region-btn").fire("click");
+  assert.equal($(".region-btn").disabled, true);
+  assert.deepEqual(sent("region_start"), []);
+  emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "audio-1", state: "idle" });
+  await flush();
+  assert.equal(AudioMode.busy, false);
+  assert.equal($(".region-btn").disabled, false);
+  $(".region-btn").fire("click");
+  await flush();
+  assert.equal(sent("region_start").length, 1);
 });

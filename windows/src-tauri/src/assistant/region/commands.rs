@@ -211,17 +211,20 @@ pub async fn region_pick(
         ErrorCode::Expired
     })?;
     close_overlays(&app, Some(&session_id));
-    let ours: Vec<isize> = app.webview_windows()
+    let ours: Option<Vec<isize>> = app.webview_windows()
         .into_iter()
         .filter(|(label, _)| !label.starts_with(OVERLAY))
-        .filter_map(|(_, w)| crate::platform::hwnd_of(&w))
-        .map(|h| h.0 as isize)
+        .map(|(_, w)| crate::platform::hwnd_of(&w).map(|h| h.0 as isize))
         .collect();
     let on_screen = Rect { x: monitor.bounds.x + region.x, y: monitor.bounds.y + region.y, ..region };
     let image = tauri::async_runtime::spawn_blocking(move || {
-        let _hidden = capture::Excluded::new(ours.into_iter().map(|h| windows::Win32::Foundation::HWND(h as *mut _)));
-        std::thread::sleep(SETTLE);
-        capture::grab(on_screen)
+        // Missing handles and failed exclusions refuse the copy. The native
+        // guard keeps cancellation/replacement workers from restoring each
+        // other's affinities while either copy is still in progress.
+        capture::excluding(ours?.into_iter().map(|h| windows::Win32::Foundation::HWND(h as *mut _)), || {
+            std::thread::sleep(SETTLE);
+            capture::grab(on_screen)
+        })
     })
     .await
     .ok()

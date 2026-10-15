@@ -28,7 +28,9 @@ import { cleanTitle, fromSaved, newChatId, titleFor, toSaved, whenLabel } from "
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import { HOST_OS } from "../core/pills";
-import { voiceShortcut } from "../assistant/voice";
+import { Voice, voiceShortcut } from "../assistant/voice";
+import { captureReleasePending, captureReleaseFailed, retryCaptureRelease } from "../assistant/capture-release";
+import { AudioMode, interruptAudio, setAudioAsk, stopAudioMode, toggleAudioMode } from "../assistant/audio-mode";
 import { Region, startRegion } from "../assistant/region";
 import type { ViewHost } from "./views";
 import { N_, t, tl } from "../i18n/i18n";
@@ -39,6 +41,20 @@ const STRINGS = {
   send: N_("Send"),
   stop: N_("Stop"),
   voice: N_("Start voice capture"),
+  audio: N_("Audio mode: talk with the chat"),
+  audioListening: N_("Listening…"),
+  audioTranscribing: N_("Transcribing…"),
+  audioThinking: N_("Thinking…"),
+  audioSpeaking: N_("Speaking — tap to interrupt"),
+  audioEnd: N_("End"),
+  captureReleasing: N_("Waiting for the microphone to close…"),
+  captureReleaseFailed: N_("Could not release the microphone. Retry to reconnect."),
+  audioSilence: N_("Audio mode ended: nothing was heard."),
+  audioError: N_("Audio mode ended. Check your microphone and speech model in Settings, then try again."),
+  audioSpeechError: N_("Could not read the answer aloud. Audio mode ended. Please try again."),
+  audioModel: N_("Download a speech model in Settings to use audio mode."),
+  audioMicrophone: N_("Microphone unavailable"),
+  audioDenied: N_("Windows blocks the microphone for desktop apps. Allow it in Settings → Privacy & security → Microphone."),
   region: N_("Ask about a screen region"),
   switchModel: N_("Switch provider or model"),
   noModel: N_("Choose a model"),
@@ -422,6 +438,8 @@ let chatCreatedAt = 0;
 let chatTitle = "";
 /** New/open invalidates old saves; regeneration stays in the same conversation. */
 let chatSession = 0;
+/** Cancel the answer owned by any currently built prompt before replacing its transcript. */
+let cancelCurrentAnswer: (() => void) | null = null;
 /** Only the latest save may change the active conversation's warning. */
 let saveAttempt = 0;
 let saveFailure: { id: string; error: string } | null = null;
@@ -430,6 +448,8 @@ let reopenedChatId: string | null = null;
 
 /** Starts a fresh conversation: nothing on screen, nothing in the model's history. */
 export function newConversation() {
+  cancelCurrentAnswer?.();
+  stopAudioMode();
   chatSession++;
   State.chatHistory = [];
   State.chatId = null;
@@ -832,13 +852,33 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     title: tl(STRINGS.voice),
     "aria-label": tl(STRINGS.voice),
   }, svg(ICONS.mic, 15, { stroke: 1.8 })) : null;
+  const audioBtn = HOST_OS === "windows" ? h("button", {
+    type: "button",
+    class: "audio-btn",
+    title: tl(STRINGS.audio),
+    "aria-label": tl(STRINGS.audio),
+    onclick: () => {
+      if (AudioMode.state === "off" && (sending || undoPending || composerReserved() || AudioMode.busy || Voice.busy || history.isOpening)) return;
+      toggleAudioMode();
+    },
+  }, svg(ICONS.wave, 15, { stroke: 1.8 })) : null;
   const region = HOST_OS === "windows" ? h("button", {
     type: "button",
     class: "region-btn",
     title: tl(STRINGS.region),
     "aria-label": tl(STRINGS.region),
   }, svg(ICONS.region, 15, { stroke: 1.8 })) : null;
-  const bar = h("div", { class: "chat-bar" }, input, region, voice, send);
+  const bar = h("div", { class: "chat-bar" }, input, audioBtn, region, voice, send);
+  // Audio mode's state, above the bar while it is on.
+  const audioLabel = h("span", { class: "audio-label" });
+  const audioDot = h("i", { class: "audio-dot" });
+  const audioStatus = h("button", { type: "button", class: "audio-status", onclick: () => interruptAudio() }, audioDot, audioLabel);
+  const audioEnd = h("button", { type: "button", class: "audio-end", text: t(STRINGS.audioEnd), onclick: () => {
+    if (AudioMode.state !== "off") stopAudioMode();
+    else retryCaptureRelease();
+  } });
+  const audioRow = h("div", { class: "audio-row" }, audioStatus, audioEnd);
+  audioRow.hidden = true;
 
   const modelDot = h("i", { class: "model-dot" });
   const modelName = h("span", { class: "model-name" });
@@ -864,6 +904,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   });
   const history = buildHistory(
     () => {
+      // Restoring another conversation ends the old spoken turn immediately,
+      // including microphone startup or transcript work that has not returned.
+      if (history.isOpening) stopAudioMode();
       body.classList.toggle("picking", picker.isOpen || history.isOpen);
       drawModelButton();
     },
@@ -874,7 +917,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       input.focus();
     },
   );
-  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, modelRow, bar);
+  body.append(chipRow, notice, restoredNotice, log, picker.el, history.el, modelRow, audioRow, bar);
 
   const el = h("div", { class: "view" }, h("div", { class: "card wash chat-card" }, body));
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
@@ -936,8 +979,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     historyBtn.classList.toggle("open", history.isOpen);
     modelBtn.disabled = sending;
     historyBtn.disabled = sending;
-    if (voice) voice.disabled = sending || composerReserved() || history.isOpening;
-    if (region) region.disabled = sending || composerReserved() || history.isOpening;
+    if (voice) voice.disabled = sending || composerReserved() || AudioMode.busy || history.isOpening;
+    if (region) region.disabled = sending || composerReserved() || AudioMode.busy || Voice.busy || history.isOpening;
+    if (audioBtn) audioBtn.disabled = AudioMode.state === "off" && (sending || undoPending || composerReserved() || AudioMode.busy || Voice.busy || history.isOpening);
     // While an answer comes, the send button is Stop.
     send.disabled = composerReserved() || undoPending || history.isOpening;
     send.classList.toggle("stop", sending);
@@ -1066,7 +1110,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.notify();
   });
 
-  async function ask(query: string) {
+  async function ask(query: string, requestId?: string): Promise<string | null> {
     if (picker.isOpen) picker.close();
     if (history.isOpen) history.close();
     sending = true;
@@ -1079,6 +1123,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     const session = chatSession;
     const isCurrent = () => State.chatHistory === messages && chatSession === session;
     answerIsCurrent = isCurrent;
+    const cancel = () => stopAnswer();
+    cancelCurrentAnswer = cancel;
     drawModelButton();
     Sound.play("send");
 
@@ -1092,26 +1138,30 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       ...(p.id === CHATGPT ? { effort: effortFor(State.settings, model) } : {}),
     };
 
-    State.chatHistory.push({ id: nextId++, role: "user", content: query });
-    State.stateOverride = "thinking";
-    State.notify();
-    onHeightChange();
-
-    const file = State.droppedFile;
-    // Stop/failure can leave visible messages without a committed native turn.
-    // Rust decides whether this candidate belongs on its first completed turn.
-    const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
-
+    let answer: string | null = null;
     try {
-      const reply = await Bridge.chatSend(query, context);
-      if (!isCurrent()) return;
+      // Notes and state notifications may synchronously reset the conversation.
+      if (!isCurrent() || stopRequested) return null;
+      State.chatHistory.push({ id: nextId++, role: "user", content: query });
+      State.stateOverride = "thinking";
+      State.notify();
+      onHeightChange();
+      if (!isCurrent() || stopRequested) return null;
+
+      const file = State.droppedFile;
+      // Stop/failure can leave visible messages without a committed native turn.
+      // Rust decides whether this candidate belongs on its first completed turn.
+      const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
+      const reply = await Bridge.chatSend(query, context, requestId);
+      if (!isCurrent()) return null;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text, ...answeredBy });
       State.stateOverride = null;
       usageLimit = false;
       Sound.play("finish");
       saveConversation();
+      answer = reply.text;
     } catch (err) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return null;
       State.stateOverride = null;
       if (stopRequested) {
         // What arrived before Stop stays on screen, marked; the model never sees it again.
@@ -1126,11 +1176,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         Sound.play("error");
       }
     } finally {
+      if (cancelCurrentAnswer === cancel) {
+        cancelCurrentAnswer = null;
+        // Reset may replace the transcript, but a newer answer owns its own
+        // thinking state even if this older IPC result arrives afterwards.
+        if (State.stateOverride === "thinking") State.stateOverride = null;
+      }
       sending = false;
       stopRequested = false;
-      // A reset can replace the transcript while this request still owns the
-      // thinking state. Release that state, but preserve any newer override.
-      if (State.stateOverride === "thinking") State.stateOverride = null;
       live = null;
       answerIsCurrent = null;
       answerProvider = null;
@@ -1140,11 +1193,21 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       onHeightChange();
       input.focus();
     }
+    return answer;
   }
+
+  const audioReady = () => !sending && !undoPending && !composerReserved() && !history.isOpening;
+  const stopAnswer = () => {
+    if (!sending || undoPending || stopRequested) return;
+    stopRequested = true;
+    void Bridge.chatStop();
+  };
+  setAudioAsk((text, requestId) => audioReady() ? ask(text, requestId) : Promise.resolve(null), audioReady, stopAnswer);
 
   async function submit() {
     const query = input.value.trim();
     if (!query || sending || composerReserved() || history.isOpening) return;
+    stopAudioMode();
     input.value = "";
     await ask(query);
   }
@@ -1156,6 +1219,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     const answer = messages[messages.length - 1];
     const question = messages[messages.length - 2];
     if (answer?.role !== "assistant" || question?.role !== "user") return;
+    stopAudioMode();
     // Reserve every entry point before native undo yields. It is an atomic
     // preparation, not an answer to Stop; keep the visible turn until success.
     sending = true;
@@ -1192,20 +1256,20 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   send.addEventListener("click", () => {
     if (undoPending) return;
     if (sending) {
-      stopRequested = true;
-      void Bridge.chatStop();
+      stopAudioMode();
+      stopAnswer();
       return;
     }
     void submit();
   });
   region?.addEventListener("click", () => {
-    if (sending || composerReserved() || history.isOpening) return;
+    if (sending || composerReserved() || AudioMode.busy || Voice.busy || history.isOpening) return;
     if (picker.isOpen) picker.close();
     if (history.isOpen) history.close();
     void startRegion();
   });
   voice?.addEventListener("click", async () => {
-    if (sending || composerReserved() || history.isOpening) return;
+    if (sending || composerReserved() || AudioMode.busy || history.isOpening) return;
     startingVoice = true;
     if (picker.isOpen) picker.close();
     drawModelButton();
@@ -1230,17 +1294,42 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (history.isOpen) history.close();
     } else if (key === "Escape" && sending && !undoPending) {
       e.preventDefault();
-      stopRequested = true;
-      void Bridge.chatStop();
+      stopAnswer();
     }
     e.stopPropagation(); // Escape closes the island, not the chat
   });
 
   refreshChatGpt();
 
+  function drawAudio() {
+    const on = AudioMode.state !== "off";
+    const releasing = captureReleasePending();
+    audioRow.hidden = !on && !AudioMode.note && !releasing;
+    audioBtn?.classList.toggle("on", on);
+    audioRow.dataset.state = AudioMode.state;
+    audioDot.style.transform = AudioMode.state === "listening" ? `scale(${1 + AudioMode.level * 1.5})` : "";
+    audioLabel.textContent = t(
+      captureReleaseFailed() ? STRINGS.captureReleaseFailed
+      : releasing && !AudioMode.note ? STRINGS.captureReleasing
+      : AudioMode.state === "listening" ? STRINGS.audioListening
+      : AudioMode.state === "transcribing" ? STRINGS.audioTranscribing
+      : AudioMode.state === "thinking" ? STRINGS.audioThinking
+      : AudioMode.state === "speaking" ? STRINGS.audioSpeaking
+      : AudioMode.note === "silence" ? STRINGS.audioSilence
+      : AudioMode.note === "speech" ? STRINGS.audioSpeechError
+      : AudioMode.note === "model" ? STRINGS.audioModel
+      : AudioMode.note === "no-microphone" ? STRINGS.audioMicrophone
+      : AudioMode.note === "microphone-denied" ? STRINGS.audioDenied
+      : AudioMode.note ? STRINGS.audioError : "",
+    );
+    audioEnd.hidden = !on && !releasing;
+    audioEnd.textContent = t(on ? STRINGS.audioEnd : STRINGS.retryHistory);
+  }
+
   return {
     el,
     sync() {
+      drawAudio();
       const file = State.droppedFile;
       const wantChip = file?.name ?? "";
       if (chipRow.dataset.label !== wantChip) {

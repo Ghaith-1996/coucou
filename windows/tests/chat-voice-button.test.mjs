@@ -242,6 +242,7 @@ test("a cancelled startup cannot reclaim a newer capture through late events", a
   assert.equal(mic().disabled, false);
   State.view = "prompt";
   answers.assistant_voice_toggle = "cap-new";
+  emit("assistant-voice", { v: CONTRACT_VERSION, captureId: "cap-old", state: "idle" });
   mic().fire("click");
   await flush();
   for (const state of ["listening", "preview", "idle"]) {
@@ -253,4 +254,32 @@ test("a cancelled startup cannot reclaim a newer capture through late events", a
   assert.equal(State.isPinned, true);
   assert.equal(input.value, "keep this draft");
   assert.deepEqual(sent("chat_send"), []);
+});
+
+for (const lostEvent of [false, true]) test(`capture release shows a safe Retry after ${lostEvent ? "a lost terminal event" : "bounded transport failures"}`, async () => {
+  let attempts = 0;
+  answers.assistant_voice_cancel = () => {
+    attempts++;
+    if (!lostEvent) throw new Error("cancel transport unavailable");
+    return false;
+  };
+  mic().fire("click"); await flush();
+  voiceCancel();
+  for (let i = 0; i < 5; i++) await flush();
+  State.view = "prompt"; State.mode = "expanded"; view.sync();
+  assert.equal(Voice.busy, true);
+  assert.equal(attempts, lostEvent ? 1 : 3);
+  const status = view.el.querySelector(".audio-row");
+  const retry = view.el.querySelector(".audio-end");
+  assert.equal(status.hidden, false);
+  assert.equal(retry.hidden, false);
+  assert.equal(retry.textContent, "Retry");
+  assert.match(view.el.querySelector(".audio-label").textContent, lostEvent ? /Waiting for the microphone/ : /Could not release the microphone/);
+  answers.assistant_voice_cancel = true;
+  retry.fire("click"); await flush(); view.sync();
+  assert.equal(Voice.busy, false, "only checked native acknowledgement removes the reservation");
+  assert.equal(status.hidden, true);
+  assert.equal(sent("assistant_voice_toggle").length, 1, "Retry itself never starts a second capture");
+  mic().fire("click"); await flush();
+  assert.equal(sent("assistant_voice_toggle").length, 2);
 });

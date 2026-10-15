@@ -396,8 +396,8 @@ export const Bridge = {
 
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
-  chatSend: (query: string, context: ChatContext | null) =>
-    afterChatNavigation(() => withChatContext(() => callOrThrow<{ text: string }>("chat_send", { query, context }))),
+  chatSend: (query: string, context: ChatContext | null, requestId?: string) =>
+    afterChatNavigation(() => withChatContext(() => callOrThrow<{ text: string }>("chat_send", { query, context, ...(requestId ? { requestId } : {}) }))),
   chatReset: () => navigateChat(async () => {
     if (!IS_TAURI) return null;
     try {
@@ -477,8 +477,21 @@ export const Bridge = {
   /** Starts a voice capture, or stops the one listening. The capture id, or null when busy. */
   voiceToggle: () => call<string | null>("assistant_voice_toggle"),
   voiceStop: (captureId: string) => call<void>("assistant_voice_stop", { captureId }),
-  /** Ends the capture and drops its audio or transcript. Never an action. */
-  voiceCancel: (captureId: string) => call<void>("assistant_voice_cancel", { captureId }),
+  /** Audio mode: a capture that ends by itself after speech and a pause. The capture id, or null. */
+  voiceHandsFree: () => call<string | null>("assistant_voice_hands_free"),
+  /** Audio mode: the transcript, as the next chat message. Throws with the refusal code. */
+  voiceConverse: (captureId: string) => callOrThrow<string>("assistant_voice_converse", { captureId }),
+  /** Audio mode: `text` read aloud by a Windows voice, as a WAV data URL. */
+  speechSay: (text: string, requestId: string) =>
+    callOrThrow<{ audio: string; language: string; matched: boolean; voice: "chatgpt" | "windows" }>("speech_say", { text, requestId }),
+  /** Retire only this audio turn; a late end never stops a newer answer. */
+  speechEnd: (requestId: string) => call<void>("speech_end", { requestId }),
+  /** True acknowledges native release; false still waits for microphone closure. Throws on IPC failure. */
+  voiceCancel: async (captureId: string): Promise<boolean> => {
+    const released = await callOrThrow<boolean>("assistant_voice_cancel", { captureId });
+    if (typeof released !== "boolean") throw new Error("Invalid native capture-release acknowledgement");
+    return released;
+  },
   /** The transcript as a chat draft Rust's policy allowed; throws with the refusal code. */
   voiceUse: (captureId: string) => callOrThrow<{ actionId: string; text: string }>("assistant_voice_use", { captureId }),
   /** A command the transcript asked for (`pill-set`), for Rust's policy; the action id when allowed. */

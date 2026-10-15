@@ -10,6 +10,7 @@ pub mod dictation;
 pub mod launch;
 pub mod policy;
 pub mod region;
+pub mod speech;
 pub mod voice;
 
 #[cfg(test)]

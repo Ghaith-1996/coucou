@@ -1944,3 +1944,142 @@ for (const mutation of ["rename", "delete"]) {
     else assert.equal(historyRow(CURRENT), undefined, "an old refresh cannot resurrect the deleted row");
   });
 }
+
+for (const phase of ["listening", "transcribing", "starting", "fetching transcript"]) {
+  test(`history restoration ends audio while ${phase} and ignores its late work`, async (t) => {
+    const audio = await import("../src/assistant/audio-mode.ts");
+    const { CONTRACT_VERSION } = await import("../src/assistant/contracts.ts");
+    audio.resetAudioModeForTests({ play: async () => {}, stop() {} });
+    audio.registerAudioMode({ setPinned() {}, takeKeyboard() {} });
+    t.after(() => { audio.stopAudioMode(); audio.resetAudioModeForTests(); });
+    observeView(t);
+    State.mode = "expanded";
+    State.pendingApproval = null;
+    const capture = Promise.withResolvers();
+    const transcript = Promise.withResolvers();
+    t.after(async () => { capture.resolve("old-audio"); transcript.resolve("Old spoken question"); await flush(); });
+    answers.assistant_voice_hands_free = () => phase === "starting" ? capture.promise : "old-audio";
+    answers.assistant_voice_converse = () => transcript.promise;
+    const voiceEvent = (state, captureId = "old-audio") => emit("assistant-voice", {
+      v: CONTRACT_VERSION, captureId, state, transcript: "Old spoken question",
+    });
+    seed(CURRENT, "Lisbon trip");
+    const pending = deferredOpen(t, CURRENT);
+    answers.chat_history_open = () => pending.promise;
+    $(".audio-btn").fire("click");
+    await flush();
+    if (phase === "transcribing") voiceEvent("processing");
+    if (phase === "fetching transcript") voiceEvent("preview");
+    await flush();
+    await history();
+    assert.notEqual(audio.AudioMode.state, "off", "browsing history alone does not end audio");
+    assert.equal($(".audio-row").hidden, false);
+    await open(CURRENT);
+    assert.equal(audio.AudioMode.state, "off", "selecting a conversation ends the old spoken turn immediately");
+    const releasing = phase === "listening" || phase === "transcribing";
+    assert.equal($(".audio-row").hidden, !releasing, "a cancelled capture retains a visible release indicator until native acknowledgement");
+    if (releasing) assert.match($(".audio-label").textContent, /Waiting for the microphone to close/);
+    assert.equal($(".audio-btn").classList.contains("on"), false, "the audio toggle visibly switches off");
+    assert.equal($(".audio-btn").disabled, true, "audio cannot restart while restoration is pending");
+    assert.deepEqual(sent("assistant_voice_cancel"), phase === "listening" || phase === "transcribing" ? [{ captureId: "old-audio" }] : []);
+    assert.equal(sent("chat_send").length, 0);
+    assert.deepEqual(State.chatHistory, []);
+
+    pending.resolve(pending.saved);
+    await flush();
+    assert.equal(State.chatId, CURRENT);
+    assert.equal(audio.AudioMode.state, "off", "history completion does not restart the microphone");
+    if (phase !== "fetching transcript") {
+      assert.equal($(".audio-btn").disabled, true, "history completion cannot release the old microphone");
+      $(".audio-btn").fire("click");
+      await flush();
+      assert.equal(sent("assistant_voice_hands_free").length, 1);
+      capture.resolve("old-audio");
+      await flush();
+      assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "old-audio" }]);
+      voiceEvent("idle"); // Native cancellation acknowledges microphone closure.
+      await flush();
+      assert.equal($(".audio-row").hidden, true, "the release indicator disappears after microphone closure");
+    }
+    assert.equal($(".audio-btn").disabled, false);
+    answers.assistant_voice_hands_free = () => "new-audio";
+    $(".audio-btn").fire("click");
+    await flush();
+    assert.equal(audio.AudioMode.state, "listening");
+    capture.resolve("old-audio");
+    transcript.resolve("Old spoken question");
+    for (let i = 0; i < 4; i++) await flush();
+    voiceEvent("preview");
+    voiceEvent("idle");
+    for (let i = 0; i < 4; i++) await flush();
+    assert.equal(audio.AudioMode.state, "listening", "old capture replies and events cannot stop the new capture");
+    assert.equal(sent("assistant_voice_converse").length, phase === "fetching transcript" ? 1 : 0);
+    assert.equal(sent("assistant_voice_hands_free").length, 2, "only the user's two explicit starts request captures");
+    assert.equal(sent("chat_send").length, 0, "late speech is never sent into the restored conversation");
+    if (phase === "starting") assert.deepEqual(sent("assistant_voice_cancel"), [{ captureId: "old-audio" }], "the late startup is cancelled by its own capture ID");
+    assert.ok(!sent("assistant_voice_cancel").some(({ captureId }) => captureId === "new-audio"));
+    audio.stopAudioMode();
+    await flush();
+    assert.equal(sent("assistant_voice_cancel").at(-1).captureId, "new-audio");
+  });
+}
+
+test("audio mode cannot start during history restoration, but can start afterward", async (t) => {
+  const audio = await import("../src/assistant/audio-mode.ts");
+  audio.resetAudioModeForTests({ play: async () => {}, stop() {} });
+  audio.registerAudioMode({ setPinned() {}, takeKeyboard() {} });
+  t.after(() => { audio.stopAudioMode(); audio.resetAudioModeForTests(); });
+  observeView(t);
+  State.mode = "expanded";
+  State.pendingApproval = null;
+  answers.assistant_voice_hands_free = () => "audio-after-history";
+  seed(CURRENT, "Lisbon trip");
+  const pending = deferredOpen(t, CURRENT);
+  answers.chat_history_open = () => pending.promise;
+  await open(CURRENT);
+  assert.equal($(".audio-btn").disabled, true);
+  $(".audio-btn").fire("click"); // A stale/programmatic click must also be refused.
+  await flush();
+  assert.equal(sent("assistant_voice_hands_free").length, 0);
+  assert.equal(audio.AudioMode.state, "off");
+  pending.resolve(pending.saved);
+  await flush();
+  assert.equal($(".audio-btn").disabled, false);
+  $(".audio-btn").fire("click");
+  await flush();
+  assert.equal(sent("assistant_voice_hands_free").length, 1);
+  assert.equal(audio.AudioMode.state, "listening");
+  $(".audio-btn").fire("click");
+  await flush();
+  assert.equal(audio.AudioMode.state, "off");
+});
+
+for (const alreadyListening of [false, true]) {
+  test(`a pending chat answer ${alreadyListening ? "keeps audio Stop usable" : "blocks starting audio mode"}`, async (t) => {
+    const audio = await import("../src/assistant/audio-mode.ts");
+    audio.resetAudioModeForTests({ play: async () => {}, stop() {} });
+    audio.registerAudioMode({ setPinned() {}, takeKeyboard() {} });
+    t.after(() => { audio.stopAudioMode(); audio.resetAudioModeForTests(); });
+    observeView(t);
+    State.mode = "expanded";
+    State.pendingApproval = null;
+    answers.assistant_voice_hands_free = () => "audio-during-answer";
+    if (alreadyListening) await audio.startAudioMode();
+    const pending = Promise.withResolvers();
+    t.after(async () => { pending.resolve({ text: "Finished" }); await flush(); });
+    answers.chat_send = () => pending.promise;
+    if (alreadyListening) {
+      answers.assistant_voice_converse = () => "A spoken question";
+      emit("assistant-voice", { v: (await import("../src/assistant/contracts.ts")).CONTRACT_VERSION, captureId: "audio-during-answer", state: "preview", transcript: "A spoken question" });
+      await flush();
+    } else await send("A typed question");
+    assert.equal($(".audio-btn").disabled, !alreadyListening);
+    $(".audio-btn").fire("click");
+    await flush();
+    assert.equal(sent("assistant_voice_hands_free").length, alreadyListening ? 1 : 0);
+    assert.equal(audio.AudioMode.state, "off");
+    pending.resolve({ text: "Finished" });
+    await flush();
+    assert.equal($(".audio-btn").disabled, false);
+  });
+}

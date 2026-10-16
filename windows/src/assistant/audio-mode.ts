@@ -50,6 +50,21 @@ export interface Player {
   stop(): void;
 }
 
+/**
+ * The app's content security policy plays media from `blob:` only, never a
+ * `data:` URL: a clip from Rust (`data:audio/…;base64,…`) becomes a blob URL,
+ * released once the clip is done. Anything else is used as it is.
+ */
+export function playableUrl(audio: string): { url: string; release: () => void } {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(audio);
+  if (!match) return { url: audio, release: () => {} };
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: match[1] }));
+  return { url, release: () => URL.revokeObjectURL(url) };
+}
+
 class ElementPlayer implements Player {
   private current: HTMLAudioElement | null = null;
   private finish: (() => void) | null = null;
@@ -57,12 +72,14 @@ class ElementPlayer implements Player {
   play(audio: string): Promise<void> {
     this.stop();
     return new Promise((resolve, reject) => {
-      const el = new Audio(audio);
+      const clip = playableUrl(audio);
+      const el = new Audio(clip.url);
       this.current = el;
       let settled = false;
       const done = (ok: boolean) => {
         if (settled) return;
         settled = true;
+        clip.release();
         if (this.current === el) {
           this.current = null;
           this.finish = null;

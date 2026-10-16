@@ -11,8 +11,8 @@ API and local providers don't get them.
 
 ## Switch
 
-Settings → Assistant → **Let the chat read my Codex and Claude Code
-conversations**, off by default.
+Settings → Assistant → **Let the chat read my conversations**, off by
+default. The same switch covers the ChatGPT and Claude windows.
 
 - Rust owns it, the same way it owns `assistantAutoRun`. `save_settings`
   ignores what a page sends, and only `assistant_set_read_chats`, called
@@ -36,8 +36,8 @@ agents were given (`base_instructions`, developer messages,
 `<environment_context>`), and file contents.
 
 Plain chats in the **ChatGPT and Claude desktop apps** are stored by their
-services, not in files on this PC. Reading those windows is a separate,
-later step.
+services, not in files on this PC: the chat reads their open window instead
+([CHAT-WINDOW.md](CHAT-WINDOW.md)).
 
 ## Tools (`assistant/tools.rs`)
 
@@ -95,4 +95,3 @@ later step.
 
 - Automatic summaries when an agent finishes. This would be a separate
   opt-in watcher, with deduplication and a rule for when to notify.
-- ChatGPT and Claude desktop chats, which can't be read from files.

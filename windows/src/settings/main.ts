@@ -899,6 +899,13 @@ function assistantSection(): HTMLElement {
     );
   });
   autoRun.setAttribute("aria-label", t("Do it without asking"));
+  const readChats = toggle(settings.assistantReadChats ?? false, (v) => {
+    Bridge.assistantSetReadChats(v).then(
+      () => { settings.assistantReadChats = v; },
+      () => { readChats.classList.toggle("on", !v); },
+    );
+  });
+  readChats.setAttribute("aria-label", t("Let the chat read my Codex and Claude Code conversations"));
   return h(
     "section",
     {},
@@ -906,6 +913,8 @@ function assistantSection(): HTMLElement {
     h("div", { class: "row" }, h("label", { text: t("Do it without asking") }), autoRun),
     h("div", { class: "hint", text: t("The chat and voice open apps, switch tabs, open web pages and save what you ask them to remember without a card. A note in the chat says what was done.") }),
     h("div", { class: "hint", text: t("Once a chat has read text from another program (tab titles, a dropped file or window, a reopened chat), pages and memories ask again until you start a new chat.") }),
+    h("div", { class: "row" }, h("label", { text: t("Let the chat read my Codex and Claude Code conversations") }), readChats),
+    h("div", { class: "hint", text: t("Ask \"what did Codex do today?\" and the chat reads what you and your agents said (never their tool output) from their own files on this PC, then summarizes it. What it reads is sent to the chat's model, online for ChatGPT.") }),
   );
 }
 

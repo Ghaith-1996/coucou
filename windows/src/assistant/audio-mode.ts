@@ -349,8 +349,10 @@ async function speak(at: number) {
   if (!requestId) return;
   // The next clip is asked for while the current one plays.
   let next: Promise<string | null> | null = null;
-  const failed = () => {
+  const failed = (why: unknown) => {
     if (at !== turn) return;
+    // Only the reason (a native error or the player's), never the text.
+    void Bridge.log(`audio: speech failed (${why instanceof Error ? why.message : String(why)})`);
     Sound.play("error");
     stopAudioMode("speech");
   };
@@ -359,10 +361,10 @@ async function speak(at: number) {
       const clip = await Bridge.speechSay(text, requestId);
       if (!clip.audio) throw new Error("Speech synthesis returned no audio");
       return clip.audio;
-    } catch {
+    } catch (why) {
       // Attach the handler when prefetch starts: it can fail before playback
       // finishes, or after this turn is cancelled. Only this turn may end mode.
-      failed();
+      failed(why);
       return null;
     }
   };
@@ -375,8 +377,8 @@ async function speak(at: number) {
       if (at !== turn) return; // A state subscriber may synchronously stop us.
       await player.play(audio);
     }
-  } catch {
-    failed();
+  } catch (why) {
+    failed(why);
   }
 }
 

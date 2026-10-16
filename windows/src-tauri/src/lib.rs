@@ -126,6 +126,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         settings.voice_model = current.voice_model.clone();
         // And for acting without a card: only its own switch in Settings.
         settings.assistant_auto_run = current.assistant_auto_run;
+        settings.assistant_read_chats = current.assistant_read_chats;
         *current = settings;
         (screen_changed, autostart_changed, shortcuts_changed)
     };
@@ -982,6 +983,7 @@ pub fn run() {
     }
 
     assistant::tools::set_auto_run(loaded.assistant_auto_run);
+    assistant::sessions::mark_app_start();
     builder
         .manage(Shared {
             settings: Mutex::new(loaded.clone()),
@@ -1091,6 +1093,7 @@ pub fn run() {
             assistant::speech::speech_say,
             assistant::tools::chat_action_answer,
             assistant::tools::assistant_set_auto_run,
+            assistant::tools::assistant_set_read_chats,
             memory::memory_list,
             memory::memory_add,
             memory::memory_edit,

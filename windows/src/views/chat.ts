@@ -58,6 +58,7 @@ const STRINGS = {
   doIt: N_("Do it"),
   no: N_("No"),
   lookedAtTabs: N_("Looked at your browser tabs"),
+  lookedAtSessions: N_("Looked at your Codex and Claude Code sessions"),
   autoOpened: N_("Opened {label}"),
   autoStarted: N_("Started {label}"),
   autoNotOpened: N_("Couldn't open {label}"),
@@ -1357,6 +1358,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     clear(actionSlot);
     for (const used of ChatActions.used) {
       if (used === "browser-tabs") actionSlot.append(h("div", { class: "tool-note", text: t(STRINGS.lookedAtTabs) }));
+      if (used === "agent-sessions") actionSlot.append(h("div", { class: "tool-note", text: t(STRINGS.lookedAtSessions) }));
     }
     for (const note of ChatActions.auto) {
       actionSlot.append(h("div", { class: "tool-note", text: t(autoNoteText(note), { label: note.label }) }));

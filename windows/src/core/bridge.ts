@@ -537,6 +537,8 @@ export const Bridge = {
   memorySetEnabled: (enabled: boolean) => callOrThrow<MemoryState>("memory_set_enabled", { enabled }),
   /** Settings' "Do it without asking" switch. Only the settings window may ask. */
   assistantSetAutoRun: (enabled: boolean) => callOrThrow<void>("assistant_set_auto_run", { enabled }),
+  /** Settings' "Let the chat read my conversations" switch. Only the settings window may ask. */
+  assistantSetReadChats: (enabled: boolean) => callOrThrow<void>("assistant_set_read_chats", { enabled }),
   /** A plain JSON copy in Downloads; resolves with its path. */
   memoryExport: () => callOrThrow<string>("memory_export"),
   /**

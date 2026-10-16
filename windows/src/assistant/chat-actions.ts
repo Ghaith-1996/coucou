@@ -150,7 +150,7 @@ export function registerChatActions() {
       const note = autoNote(event);
       if (!note) return;
       ChatActions.auto.push(note);
-    } else if (event.tool === "browser-tabs") {
+    } else if (event.tool === "browser-tabs" || event.tool === "agent-sessions") {
       if (!ChatActions.used.includes(event.tool)) ChatActions.used.push(event.tool);
     } else {
       return;

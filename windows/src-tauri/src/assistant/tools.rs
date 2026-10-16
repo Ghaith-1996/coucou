@@ -257,7 +257,7 @@ fn definitions_for(memory_supported: bool) -> Value {
             {
                 "type": "function",
                 "name": "read_agent_session",
-                "description": "Read what the user and the agent said in one session from list_agent_sessions (no tool output), to summarize it. Long sessions keep the first request and the end.",
+                "description": "Read what the user and the agent said in one session from list_agent_sessions (no tool output), to summarize it. Long sessions keep the first request and the end. At most 3 sessions per answer: pick the ones the user asked about, and summarize the others from their titles.",
                 "parameters": {
                     "type": "object",
                     "properties": { "id": { "type": "string", "description": "The session's id from list_agent_sessions." } },
@@ -568,7 +568,7 @@ pub async fn run(app: &AppHandle, call: &ToolCall, intent: &str, request_id: Opt
         "remember" => remember(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent, request_id, scope, remember_asked).await,
         "open_web" => open_web(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent, request_id, scope).await,
         "list_agent_sessions" => list_sessions(app, serde_json::from_str(&call.arguments).unwrap_or_default(), request_id, scope).await,
-        "read_agent_session" => read_session(app, serde_json::from_str(&call.arguments).unwrap_or_default(), request_id, scope).await,
+        "read_agent_session" => read_session(app, serde_json::from_str(&call.arguments).unwrap_or_default(), intent, request_id, scope).await,
         _ => result("There is no such tool."),
     }
 }
@@ -780,9 +780,36 @@ async fn list_sessions(app: &AppHandle, args: SinceArgs, request_id: Option<&str
     json!({ "sessions": sessions }).to_string()
 }
 
-async fn read_session(app: &AppHandle, args: SessionArgs, request_id: Option<&str>, scope: &ActionScope) -> String {
+/// Sessions one answer may read, all calls together (a model asked for "what
+/// was done today" read eleven at once: over 250k characters).
+pub const SESSION_READS_PER_ANSWER: usize = 3;
+
+/// Reads per answer, by the answer's native intent; only the latest few kept.
+static SESSION_READS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
+
+/// Counts one read for this answer; false once it has had its share.
+fn take_session_read(intent: &str) -> bool {
+    let mut reads = SESSION_READS.lock().unwrap();
+    if let Some((_, n)) = reads.iter_mut().find(|(i, _)| i == intent) {
+        if *n >= SESSION_READS_PER_ANSWER {
+            return false;
+        }
+        *n += 1;
+        return true;
+    }
+    if reads.len() >= 16 {
+        reads.remove(0);
+    }
+    reads.push((intent.to_string(), 1));
+    true
+}
+
+async fn read_session(app: &AppHandle, args: SessionArgs, intent: &str, request_id: Option<&str>, scope: &ActionScope) -> String {
     if !reading_chats_on(app) {
         return result(READ_CHATS_OFF);
+    }
+    if !take_session_read(intent) {
+        return result("This answer already read 3 sessions. Summarize from those, and from the other sessions' titles.");
     }
     let roots = super::sessions::Roots::from_env();
     let id = args.id.clone();
@@ -892,6 +919,16 @@ mod tests {
         assert!(gated.same_turn(&scope));
         ChatActions::default().retire(&scope);
         assert_eq!(gated.run_if_active(|| 1), None, "stopping the chat stops it too");
+    }
+
+    #[test]
+    fn one_answer_reads_at_most_three_sessions() {
+        let answer = policy::new_id("chat");
+        for _ in 0..SESSION_READS_PER_ANSWER {
+            assert!(take_session_read(&answer));
+        }
+        assert!(!take_session_read(&answer), "the fourth read is refused");
+        assert!(take_session_read(&policy::new_id("chat")), "the next answer starts again");
     }
 
     #[test]

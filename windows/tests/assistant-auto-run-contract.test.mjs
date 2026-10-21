@@ -22,7 +22,7 @@ test("reading conversations is its own switch, also Settings-only, checked befor
   const tools = native("assistant/tools.rs");
   assert.match(tools, /pub fn assistant_set_read_chats\([^)]*\)[^{]*\{\s*set_owned\(&app, &webview, \|s\| s\.assistant_read_chats = enabled\)\?;/);
   assert.match(tools, /fn set_owned\([^)]*\)[^{]*\{\s*if webview\.label\(\) != "settings" \{\s*return Err/);
-  for (const name of ["list_sessions", "read_session"]) {
+  for (const name of ["list_sessions", "read_session", "read_window"]) {
     assert.match(tools, new RegExp(`async fn ${name}\\([^)]*\\)[^{]*\\{\\s*if !reading_chats_on\\(app\\) \\{\\s*return result\\(READ_CHATS_OFF\\);`));
   }
   // Checked again once the read finished: turning it off mid-read sends nothing.
@@ -33,7 +33,15 @@ test("reading conversations is its own switch, also Settings-only, checked befor
   }
   // What the agents said is outside text: it taints the conversation.
   assert.equal(tools.match(/taint_conversation\(app\);\s*let _ = app\.emit_to\(crate::island::WINDOW_LABEL, USED_EVENT, ToolUsed \{ request_id, tool: "agent-sessions"/g)?.length, 2);
+  assert.match(tools, /Ok\(Some\(window\)\) => \{\s*taint_conversation\(app\);\s*let _ = app\.emit_to\(crate::island::WINDOW_LABEL, USED_EVENT, ToolUsed \{ request_id, tool: "chat-window"/);
   assert.match(read("src/settings/main.ts"), /Bridge\.assistantSetReadChats\(v\)/);
+});
+
+test("the window reader skips what is being typed and secrets, and reads only the two chat apps", () => {
+  const window = native("assistant/chat_window.rs");
+  assert.match(window, /if !\(password \|\| kind == UIA_EditControlTypeId \|\| kind == UIA_ComboBoxControlTypeId\) \{/);
+  assert.match(window, /pid != std::process::id\(\) && exe_path\(pid\)\.as_deref\(\)\.and_then\(chat_app_of\) == Some\(search\.app\)/);
+  assert.match(window, /COINIT_MULTITHREADED/);
 });
 
 test("a page saving its settings keeps Rust's value", () => {

@@ -18,6 +18,7 @@ available, so these are Coucou's own.
 | `open_web` | An `open-url` action: an http(s) page or a search address (Google, YouTube…) in the default browser | Card: "Open this page?" + the site, and the whole address below it |
 | `remember` | A `memory-save` action ([P3-MEMORY.md](P3-MEMORY.md)) | Card: "Remember this?" + the text |
 | `list_agent_sessions`, `read_agent_session` | The user's Claude Code and Codex sessions, to summarize ([AGENT-SESSIONS.md](AGENT-SESSIONS.md)) | None: read only, and only with its switch on in Settings. The chat shows "Looked at your Codex and Claude Code sessions"; taints the conversation |
+| `read_chat_window` | The text the ChatGPT or Claude desktop app's window shows ([CHAT-WINDOW.md](CHAT-WINDOW.md)) | None: read only, same switch. The chat shows "Read the chat app's window"; taints the conversation |
 
 ### Which app (`assistant/apps.rs`)
 

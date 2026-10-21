@@ -49,6 +49,13 @@ test("a malformed or foreign report adds nothing", () => {
   assert.deepEqual(ChatActions.used, []);
 });
 
+test("reading the agents' sessions leaves its own note, once", () => {
+  emit("chat-tool-used", { requestId, tool: "agent-sessions" });
+  emit("chat-tool-used", { requestId, tool: "agent-sessions" });
+  assert.deepEqual(ChatActions.used, ["agent-sessions"]);
+  assert.deepEqual(ChatActions.auto, []);
+});
+
 test("tab reads and automatic actions are kept apart", () => {
   emit("chat-tool-used", { requestId, tool: "browser-tabs" });
   emit("chat-tool-used", ran({ kind: "switch-tab", label: "YouTube" }));

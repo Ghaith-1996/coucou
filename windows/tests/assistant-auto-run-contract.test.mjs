@@ -11,16 +11,35 @@ const native = (file) => read(`src-tauri/src/${file}`).split("#[cfg(test)]")[0];
 
 test("only the Settings window can turn the switch on, through its own command", () => {
   const tools = native("assistant/tools.rs");
-  assert.match(tools, /pub fn assistant_set_auto_run\([^)]*webview: tauri::Webview[^)]*\)[^{]*\{\s*if webview\.label\(\) != "settings" \{\s*return Err/);
-  assert.match(tools, /current\.assistant_auto_run = enabled;[\s\S]*set_auto_run\(enabled\);/);
+  assert.match(tools, /pub fn assistant_set_auto_run\([^)]*webview: tauri::Webview[^)]*\)[^{]*\{\s*set_owned\(&app, &webview, \|s\| s\.assistant_auto_run = enabled\)\?;\s*set_auto_run\(enabled\);/);
+  assert.match(tools, /fn set_owned\([^)]*\)[^{]*\{\s*if webview\.label\(\) != "settings" \{\s*return Err/);
   const settings = read("src/settings/main.ts");
   assert.match(settings, /Bridge\.assistantSetAutoRun\(v\)/);
   assert.doesNotMatch(settings, /settings\.assistantAutoRun = v;\s*void save\(\)/, "never through saveSettings");
 });
 
+test("reading conversations is its own switch, also Settings-only, checked before any read", () => {
+  const tools = native("assistant/tools.rs");
+  assert.match(tools, /pub fn assistant_set_read_chats\([^)]*\)[^{]*\{\s*set_owned\(&app, &webview, \|s\| s\.assistant_read_chats = enabled\)\?;/);
+  assert.match(tools, /fn set_owned\([^)]*\)[^{]*\{\s*if webview\.label\(\) != "settings" \{\s*return Err/);
+  for (const name of ["list_sessions", "read_session"]) {
+    assert.match(tools, new RegExp(`async fn ${name}\\([^)]*\\)[^{]*\\{\\s*if !reading_chats_on\\(app\\) \\{\\s*return result\\(READ_CHATS_OFF\\);`));
+  }
+  // Checked again once the read finished: turning it off mid-read sends nothing.
+  for (const name of ["list_sessions", "read_session"]) {
+    const start = tools.indexOf(`async fn ${name}(`);
+    const body = tools.slice(start, tools.indexOf("\n}\n", start));
+    assert.equal(body.match(/if !reading_chats_on\(app\)/g)?.length, 2, name);
+  }
+  // What the agents said is outside text: it taints the conversation.
+  assert.equal(tools.match(/taint_conversation\(app\);\s*let _ = app\.emit_to\(crate::island::WINDOW_LABEL, USED_EVENT, ToolUsed \{ request_id, tool: "agent-sessions"/g)?.length, 2);
+  assert.match(read("src/settings/main.ts"), /Bridge\.assistantSetReadChats\(v\)/);
+});
+
 test("a page saving its settings keeps Rust's value", () => {
   const lib = native("lib.rs");
   assert.match(lib, /fn save_settings\([\s\S]*settings\.assistant_auto_run = current\.assistant_auto_run;/);
+  assert.match(lib, /fn save_settings\([\s\S]*settings\.assistant_read_chats = current\.assistant_read_chats;/);
   assert.match(lib, /assistant::tools::set_auto_run\(loaded\.assistant_auto_run\);/);
 });
 

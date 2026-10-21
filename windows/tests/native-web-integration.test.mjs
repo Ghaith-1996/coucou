@@ -43,7 +43,7 @@ test("web instructions coexist with platform-gated memory without duplicate nati
   }
   assert.match(variants[1], /propose a fact for the user's memory/);
   assert.doesNotMatch(variants[2], /memory|remember/);
-  assert.match(tools, /assert_eq!\(names, \["list_browser_tabs", "switch_browser_tab", "open_web", "open_app"\]\)/);
+  assert.match(tools, /assert_eq!\(names, \["list_browser_tabs", "switch_browser_tab", "open_web", "open_app", "list_agent_sessions", "read_agent_session"\]\)/);
   const testNames = [...tools.matchAll(/(?:#\[test\]|#\[tokio::test[^\n]*\])\s*(?:async )?fn (\w+)/g)].map(match => match[1]);
   assert.equal(new Set(testNames).size, testNames.length, "auto-merges must not duplicate Rust test definitions");
 });

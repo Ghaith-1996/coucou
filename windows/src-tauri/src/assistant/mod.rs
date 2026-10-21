@@ -11,6 +11,7 @@ pub mod dictation;
 pub mod launch;
 pub mod policy;
 pub mod region;
+pub mod sessions;
 pub mod speech;
 pub mod tools;
 pub mod voice;

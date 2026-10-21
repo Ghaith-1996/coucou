@@ -173,6 +173,11 @@ export interface Settings {
    * switch in Settings changes it) and checks it again itself.
    */
   assistantAutoRun?: boolean;
+  /**
+   * The chat may read the user's Claude Code and Codex conversations (and,
+   * later, ChatGPT and Claude windows) to summarize them. Rust owns it.
+   */
+  assistantReadChats?: boolean;
   /** Mochi on the desktop. Rust owns it: whatever the page sends back is ignored. */
   desktopMochi?: {
     onDesktop: boolean;

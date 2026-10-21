@@ -100,7 +100,15 @@ pub fn runs_unasked(kind: ActionKind, auto_run: bool, tainted: bool, remember_as
 /// the past ("do you remember…?") is not a request to save.
 pub fn asks_to_remember(text: &str) -> bool {
     let text = text.to_lowercase().replace('\u{2019}', "'");
-    if ["do you remember", "you remember when", "tu te souviens", "vous vous souvenez"].iter().any(|q| text.contains(q)) {
+    // Questions about the past, and refusals, before any request to keep.
+    if [
+        "do you remember", "you remember when", "tu te souviens", "vous vous souvenez",
+        "don't remember", "dont remember", "do not remember", "never remember", "stop remembering",
+        "ne retiens pas", "ne mémorise pas", "ne memorise pas", "ne te souviens pas", "ne note pas",
+    ]
+    .iter()
+    .any(|q| text.contains(q))
+    {
         return false;
     }
     [
@@ -902,7 +910,7 @@ mod tests {
         ] {
             assert!(asks_to_remember(text), "{text}");
         }
-        for text in ["open Chrome", "what did I say yesterday?", "search lofi on YouTube", "Do you remember my cat's name?", "tu te souviens de mon chat ?"] {
+        for text in ["open Chrome", "what did I say yesterday?", "search lofi on YouTube", "Do you remember my cat's name?", "tu te souviens de mon chat ?", "Don't remember that I live in Paris", "do not remember this", "Ne retiens pas mon adresse", "ne mémorise pas ça"] {
             assert!(!asks_to_remember(text), "{text}");
         }
     }

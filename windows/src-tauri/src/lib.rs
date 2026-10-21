@@ -124,6 +124,8 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         settings.phone_chat_models = current.phone_chat_models.clone();
         // And for the speech model: only its own command picks one.
         settings.voice_model = current.voice_model.clone();
+        // And for acting without a card: only its own switch in Settings.
+        settings.assistant_auto_run = current.assistant_auto_run;
         *current = settings;
         (screen_changed, autostart_changed, shortcuts_changed)
     };
@@ -979,6 +981,7 @@ pub fn run() {
         builder = builder.plugin(shortcuts::plugin());
     }
 
+    assistant::tools::set_auto_run(loaded.assistant_auto_run);
     builder
         .manage(Shared {
             settings: Mutex::new(loaded.clone()),
@@ -1087,6 +1090,7 @@ pub fn run() {
             assistant::app::assistant_voice_converse,
             assistant::speech::speech_say,
             assistant::tools::chat_action_answer,
+            assistant::tools::assistant_set_auto_run,
             memory::memory_list,
             memory::memory_add,
             memory::memory_edit,

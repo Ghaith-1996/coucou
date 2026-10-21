@@ -108,6 +108,11 @@ pub struct Settings {
     /// The speech model the voice capture uses (assistant/voice/model.rs ids).
     /// Owned by Rust: only Settings → Voice changes it, and only to an installed one.
     pub voice_model: String,
+    /// The assistant opens apps, tabs and pages, and saves memories the user
+    /// asked for, without a card (assistant/tools.rs). Off until the user turns
+    /// it on in Settings; owned by Rust like `phone_link`, so what a webview
+    /// sends back is ignored.
+    pub assistant_auto_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -182,6 +187,7 @@ impl Default for Settings {
             phone_relay: false,
             phone_relay_url: String::new(),
             voice_model: crate::assistant::voice::model::DEFAULT_MODEL.into(),
+            assistant_auto_run: false,
         }
     }
 }
@@ -471,7 +477,8 @@ mod tests {
   "phoneServices": ["integration_stripe"],
   "phoneRelay": true,
   "phoneRelayUrl": "wss://relay.example.workers.dev",
-  "voiceModel": "large-v3-turbo-q5_0"
+  "voiceModel": "large-v3-turbo-q5_0",
+  "assistantAutoRun": true
 }"##;
 
     fn custom() -> Value {
@@ -592,6 +599,23 @@ mod tests {
         std::fs::write(&file, custom_with("phoneLink", Some(serde_json::json!("yes")))).unwrap();
         let odd = load_from(&file);
         assert!(!odd.phone_link);
+        assert_eq!(odd.mochi_outfit, "witchHat");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_from_before_auto_run_keeps_the_cards() {
+        // Acting without a card is the user's choice, never a default: an older
+        // file, or a value of the wrong type, keeps every card.
+        assert!(!Settings::default().assistant_auto_run);
+        let loaded = parse(&custom_with("assistantAutoRun", None)).unwrap();
+        assert!(!loaded.assistant_auto_run);
+        assert_eq!(loaded.mochi_outfit, "witchHat");
+        assert!(parse(&custom_with("assistantAutoRun", Some(serde_json::json!(true)))).unwrap().assistant_auto_run);
+        let (dir, file) = scratch("auto-run");
+        std::fs::write(&file, custom_with("assistantAutoRun", Some(serde_json::json!("yes")))).unwrap();
+        let odd = load_from(&file);
+        assert!(!odd.assistant_auto_run);
         assert_eq!(odd.mochi_outfit, "witchHat");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -983,6 +1007,7 @@ mod tests {
                 "phoneRelay",
                 "phoneRelayUrl",
                 "voiceModel",
+                "assistantAutoRun",
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);

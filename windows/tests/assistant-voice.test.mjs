@@ -692,6 +692,20 @@ test("\"open <app>\" offers the app Rust found, and opens it only on the click",
   assert.equal(calls.filter(([cmd]) => cmd.startsWith("approval_")).length, 0, "never the agents' permissions");
 });
 
+test("with Do it without asking on, the app opens with no click, and Rust is told it was automatic", async (t) => {
+  t.after(() => { delete State.settings.assistantAutoRun; });
+  State.settings.assistantAutoRun = true;
+  await startListening();
+  answers.set("assistant_app_propose", { label: "Google Chrome", grant: GRANT });
+  answers.set("assistant_app_launch", { actionId: "act-90", outcome: "succeeded", evidenceRef: "window:pid:42" });
+  emit("assistant-voice", ev("cap-1", "preview", { transcript: "Open Chrome" }));
+  await flush();
+  await flush();
+  assert.deepEqual(sent("assistant_app_launch"), [{ captureId: "cap-1", grant: GRANT, auto: true }]);
+  assert.equal(Voice.event, null, "the card is done");
+  assert.equal(calls.filter(([cmd]) => cmd.startsWith("approval_")).length, 0, "never the agents' permissions");
+});
+
 test("an app the Start menu doesn't have is said so, and the chat stays the choice", async () => {
   await startListening();
   answers.set("assistant_app_propose", null);

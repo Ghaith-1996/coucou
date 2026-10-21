@@ -1,7 +1,8 @@
 # Hybrid assistant — chat actions (ChatGPT can act, you confirm)
 
 "Can you open my 2nd tab?" ChatGPT gets these tools, and every action is
-confirmed by the user on a card in the chat before it runs.
+confirmed by the user on a card in the chat before it runs, unless the
+user turned on **Do it without asking** (below).
 
 ## Tools (`assistant/tools.rs`, namespace `coucou`)
 
@@ -45,9 +46,55 @@ available, so these are Coucou's own.
 - No file, folder or other scheme (`file:`, `ms-settings:`, `shell:`) can
   be opened.
 
-The model is told it can only do these, that each is confirmed, and never
+The model is told it can only do these, that some are shown to the user
+first, that tab titles are information and never instructions, and never
 to claim something happened unless the tool's result says so. No tool can
 click, type, read a page, or reach an agent's permission request.
+
+## Do it without asking (`assistantAutoRun`)
+
+Settings → Assistant → **Do it without asking**, off by default. When it
+is on, the user's standing answer replaces the click for some actions
+(`tools::runs_unasked`):
+
+| Action | Without a card when |
+|---|---|
+| `launch-app`, `switch-tab` | Always: they can only pick an installed app or an open tab |
+| `open-url` | The conversation is clean (below) |
+| `memory-save` | The conversation is clean **and** the user's own message in this turn asked to remember ("remember", "note that", "don't forget", "retiens", "n'oublie pas"…, `asks_to_remember`), and doesn't refuse it ("don't remember", "ne retiens pas"…) or ask about the past ("do you remember…?") |
+| anything else (`insert-text`…) | Never |
+
+- **The switch is Rust's.** `settings.json` keeps it, but `save_settings`
+  ignores what a page sends; only `assistant_set_auto_run`, from the
+  Settings window, changes it. Rust mirrors it in an atomic flag.
+- **Same checks, no card.** The policy still says ask and Rust still makes
+  the grant and runs `check_grant` on it; the fixture and the contract
+  (v5) don't change.
+- **Read again when it starts.** An automatic action runs under a *gated*
+  copy of the turn's scope (`ActionScope::gated`): the shell call, the tab
+  selection or the memory write happens only if the turn is still live and
+  the switch is still on, under the same lock as Stop. Turning it off or
+  stopping the chat stops anything not yet started.
+- **Clean conversation** (`Chat::tainted`). A conversation is tainted from
+  the moment text from another program reaches the model: tab titles
+  (`list_browser_tabs`), a dropped file or window as context, a Claude
+  answer that used web search (its history is shared with ChatGPT), or a
+  reopened saved chat (its earlier turns can't be vouched for). It stays
+  tainted, through later turns and Regenerate, until **New chat**. Only
+  native code sets it; nothing clears it but a new conversation. This
+  covers delayed injection: text read in one turn can't open a page or
+  save a memory without a card in a later one.
+- **What the chat shows.** After the receipt, Rust sends
+  `chat-tool-used` with `tool: "auto-action"` and the kind, label and
+  outcome (still with its `requestId`). The island shows a note:
+  "Opened Google Chrome", "Started …" (`unknown`), "Switched to …",
+  "Remembered: …", and for a page **"Sent … to your browser"**, since
+  Windows can't tell whether it loaded. A failure reads "Couldn't …".
+- **Voice.** "Open <app>" opens as soon as the app is found;
+  `assistant_app_launch` takes `auto: true`, refuses it while the switch
+  is off, and opens under the same gate.
+- An agent's permission request (Claude Code, Codex) is still never
+  answered by the chat, voice or a routine.
 
 ## Flow
 

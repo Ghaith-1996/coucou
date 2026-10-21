@@ -167,6 +167,12 @@ export interface Settings {
   phoneDetails?: boolean;
   /** Which models the phone may use, "provider/model". Rust owns it too. */
   phoneChatModels?: string[];
+  /**
+   * "Do it without asking": the assistant opens apps, tabs and pages, and
+   * saves memories the user asked for, without a card. Rust owns it (only its
+   * switch in Settings changes it) and checks it again itself.
+   */
+  assistantAutoRun?: boolean;
   /** Mochi on the desktop. Rust owns it: whatever the page sends back is ignored. */
   desktopMochi?: {
     onDesktop: boolean;

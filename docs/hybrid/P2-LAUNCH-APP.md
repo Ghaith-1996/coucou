@@ -1,7 +1,9 @@
 # Hybrid assistant — P2: "open <app>" (`launch-app`)
 
 The Mac's "ouvre Figma" (`VoiceQuery.appToOpen` → `NSWorkspace`), on Windows,
-from a controlled list and only after the user confirms.
+from a controlled list and only after the user confirms (or, with Settings →
+Assistant → Do it without asking on, as soon as the app is found: see
+[CHAT-ACTIONS.md](CHAT-ACTIONS.md#do-it-without-asking-assistantautorun)).
 
 ## Flow
 

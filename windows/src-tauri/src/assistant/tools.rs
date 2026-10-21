@@ -778,6 +778,10 @@ async fn list_sessions(app: &AppHandle, args: SinceArgs, request_id: Option<&str
     if !scope.is_active() {
         return result("The chat was stopped.");
     }
+    // Turned off while reading: nothing read goes to the model.
+    if !reading_chats_on(app) {
+        return result(READ_CHATS_OFF);
+    }
     // Titles are the user's and the agents' words: outside text from now on.
     taint_conversation(app);
     let _ = app.emit_to(crate::island::WINDOW_LABEL, USED_EVENT, ToolUsed { request_id, tool: "agent-sessions", kind: None, label: None, outcome: None });
@@ -827,6 +831,9 @@ async fn read_session(app: &AppHandle, args: SessionArgs, intent: &str, request_
         .flatten();
     if !scope.is_active() {
         return result("The chat was stopped.");
+    }
+    if !reading_chats_on(app) {
+        return result(READ_CHATS_OFF);
     }
     let Some(session) = session else {
         return result("No session with that id in the last 7 days. Call list_agent_sessions for the ids.");

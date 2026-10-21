@@ -44,20 +44,27 @@ impl ChatApp {
     }
 }
 
-/// The desktop chat app an executable belongs to: the Store packages'
-/// (`OpenAI.ChatGPT-Desktop_…\app\ChatGPT….exe`, `Claude_…\app\claude.exe`)
-/// or Claude's own installer (`AnthropicClaude\app-…\claude.exe`). Claude
-/// Code's `claude.exe` lives elsewhere and has no window of its own.
+/// The desktop chat app an executable belongs to, by the exact folders its
+/// installers use: the Store packages (`Program Files\WindowsApps\
+/// OpenAI.ChatGPT-Desktop_…\app\ChatGPT….exe`, `…\WindowsApps\Claude_…\app\
+/// claude.exe`) or Claude's own installer (`AppData\Local\AnthropicClaude\
+/// app-…\claude.exe`). Claude Code's `claude.exe` lives elsewhere and has no
+/// window of its own.
 pub fn chat_app_of(exe_path: &str) -> Option<ChatApp> {
     let path = exe_path.replace('/', "\\").to_lowercase();
     let mut parts = path.rsplit('\\');
     let file = parts.next()?;
+    // Nearest folder first: [0] holds the file, [1] holds [0], and so on.
     let parents: Vec<&str> = parts.collect();
-    let in_folder = |prefix: &str| parents.iter().any(|p| p.starts_with(prefix));
-    if file.starts_with("chatgpt") && file.ends_with(".exe") && in_folder("openai.chatgpt-desktop_") {
+    let at = |i: usize| parents.get(i).copied().unwrap_or_default();
+    // Store apps live in Program Files\WindowsApps, or in X:\WindowsApps when installed on another drive.
+    let apps_root = at(3) == "program files" || (parents.len() == 4 && at(3).ends_with(':'));
+    let store = |package: &str| at(0) == "app" && at(1).starts_with(package) && at(2) == "windowsapps" && apps_root;
+    if file.starts_with("chatgpt") && file.ends_with(".exe") && store("openai.chatgpt-desktop_") {
         return Some(ChatApp::ChatGpt);
     }
-    if file == "claude.exe" && (in_folder("claude_") && parents.contains(&"windowsapps") || in_folder("anthropicclaude")) {
+    let own_installer = at(0).starts_with("app-") && at(1) == "anthropicclaude" && at(2) == "local" && at(3) == "appdata";
+    if file == "claude.exe" && (store("claude_") || own_installer) {
         return Some(ChatApp::Claude);
     }
     None
@@ -76,7 +83,8 @@ pub struct WindowText {
 }
 
 /// Lines in reading order, consecutive repeats dropped (a group is often
-/// named after the text inside it), the end kept within `max` characters.
+/// named after the text inside it), the end kept within `max` characters:
+/// the line that doesn't fit whole keeps its own end ("…" first).
 pub fn join_lines(lines: &[String], max: usize, stopped_early: bool) -> (String, bool) {
     let mut kept: Vec<&str> = Vec::new();
     for line in lines {
@@ -86,18 +94,26 @@ pub fn join_lines(lines: &[String], max: usize, stopped_early: bool) -> (String,
         }
         kept.push(line);
     }
-    let mut total = 0usize;
-    let mut start = kept.len();
-    while start > 0 {
-        let n = kept[start - 1].chars().count() + 1;
-        if total + n > max {
-            break;
+    let mut out: Vec<String> = Vec::new();
+    let mut budget = max;
+    let mut cut = false;
+    for line in kept.iter().rev() {
+        let n = line.chars().count() + 1;
+        if n <= budget {
+            budget -= n;
+            out.push(format!("{line}\n"));
+            continue;
         }
-        total += n;
-        start -= 1;
+        // "…" and "\n" take two characters of what is left.
+        if budget > 2 {
+            let tail: String = line.chars().skip(n - 1 - (budget - 2)).collect();
+            out.push(format!("…{tail}\n"));
+        }
+        cut = true;
+        break;
     }
-    let shortened = start > 0 || stopped_early;
-    (kept[start..].iter().map(|l| format!("{l}\n")).collect(), shortened)
+    out.reverse();
+    (out.concat(), cut || stopped_early)
 }
 
 #[cfg(windows)]
@@ -274,12 +290,19 @@ mod tests {
         assert_eq!(chat_app_of(r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2025.1.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe"), Some(ChatApp::ChatGpt));
         assert_eq!(chat_app_of(r"C:\Program Files\WindowsApps\Claude_2.37337.1.0_x64__pzs8sxrjxfjjc\app\Claude.exe"), Some(ChatApp::Claude));
         assert_eq!(chat_app_of(r"C:\Users\me\AppData\Local\AnthropicClaude\app-0.9.3\claude.exe"), Some(ChatApp::Claude));
+        assert_eq!(chat_app_of(r"D:\WindowsApps\OpenAI.ChatGPT-Desktop_1.2026.190.0_x64__2p2nqsd0c76g0\app\ChatGPT Classic.exe"), Some(ChatApp::ChatGpt), "a Store app moved to another drive");
         for other in [
             r"C:\Users\me\.local\bin\claude.exe",
             r"C:\Users\me\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\claude.exe",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__2p2nqsd0c76g0\app\Codex.exe",
             r"C:\Temp\OpenAI.ChatGPT-Desktop_fake\ChatGPT.txt",
+            r"C:\Temp\OpenAI.ChatGPT-Desktop_fake\ChatGPT.exe",
+            r"C:\Temp\WindowsApps\OpenAI.ChatGPT-Desktop_fake\app\ChatGPT.exe",
+            r"D:\Temp\WindowsApps\Claude_fake\app\claude.exe",
+            r"C:\Temp\AnthropicClaude\claude.exe",
+            r"C:\Users\me\Downloads\AnthropicClaude\app-1\claude.exe",
+            r"C:\Program Files\WindowsApps\Claude_1.0_x64__x\app\tools\claude.exe",
             r"D:\cv\release\coucou.exe",
         ] {
             assert_eq!(chat_app_of(other), None, "{other}");
@@ -295,7 +318,13 @@ mod tests {
         assert_eq!(all, format!("New chat\nHello\nHow can I help?\n{}\n", "a".repeat(30)));
         assert!(!cut);
         let (end, cut) = join_lines(&lines, 40, false);
-        assert_eq!(end, format!("{}\n", "a".repeat(30)), "the most recent text is at the end");
+        assert_eq!(end, format!("…I help?\n{}\n", "a".repeat(30)), "the most recent text is at the end");
+        assert_eq!(end.chars().count(), 40);
+        assert!(cut);
+        // The newest element alone is longer than everything allowed: its end stays.
+        let long = vec!["old".to_string(), format!("start {}", "x".repeat(100)), "Copy".to_string()];
+        let (end, cut) = join_lines(&long, 20, false);
+        assert_eq!(end, format!("…{}\nCopy\n", "x".repeat(13)));
         assert!(cut);
         assert!(join_lines(&lines, 1_000, true).1, "a walk that stopped early says so");
     }

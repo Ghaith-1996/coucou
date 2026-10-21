@@ -878,6 +878,9 @@ async fn read_window(app: &AppHandle, args: WindowArgs, request_id: Option<&str>
     if !scope.is_active() {
         return result("The chat was stopped.");
     }
+    if !reading_chats_on(app) {
+        return result(READ_CHATS_OFF);
+    }
     match read {
         Ok(Some(window)) => {
             taint_conversation(app);

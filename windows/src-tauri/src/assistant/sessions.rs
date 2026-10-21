@@ -175,13 +175,15 @@ pub fn read(roots: &Roots, id: &str, now: u64) -> Option<Transcript> {
     }
     let session = list(roots, Since::Week.from_ms(now)).into_iter().find(|s| s.id == id)?;
     let mut messages = messages(session.agent, &tail_lines(&session.path, TAIL_BYTES)?);
-    // Only the end of a long file was read: its first request comes from the start.
-    let gap = std::fs::metadata(&session.path).map_or(false, |m| m.len() > TAIL_BYTES);
+    // Only the end of a long file was read: its first request comes from the
+    // start, unless that end still holds it (then nothing said is missing).
+    let mut gap = std::fs::metadata(&session.path).map_or(false, |m| m.len() > TAIL_BYTES);
     if gap {
         let first = head_lines(&session.path, HEAD_BYTES)
             .and_then(|lines| lines.iter().find_map(|l| message(session.agent, l).filter(|(role, _)| *role == Role::User)));
-        if let Some(first) = first {
-            messages.insert(0, first);
+        match first {
+            Some(first) if !messages.contains(&first) => messages.insert(0, first),
+            _ => gap = false,
         }
     }
     let (text, shortened) = transcript_text(&messages, MAX_TRANSCRIPT_CHARS, gap);
@@ -465,7 +467,8 @@ fn transcript_text(messages: &[(Role, String)], max: usize, gap: bool) -> (Strin
     let all: Vec<String> = messages.iter().map(render).collect();
     let total: usize = all.iter().map(|m| m.chars().count()).sum();
     if total <= max && !gap {
-        return (all.concat(), false);
+        let cut = messages.iter().any(|(_, text)| text.chars().count() > MAX_MESSAGE_CHARS);
+        return (all.concat(), cut);
     }
     let first_user = messages.iter().position(|(role, _)| *role == Role::User);
     let head = first_user.map(|i| all[i].clone()).unwrap_or_default();
@@ -665,6 +668,27 @@ mod tests {
     }
 
     #[test]
+    fn a_file_just_over_the_limit_keeps_its_first_request_once() {
+        let roots = scratch("just-over");
+        let mut lines = claude_lines();
+        // About 4.2 MB: 0.6 MB of tool calls before the first request and 3.6 MB
+        // after, so both the start and the end that are read hold it.
+        let call = |i: usize| json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "input": {"n": i, "pad": "y".repeat(10_000)}}]}});
+        for i in 0..360 {
+            lines.insert(4, call(i));
+        }
+        for i in 0..60 {
+            lines.insert(1, call(1000 + i));
+        }
+        write_lines(&claude_file(&roots), &lines, "");
+        assert!(std::fs::metadata(claude_file(&roots)).unwrap().len() > TAIL_BYTES);
+        let t = read(&roots, &format!("claude-{CLAUDE_ID}"), now_ms()).unwrap();
+        assert_eq!(t.text.matches("Add a price chart").count(), 1, "{}", t.text);
+        assert!(!t.text.contains("left out"));
+        let _ = std::fs::remove_dir_all(roots.claude.parent().unwrap());
+    }
+
+    #[test]
     fn older_sessions_and_other_files_are_left_out() {
         let roots = scratch("since");
         write_lines(&claude_file(&roots), &claude_lines(), "");
@@ -691,6 +715,8 @@ mod tests {
         let (short, cut) = transcript_text(&messages[..2], 5_000, false);
         assert!(!cut);
         assert!(short.starts_with("[user] first request\n[agent] reply 0"));
+        let long = [(Role::User, "q".to_string()), (Role::Assistant, "z".repeat(MAX_MESSAGE_CHARS + 1))];
+        assert!(transcript_text(&long, MAX_TRANSCRIPT_CHARS, false).1, "a message cut on its own is shortening too");
         let (gap, cut) = transcript_text(&messages[..2], 5_000, true);
         assert!(cut, "the end of a long file, after its first request");
         assert!(gap.starts_with("[user] first request\n[… earlier messages left out …]\n[agent] reply 0"));

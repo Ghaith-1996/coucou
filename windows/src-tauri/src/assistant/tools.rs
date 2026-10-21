@@ -102,7 +102,15 @@ pub fn runs_unasked(kind: ActionKind, auto_run: bool, tainted: bool, remember_as
 /// the past ("do you remember…?") is not a request to save.
 pub fn asks_to_remember(text: &str) -> bool {
     let text = text.to_lowercase().replace('\u{2019}', "'");
-    if ["do you remember", "you remember when", "tu te souviens", "vous vous souvenez"].iter().any(|q| text.contains(q)) {
+    // Questions about the past, and refusals, before any request to keep.
+    if [
+        "do you remember", "you remember when", "tu te souviens", "vous vous souvenez",
+        "don't remember", "dont remember", "do not remember", "never remember", "stop remembering",
+        "ne retiens pas", "ne mémorise pas", "ne memorise pas", "ne te souviens pas", "ne note pas",
+    ]
+    .iter()
+    .any(|q| text.contains(q))
+    {
         return false;
     }
     [
@@ -790,6 +798,10 @@ async fn list_sessions(app: &AppHandle, args: SinceArgs, request_id: Option<&str
     if !scope.is_active() {
         return result("The chat was stopped.");
     }
+    // Turned off while reading: nothing read goes to the model.
+    if !reading_chats_on(app) {
+        return result(READ_CHATS_OFF);
+    }
     // Titles are the user's and the agents' words: outside text from now on.
     taint_conversation(app);
     let _ = app.emit_to(crate::island::WINDOW_LABEL, USED_EVENT, ToolUsed { request_id, tool: "agent-sessions", kind: None, label: None, outcome: None });
@@ -839,6 +851,9 @@ async fn read_session(app: &AppHandle, args: SessionArgs, intent: &str, request_
         .flatten();
     if !scope.is_active() {
         return result("The chat was stopped.");
+    }
+    if !reading_chats_on(app) {
+        return result(READ_CHATS_OFF);
     }
     let Some(session) = session else {
         return result("No session with that id in the last 7 days. Call list_agent_sessions for the ids.");
@@ -948,7 +963,7 @@ mod tests {
         ] {
             assert!(asks_to_remember(text), "{text}");
         }
-        for text in ["open Chrome", "what did I say yesterday?", "search lofi on YouTube", "Do you remember my cat's name?", "tu te souviens de mon chat ?"] {
+        for text in ["open Chrome", "what did I say yesterday?", "search lofi on YouTube", "Do you remember my cat's name?", "tu te souviens de mon chat ?", "Don't remember that I live in Paris", "do not remember this", "Ne retiens pas mon adresse", "ne mémorise pas ça"] {
             assert!(!asks_to_remember(text), "{text}");
         }
     }

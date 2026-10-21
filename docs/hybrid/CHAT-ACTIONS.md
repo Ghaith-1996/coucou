@@ -63,7 +63,7 @@ is on, the user's standing answer replaces the click for some actions
 |---|---|
 | `launch-app`, `switch-tab` | Always: they can only pick an installed app or an open tab |
 | `open-url` | The conversation is clean (below) |
-| `memory-save` | The conversation is clean **and** the user's own message in this turn asked to remember ("remember", "note that", "don't forget", "retiens", "n'oublie pas"…, `asks_to_remember`) |
+| `memory-save` | The conversation is clean **and** the user's own message in this turn asked to remember ("remember", "note that", "don't forget", "retiens", "n'oublie pas"…, `asks_to_remember`), and doesn't refuse it ("don't remember", "ne retiens pas"…) or ask about the past ("do you remember…?") |
 | anything else (`insert-text`…) | Never |
 
 - **The switch is Rust's.** `settings.json` keeps it, but `save_settings`
@@ -79,7 +79,8 @@ is on, the user's standing answer replaces the click for some actions
   stopping the chat stops anything not yet started.
 - **Clean conversation** (`Chat::tainted`). A conversation is tainted from
   the moment text from another program reaches the model: tab titles
-  (`list_browser_tabs`), a dropped file or window as context, or a
+  (`list_browser_tabs`), a dropped file or window as context, a Claude
+  answer that used web search (its history is shared with ChatGPT), or a
   reopened saved chat (its earlier turns can't be vouched for). It stays
   tainted, through later turns and Regenerate, until **New chat**. Only
   native code sets it; nothing clears it but a new conversation. This

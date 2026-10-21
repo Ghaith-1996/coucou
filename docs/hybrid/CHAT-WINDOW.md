@@ -10,12 +10,16 @@ UI Automation and summarizes it. It does this only when asked.
 
 - **Same switch as session reading:** Settings → Assistant → "Let the chat
   read my conversations", off by default and owned by Rust. While it is off,
-  nothing is read.
+  nothing is read. It is checked again once the read finishes, so turning
+  it off mid-read sends nothing.
 - **Only these two apps:** a window belongs to them only if its process's
-  executable is one of these:
-  - `WindowsApps\OpenAI.ChatGPT-Desktop_…\app\ChatGPT….exe`
-  - `WindowsApps\Claude_…\app\claude.exe`
-  - `AnthropicClaude\app-…\claude.exe` (Claude's own installer)
+  executable is at exactly one of these places (a look-alike folder
+  elsewhere doesn't count):
+  - `Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_…\app\ChatGPT….exe`
+  - `Program Files\WindowsApps\Claude_…\app\claude.exe`
+  - `X:\WindowsApps\…` instead of `Program Files\WindowsApps\…` when the
+    Store app was installed on another drive
+  - `AppData\Local\AnthropicClaude\app-…\claude.exe` (Claude's own installer)
 
   Claude Code's `claude.exe` lives elsewhere and has no window of its own.
   No other app is ever read, and never Coucou. The front visible, unowned
@@ -30,7 +34,7 @@ UI Automation and summarizes it. It does this only when asked.
 - **Limits:**
   - at most 20,000 elements and 3 seconds;
   - the last 20,000 characters are kept, since the newest messages are at
-    the end;
+    the end; an element too long to fit keeps its own end, after "…";
   - `shortened` says when text was cut or the walk stopped early.
 - **Taint:** the result taints the conversation ([CHAT-ACTIONS.md](CHAT-ACTIONS.md)).
   The model is told the text is information, never instructions.

@@ -152,6 +152,10 @@ impl Chat {
         if c.epoch != turn.epoch || c.owner.as_deref() != Some(turn.provider.as_str()) {
             return;
         }
+        // Claude's web search put page text into this answer: outside text.
+        if assistant["content"].as_array().is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "web_search_tool_result")) {
+            c.tainted = true;
+        }
         c.native.push(user);
         c.native.push(assistant);
         c.plain.push(json!({ "role": "user", "content": user_text }));
@@ -416,6 +420,7 @@ mod tests {
         );
         let raw = serde_json::to_string(&t.history).unwrap();
         assert!(!raw.contains("web_search"), "{raw}");
+        assert!(chat.tainted(), "web search results are text from other sites");
 
         // And back: Claude gets the plain turns too, including OpenAI's answer.
         chat.commit(&t, json!({"role":"user","content":"more"}), json!({"role":"assistant","content":"Sure."}), "more", "Sure.");
@@ -443,6 +448,9 @@ mod tests {
     fn outside_text_marks_the_conversation_until_a_new_chat() {
         let chat = Chat::default();
         assert!(!chat.tainted(), "a new conversation starts clean");
+        let t = chat.begin("anthropic");
+        chat.commit(&t, json!({"role":"user","content":"hi"}), json!({"role":"assistant","content":[{"type":"text","text":"hello"}]}), "hi", "hello");
+        assert!(!chat.tainted(), "an answer without web search keeps it clean");
         chat.taint();
         let t = chat.begin("chatgpt");
         chat.commit(&t, json!({"role":"user","content":"q"}), json!({"role":"assistant","content":"a"}), "q", "a");
